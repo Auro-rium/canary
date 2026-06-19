@@ -1,0 +1,28 @@
+# Azure Foundry Configuration
+
+foundry:
+  project_connection_string: "${AZURE_PROJECT_CONNECTION_STRING}"
+  subscription_id: "${AZURE_SUBSCRIPTION_ID}"
+  resource_group: "${AZURE_RESOURCE_GROUP}"
+  project_name: "${AZURE_PROJECT_NAME}"
+
+# Credentials
+credentials:
+  use_default_credential: true
+  # OR use service principal:
+  # tenant_id: "${AZURE_TENANT_ID}"
+  # client_id: "${AZURE_CLIENT_ID}"
+  # client_secret: "${AZURE_CLIENT_SECRET}"
+
+# Red Team Service
+red_team:
+  enabled: true
+  deployment_type: "foundry_agent"  # foundry_agent | azure_openai
+
+# Evaluations
+evaluations:
+  enabled: true
+  metrics:
+    - safety
+    - quality
+    - behavior

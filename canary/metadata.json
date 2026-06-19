@@ -1,0 +1,6 @@
+{
+  "name": "Agent Canary",
+  "description": "AI agent security control plane for enterprise teams. Simulate attacks, analyze failures, and enforce YAML policies.",
+  "requestFramePermissions": [],
+  "majorCapabilities": []
+}

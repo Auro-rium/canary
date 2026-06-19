@@ -1,0 +1,21 @@
+# Local Development Configuration
+
+target_mode: "sandbox"
+max_retries: 3
+timeout_seconds: 30
+deterministic_seed: 42
+
+# Attack strategies to try
+strategies:
+  - prompt_injection
+  - indirect_injection
+  - tool_misuse
+
+# Local evaluation (vs cloud Foundry)
+use_local_redteam: false
+use_foundry_cloud: true
+
+# Database
+database:
+  type: "sqlite"
+  path: "./runs/redteam.db"

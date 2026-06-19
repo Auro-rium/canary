@@ -1,0 +1,32 @@
+# Attack Profiles
+
+profiles:
+  light:
+    description: "Light reconnaissance"
+    strategies:
+      - prompt_injection
+      - leakage
+    max_attempts: 2
+    timeout_seconds: 15
+
+  standard:
+    description: "Standard red team assessment"
+    strategies:
+      - prompt_injection
+      - indirect_injection
+      - tool_misuse
+      - leakage
+    max_attempts: 5
+    timeout_seconds: 30
+
+  comprehensive:
+    description: "Full red team assessment"
+    strategies:
+      - prompt_injection
+      - indirect_injection
+      - tool_misuse
+      - retrieval_poisoning
+      - jailbreak
+      - leakage
+    max_attempts: 10
+    timeout_seconds: 60

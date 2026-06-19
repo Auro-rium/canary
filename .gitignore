@@ -1,0 +1,30 @@
+# Global ignores
+.DS_Store
+*~
+*.swp
+*.swo
+
+# Backend ignores (cyber-redteam-foundry)
+cyber-redteam-foundry/.env
+cyber-redteam-foundry/.venv/
+cyber-redteam-foundry/runs/
+cyber-redteam-foundry/reports/
+cyber-redteam-foundry/.pytest_cache/
+cyber-redteam-foundry/.ruff_cache/
+cyber-redteam-foundry/.mypy_cache/
+cyber-redteam-foundry/__pycache__/
+cyber-redteam-foundry/*.egg-info/
+cyber-redteam-foundry/dist/
+cyber-redteam-foundry/build/
+cyber-redteam-foundry/*.db
+cyber-redteam-foundry/*.sqlite*
+cyber-redteam-foundry/*.log
+
+# Frontend ignores (canary)
+canary/node_modules/
+canary/dist/
+canary/build/
+canary/coverage/
+canary/*.log
+canary/.env*
+!canary/.env.example

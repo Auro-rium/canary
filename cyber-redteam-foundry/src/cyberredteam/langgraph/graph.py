@@ -1,0 +1,208 @@
+"""LangGraph state graph builder for the red team workflow.
+
+Builds a ``StateGraph[RedTeamState]`` with:
+
+*  5 nodes: strategist → attacker → evaluator → (defender | reporter)
+*  Conditional edge from evaluator (vulnerability_found → defender, else reporter)
+*  Iterative loop: defender → (attacker if iterations remain, else reporter)
+*  SQLite-backed checkpointing for persistence and resumability
+*  Auto-generated Mermaid diagram
+"""
+
+from typing import Literal, Optional
+
+from langgraph.graph import END, StateGraph
+
+from cyberredteam.langgraph.nodes import (
+    node_attacker,
+    node_defender,
+    node_evaluator,
+    node_reporter,
+    node_strategist,
+)
+from cyberredteam.langgraph.state import RedTeamState
+from cyberredteam.logging import setup_logging
+
+logger = setup_logging()
+
+
+# ---------------------------------------------------------------------------
+# Conditional routing functions
+# ---------------------------------------------------------------------------
+
+def should_patch(state: RedTeamState) -> Literal["defender", "reporter"]:
+    """Route to defender if vulnerabilities found, else to reporter.
+
+    Args:
+        state: Current RedTeamState
+
+    Returns:
+        Next node: ``"defender"`` or ``"reporter"``
+    """
+    logger.info(
+        f"[Graph] Routing after evaluator: "
+        f"vulnerability_found={state['vulnerability_found']}"
+    )
+    return "defender" if state["vulnerability_found"] else "reporter"
+
+
+def should_iterate(state: RedTeamState) -> Literal["attacker", "reporter"]:
+    """Route back to attacker if iterations remain, else to reporter.
+
+    Args:
+        state: Current RedTeamState
+
+    Returns:
+        Next node: ``"attacker"`` or ``"reporter"``
+    """
+    logger.info(
+        f"[Graph] Routing after defender: "
+        f"should_continue={state['should_continue_iterating']}, "
+        f"iteration={state['iteration']}/{state['max_iterations']}"
+    )
+    return "attacker" if state["should_continue_iterating"] else "reporter"
+
+
+# ---------------------------------------------------------------------------
+# Graph construction
+# ---------------------------------------------------------------------------
+
+def build_redteam_graph() -> StateGraph:
+    """Build the red team workflow graph (uncompiled).
+
+    Returns:
+        ``StateGraph`` ready for ``.compile()``.
+    """
+    graph = StateGraph(RedTeamState)
+
+    # Add nodes
+    graph.add_node("strategist", node_strategist)
+    graph.add_node("attacker", node_attacker)
+    graph.add_node("evaluator", node_evaluator)
+    graph.add_node("defender", node_defender)
+    graph.add_node("reporter", node_reporter)
+
+    # Entry point
+    graph.set_entry_point("strategist")
+
+    # Linear edges
+    graph.add_edge("strategist", "attacker")
+    graph.add_edge("attacker", "evaluator")
+
+    # Conditional: evaluator → defender (vuln found) | reporter (clean)
+    graph.add_conditional_edges(
+        "evaluator",
+        should_patch,
+        {
+            "defender": "defender",
+            "reporter": "reporter",
+        },
+    )
+
+    # Iterative loop: defender → attacker (if iterations remain) | reporter
+    graph.add_conditional_edges(
+        "defender",
+        should_iterate,
+        {
+            "attacker": "attacker",
+            "reporter": "reporter",
+        },
+    )
+
+    # Terminal
+    graph.add_edge("reporter", END)
+
+    logger.info("Built RedTeam LangGraph state machine")
+    return graph
+
+
+# ---------------------------------------------------------------------------
+# Compilation helpers
+# ---------------------------------------------------------------------------
+
+def compile_graph(checkpoint_db_path: Optional[str] = None):
+    """Compile the graph with SQLite checkpointing.
+
+    Args:
+        checkpoint_db_path: Path to an SQLite file for checkpoints.
+            If ``None``, falls back to in-memory ``MemorySaver``.
+
+    Returns:
+        Compiled graph ready for ``.invoke()`` / ``.stream()``.
+    """
+    graph = build_redteam_graph()
+
+    if checkpoint_db_path:
+        import sqlite3
+
+        from langgraph.checkpoint.sqlite import SqliteSaver
+
+        conn = sqlite3.connect(checkpoint_db_path, check_same_thread=False)
+        checkpointer = SqliteSaver(conn)
+        logger.info(
+            f"Compiled RedTeam graph with SQLite checkpointing → "
+            f"{checkpoint_db_path}"
+        )
+    else:
+        from langgraph.checkpoint.memory import MemorySaver
+
+        checkpointer = MemorySaver()
+        logger.info("Compiled RedTeam graph with in-memory checkpointing")
+
+    compiled = graph.compile(checkpointer=checkpointer)
+    return compiled
+
+
+def get_mermaid_graph(checkpoint_db_path: Optional[str] = None) -> str:
+    """Generate Mermaid diagram of the compiled graph.
+
+    Attempts auto-generation via LangGraph's ``draw_mermaid()`` API.
+    Falls back to a hand-crafted diagram if the API is unavailable.
+
+    Returns:
+        Mermaid diagram string.
+    """
+    try:
+        compiled = compile_graph(checkpoint_db_path)
+        mermaid = compiled.get_graph().draw_mermaid()
+        logger.info("Generated Mermaid diagram via LangGraph API")
+        return mermaid
+    except Exception as exc:
+        logger.warning(
+            f"Auto-generated Mermaid failed ({exc}), using fallback diagram"
+        )
+        return _fallback_mermaid()
+
+
+def _fallback_mermaid() -> str:
+    """Hand-crafted Mermaid diagram as fallback."""
+    return """\
+graph TD
+    START([START])
+    strategist["<b>Strategist</b><br/>Select attack families"]
+    attacker["<b>Attacker</b><br/>Execute attacks"]
+    evaluator["<b>Evaluator</b><br/>Score & assess"]
+    defender["<b>Defender</b><br/>Plan & apply patches"]
+    reporter["<b>Reporter</b><br/>Generate report"]
+    END_NODE([END])
+
+    START --> strategist
+    strategist --> attacker
+    attacker --> evaluator
+
+    evaluator -->|vulnerability_found| defender
+    evaluator -->|no vulnerabilities| reporter
+
+    defender -->|should_continue_iterating| attacker
+    defender -->|max_iterations reached| reporter
+
+    reporter --> END_NODE
+
+    style START fill:#90EE90
+    style END_NODE fill:#FFB6C6
+    style strategist fill:#87CEEB
+    style attacker fill:#87CEEB
+    style evaluator fill:#87CEEB
+    style defender fill:#FFD700
+    style reporter fill:#DDA0DD
+"""

@@ -1,0 +1,18 @@
+# Model deployments per agent
+# Each agent can use a different Azure OpenAI deployment.
+# These map to AZURE_OPENAI_DEPLOYMENT names in your Azure portal.
+
+strategist:
+  deployment: gpt-4.1
+
+attacker:
+  deployment: gpt-4.1
+
+evaluator:
+  deployment: gpt-4.1
+
+defender:
+  deployment: gpt-4.1
+
+reporter:
+  deployment: gpt-4.1

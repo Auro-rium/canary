@@ -1,0 +1,45 @@
+# Environment
+.env
+.venv
+venv/
+*.egg-info/
+dist/
+build/
+
+# Database
+*.db
+*.sqlite
+*.sqlite3
+
+# Logs
+*.log
+logs/
+runs/
+
+# Reports
+reports/
+*.md.bak
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Testing
+.tox/
+.hypothesis/
+
+# Local development
+.mypy_cache/
+.ruff_cache/

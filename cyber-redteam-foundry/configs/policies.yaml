@@ -1,0 +1,41 @@
+# Defense & Security Policies
+
+policies:
+  prompt_hardening:
+    enabled: true
+    techniques:
+      - "Instruction prefixing"
+      - "Role limiting"
+      - "Output constraints"
+      - "Refusal patterns"
+
+  tool_access:
+    enabled: true
+    restrictions:
+      - "Whitelist allowed tools"
+      - "Rate limit calls"
+      - "Validate parameters"
+      - "Log all usage"
+
+  retrieval_safety:
+    enabled: true
+    checks:
+      - "Content hash verification"
+      - "Source validation"
+      - "Injection detection"
+      - "Metadata scrubbing"
+
+  memory_isolation:
+    enabled: true
+    isolation_levels:
+      - "Per-user contexts"
+      - "Session expiry"
+      - "Memory reset policies"
+
+  regression_prevention:
+    enabled: true
+    testing:
+      - "Functional regression tests"
+      - "Latency benchmarks"
+      - "Accuracy metrics"
+      - "User acceptance tests"
