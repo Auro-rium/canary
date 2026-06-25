@@ -1,7 +1,7 @@
 """SQLite artifact storage."""
 
 from pathlib import Path
-from typing import List
+from typing import Dict, List, Optional
 
 from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
@@ -55,6 +55,7 @@ class SQLiteStore:
         with self.SessionLocal() as session:
             attack = AttackRecord(
                 run_id=result.run_id,
+                target_id=result.target_id,
                 attempt_number=result.attempt_number,
                 strategy_type=result.strategy_type.value,
                 prompt=result.prompt,
@@ -62,6 +63,8 @@ class SQLiteStore:
                 success=1 if result.success else 0,
                 severity=result.severity.value,
                 score=result.score,
+                score_threshold=result.score_threshold,
+                finding_id=result.finding_id or None,
                 indicators=result.indicators,
                 error=result.error,
             )
@@ -82,6 +85,9 @@ class SQLiteStore:
                 diff=result.diff,
                 applied=1 if result.applied else 0,
                 retest_passed=1 if result.retest_passed else 0,
+                finding_id=result.finding_id or None,
+                retest_prompt=result.retest_prompt or None,
+                retest_response=result.retest_response or None,
             )
             session.add(patch)
             session.commit()
@@ -143,6 +149,56 @@ class SQLiteStore:
                 run.status = "completed"
                 session.commit()
                 logger.info(f"Updated run complete: {run_id}")
+
+    def get_open_findings(self, target_id: Optional[str] = None) -> List[Dict]:
+        """Return findings that have no passing retest — open issues across all runs.
+
+        A finding is "open" when its finding_id appears in patches but none of
+        those patches have retest_passed=1.  This lets the next campaign's
+        strategist avoid re-discovering the same vulnerabilities from scratch.
+
+        Args:
+            target_id: If given, restrict to attacks on this target.
+
+        Returns:
+            List of dicts with finding_id, strategy_type, target_component,
+            run_id (most recent), and patch_count.
+        """
+        with self.SessionLocal() as session:
+            patch_q = select(PatchRecord).where(PatchRecord.finding_id.isnot(None))
+            patches = session.scalars(patch_q).all()
+
+            # Group by finding_id; a finding is open iff no patch has retest_passed
+            from collections import defaultdict
+            grouped: dict = defaultdict(list)
+            for p in patches:
+                grouped[p.finding_id].append(p)
+
+            open_findings = []
+            for fid, patch_list in grouped.items():
+                if any(p.retest_passed for p in patch_list):
+                    continue  # at least one passing retest → closed
+                latest = max(patch_list, key=lambda p: p.timestamp or 0)
+
+                # Optionally filter by target_id via the associated attack record
+                if target_id:
+                    atk_q = select(AttackRecord).where(
+                        AttackRecord.finding_id == fid,
+                        AttackRecord.target_id == target_id,
+                    )
+                    if not session.scalar(atk_q):
+                        continue
+
+                open_findings.append({
+                    "finding_id": fid,
+                    "target_component": latest.target_component,
+                    "patch_type": latest.patch_type,
+                    "run_id": latest.run_id,
+                    "patch_count": len(patch_list),
+                    "last_seen": latest.timestamp.isoformat() if latest.timestamp else None,
+                })
+
+            return open_findings
 
     def close(self) -> None:
         """Close database connections."""

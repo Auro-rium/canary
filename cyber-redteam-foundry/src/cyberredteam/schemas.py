@@ -71,6 +71,7 @@ class AttackResult(BaseModel):
     """Result of an attack attempt."""
 
     run_id: str
+    target_id: str = Field(default="")
     attempt_number: int
     strategy_type: StrategyType
     prompt: str
@@ -78,6 +79,12 @@ class AttackResult(BaseModel):
     success: bool
     severity: AttackSeverity
     score: float = Field(ge=0.0, le=1.0)
+    # Threshold applied to LLM confidence to determine success. Stored so every
+    # verdict is reproducible: auditor sees score, confidence, and the cutoff.
+    score_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
+    # Content-addressed ID stable across runs: sha256(strategy+target+component)[:12].
+    # Minted by the defender once affected_component is known; empty until then.
+    finding_id: str = Field(default="")
     indicators: Dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     error: Optional[str] = None
@@ -95,6 +102,13 @@ class PatchResult(BaseModel):
     diff: str
     applied: bool
     retest_passed: bool
+    # Links this patch back to the finding it addresses — same ID as the source
+    # AttackResult.finding_id so open issues are queryable across campaigns.
+    finding_id: str = Field(default="")
+    # Verbatim replay evidence from the retest: the exact prompt and response
+    # that determined retest_passed. Required for verified_fixed to be earnable.
+    retest_prompt: str = Field(default="")
+    retest_response: str = Field(default="")
     timestamp: datetime = Field(default_factory=datetime.utcnow)
 
 

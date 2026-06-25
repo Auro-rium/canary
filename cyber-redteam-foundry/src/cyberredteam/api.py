@@ -231,11 +231,14 @@ def get_run(run_id: str):
                     "id": a.id,
                     "attempt_number": a.attempt_number,
                     "strategy_type": a.strategy_type,
+                    "target_id": a.target_id,
+                    "finding_id": a.finding_id,
                     "prompt": a.prompt,
                     "response": a.response,
                     "success": bool(a.success),
                     "severity": a.severity,
                     "score": a.score,
+                    "score_threshold": a.score_threshold,
                     "indicators": a.indicators,
                     "timestamp": a.timestamp.isoformat() if a.timestamp else None,
                 }
@@ -252,6 +255,9 @@ def get_run(run_id: str):
                     "diff": p.diff,
                     "applied": bool(p.applied),
                     "retest_passed": bool(p.retest_passed),
+                    "finding_id": p.finding_id,
+                    "retest_prompt": p.retest_prompt,
+                    "retest_response": p.retest_response,
                 }
                 for p in patches
             ],
@@ -406,6 +412,20 @@ def get_analysis_report(run_id: str):
         "suggestedYaml": suggested_yaml,
         "recommendations": recommendations,
     }
+
+
+@app.get("/api/open-findings")
+def get_open_findings(target_id: Optional[str] = None):
+    """Return findings with no passing retest across all historical runs.
+
+    Used by the next campaign's strategist to avoid re-discovering known
+    open issues from scratch.  Each entry carries finding_id, the affected
+    component, when it was last seen, and how many patch attempts failed.
+    """
+    store = SQLiteStore(Path(settings.db_path))
+    findings = store.get_open_findings(target_id=target_id)
+    store.close()
+    return findings
 
 
 @app.post("/api/runs/{run_id}/apply")

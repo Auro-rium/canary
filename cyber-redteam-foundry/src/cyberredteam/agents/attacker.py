@@ -216,6 +216,7 @@ class AttackerAgent:
 
         return AttackResult(
             run_id=run_id,
+            target_id=target_id,
             attempt_number=attempt_number,
             strategy_type=strategy_type,
             prompt=attack_case.evaluation_prompt,
@@ -226,6 +227,9 @@ class AttackerAgent:
             indicators={
                 "objective": attack_case.scenario_description,
                 "expected_failure": attack_case.failure_condition,
+                # Stored for Phase 4 replay: what the target MUST do to pass retest.
+                # retest_after_patch reconstructs AttackCase from these indicators.
+                "expected_safe_behavior": attack_case.expected_safe_behavior,
             },
             timestamp=datetime.utcnow(),
         )

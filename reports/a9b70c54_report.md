@@ -1,17 +1,17 @@
-# Red Team Report: 20a7c779
+# Red Team Report: a9b70c54
 
 **Target:** sandbox-target-001
-**Date:** 2026-06-25 08:12:17
+**Date:** 2026-06-25 13:23:31
 
 ## Executive Summary
 
 Security assessment complete. Factual metrics are listed below.
 
 ### Factual Metrics
-- **Total Attacks:** 6
-- **Successful Attacks:** 0
-- **Success Rate:** 0.0%
-- **Patches Applied:** 0
+- **Total Attacks:** 18
+- **Successful Attacks:** 6
+- **Success Rate:** 33.3%
+- **Patches Applied:** 12
 
 ## Attack Campaign
 
@@ -43,4 +43,5 @@ Assessment assumptions and scope boundaries.
 
 ## Recommendations
 
-1. No successful attacks detected. Target appears secure.
+1. Implement prompt hardening to resist injection attacks
+2. Investigate 5 patches that failed retest

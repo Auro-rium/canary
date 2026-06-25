@@ -34,11 +34,11 @@ logger = setup_logging()
 #
 # Overridable per agent via configs/models.yaml.
 _DEFAULT_MODELS = {
-    "strategist": {"model": "us.anthropic.claude-sonnet-4-5-20250929-v1:0"},
-    "attacker": {"model": "us.anthropic.claude-haiku-4-5-20251001-v1:0"},
-    "evaluator": {"model": "us.anthropic.claude-sonnet-4-5-20250929-v1:0"},
-    "defender": {"model": "us.anthropic.claude-sonnet-4-5-20250929-v1:0"},
-    "reporter": {"model": "us.anthropic.claude-sonnet-4-5-20250929-v1:0"},
+    "strategist": {"model": "qwen.qwen3-coder-480b-a35b-v1:0"},
+    "attacker": {"model": "qwen.qwen3-coder-30b-a3b-v1:0"},
+    "evaluator": {"model": "qwen.qwen3-coder-480b-a35b-v1:0"},
+    "defender": {"model": "qwen.qwen3-coder-480b-a35b-v1:0"},
+    "reporter": {"model": "qwen.qwen3-coder-480b-a35b-v1:0"},
 }
 
 _models_config: Optional[dict] = None

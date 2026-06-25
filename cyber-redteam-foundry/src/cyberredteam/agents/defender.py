@@ -1,5 +1,6 @@
 """Defender agent - plans remediation patches using LLM reasoning."""
 
+import hashlib
 import uuid
 from datetime import datetime
 from typing import List, Optional, Any
@@ -97,6 +98,18 @@ class DefenderAgent:
                 elif "guardrail" in p_type_lower or "regression" in p_type_lower:
                     mapped_type = PatchType.REGRESSION_RULE
 
+                # Stable finding_id: sha256(strategy + target_id + affected_component)[:12].
+                # Same vulnerability found in a future campaign against the same target
+                # produces the same ID — makes open issues queryable across runs.
+                finding_id = hashlib.sha256(
+                    f"{result.strategy_type.value}:{result.target_id}:{llm_patch.affected_component}".encode()
+                ).hexdigest()[:12]
+
+                # Back-annotate the source AttackResult so the attack record carries
+                # the same finding_id as its patch (in-place mutation is safe here
+                # because _persist_artifacts runs after the graph completes).
+                result.finding_id = finding_id
+
                 # Generate a unique patch ID
                 unique_suffix = str(uuid.uuid4())[:6]
                 patch_id = f"{result.run_id}_patch_{i}_{mapped_type.value}_{unique_suffix}"
@@ -116,24 +129,32 @@ class DefenderAgent:
                     diff=f"+ remediation recommendation: {llm_patch.recommendation}\n+ expected risk reduction: {llm_patch.expected_risk_reduction}",
                     applied=False,
                     retest_passed=False,
+                    finding_id=finding_id,
                     timestamp=datetime.utcnow(),
                 )
                 patches.append(patch)
 
             except Exception as e:
                 logger.error(f"Defender agent failed to plan patch: {e}")
-                # Fallback patch
+                # Fallback patch — use "system_prompt" as a generic component so the
+                # finding_id is still stable (strategy + target + generic component).
+                fallback_component = "system_prompt"
+                finding_id = hashlib.sha256(
+                    f"{result.strategy_type.value}:{result.target_id}:{fallback_component}".encode()
+                ).hexdigest()[:12]
+                result.finding_id = finding_id
                 unique_suffix = str(uuid.uuid4())[:6]
                 fallback = PatchResult(
                     run_id=result.run_id,
                     patch_id=f"{result.run_id}_patch_{i}_fallback_{unique_suffix}",
                     patch_type=PatchType.PROMPT_HARDENING,
-                    target_component="system_prompt",
+                    target_component=fallback_component,
                     original_config={"status": "vulnerable"},
                     patched_config={"remediation": "Fallback default prompt hardening instruction"},
                     diff="+ added fallback safety instruction",
                     applied=False,
                     retest_passed=False,
+                    finding_id=finding_id,
                     timestamp=datetime.utcnow(),
                 )
                 patches.append(fallback)
@@ -199,22 +220,31 @@ class DefenderAgent:
 
         # 3. Re-run all successful attacks for this campaign
         passed = True
+        last_retest_prompt = ""
+        last_retest_response = ""
         for result in attacks_list:
-            # Reconstruct the AttackCase
+            # Reconstruct the AttackCase using the stored expected_safe_behavior
+            # (not expected_failure — those are different fields with different semantics).
             attack_case = AttackCase(
                 category=result.strategy_type.value if hasattr(result.strategy_type, "value") else str(result.strategy_type),
                 scenario_description=result.indicators.get("objective", "Retest"),
                 evaluation_prompt=result.prompt,
-                expected_safe_behavior=result.indicators.get("expected_failure", "Refusal"),
+                expected_safe_behavior=result.indicators.get(
+                    "expected_safe_behavior",
+                    result.indicators.get("expected_failure", "Refusal"),
+                ),
                 failure_condition=result.indicators.get("expected_failure", "Refusal"),
             )
             # Execute the attack against the patched target
             response = target_adapter.execute_attack(attack_case)
+            last_retest_prompt = result.prompt
+            last_retest_response = response
 
             # Evaluate response using the evaluator
             from datetime import datetime
             retest_result = AttackResult(
                 run_id=result.run_id,
+                target_id=result.target_id,
                 attempt_number=result.attempt_number,
                 strategy_type=result.strategy_type,
                 prompt=result.prompt,
@@ -231,9 +261,16 @@ class DefenderAgent:
             if evaluated_retest.success:
                 logger.info("Retest failed: Attack succeeded against patched target.")
                 passed = False
+                last_retest_prompt = result.prompt
+                last_retest_response = response
                 break
 
         patch.retest_passed = passed
+        # Capture retest evidence so verified_fixed is auditable: any compliance
+        # review can see the exact prompt that was replayed and what the target
+        # returned when the patch was in place.
+        patch.retest_prompt = last_retest_prompt
+        patch.retest_response = last_retest_response
         logger.info(f"Retest outcome for {patch.patch_id}: retest_passed={patch.retest_passed}")
 
         # 4. Clean up / reset context

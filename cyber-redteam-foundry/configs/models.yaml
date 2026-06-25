@@ -1,26 +1,26 @@
-# Bedrock model (inference-profile) ID per agent.
+# Bedrock model ID per agent.
 #
-# Verified available in account 732108542989, region us-west-2
-# (aws bedrock list-foundation-models). Both Claude models require an
-# inference profile, so the ID carries the "us." cross-region prefix.
+# Verified available in account 732108542989, region us-west-2 (ON_DEMAND —
+# no inference profile / cross-region prefix required).
 #
-#   us.anthropic.claude-sonnet-4-20250514-v1:0   Claude Sonnet 4 (legacy, EOL 2026-10-14)
-#   us.anthropic.claude-haiku-4-5-20251001-v1:0  Claude Haiku 4.5 (active)
+#   qwen.qwen3-coder-480b-a35b-v1:0   Qwen3 Coder 480B  — judgment roles
+#   qwen.qwen3-coder-30b-a3b-v1:0     Qwen3 Coder 30B   — high-volume attacker
 #
-# Judgment roles use Sonnet; the high-volume attacker uses the faster Haiku.
-# If Sonnet 4.5 / Opus is enabled in the account, swap the judgment IDs.
+# Swap to Claude inference-profile IDs once the Anthropic use-case form is approved:
+#   us.anthropic.claude-sonnet-4-20250514-v1:0  (judgment)
+#   us.anthropic.claude-haiku-4-5-20251001-v1:0 (attacker)
 
 strategist:
-  model: us.anthropic.claude-sonnet-4-20250514-v1:0
+  model: qwen.qwen3-coder-480b-a35b-v1:0
 
 attacker:
-  model: us.anthropic.claude-haiku-4-5-20251001-v1:0
+  model: qwen.qwen3-coder-30b-a3b-v1:0
 
 evaluator:
-  model: us.anthropic.claude-sonnet-4-20250514-v1:0
+  model: qwen.qwen3-coder-480b-a35b-v1:0
 
 defender:
-  model: us.anthropic.claude-sonnet-4-20250514-v1:0
+  model: qwen.qwen3-coder-480b-a35b-v1:0
 
 reporter:
-  model: us.anthropic.claude-sonnet-4-20250514-v1:0
+  model: qwen.qwen3-coder-480b-a35b-v1:0
