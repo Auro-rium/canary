@@ -1,18 +1,26 @@
-# Model deployments per agent
-# Each agent can use a different Azure OpenAI deployment.
-# These map to AZURE_OPENAI_DEPLOYMENT names in your Azure portal.
+# Bedrock model (inference-profile) ID per agent.
+#
+# Verified available in account 732108542989, region us-west-2
+# (aws bedrock list-foundation-models). Both Claude models require an
+# inference profile, so the ID carries the "us." cross-region prefix.
+#
+#   us.anthropic.claude-sonnet-4-20250514-v1:0   Claude Sonnet 4 (legacy, EOL 2026-10-14)
+#   us.anthropic.claude-haiku-4-5-20251001-v1:0  Claude Haiku 4.5 (active)
+#
+# Judgment roles use Sonnet; the high-volume attacker uses the faster Haiku.
+# If Sonnet 4.5 / Opus is enabled in the account, swap the judgment IDs.
 
 strategist:
-  deployment: gpt-4.1
+  model: us.anthropic.claude-sonnet-4-20250514-v1:0
 
 attacker:
-  deployment: gpt-4.1
+  model: us.anthropic.claude-haiku-4-5-20251001-v1:0
 
 evaluator:
-  deployment: gpt-4.1
+  model: us.anthropic.claude-sonnet-4-20250514-v1:0
 
 defender:
-  deployment: gpt-4.1
+  model: us.anthropic.claude-sonnet-4-20250514-v1:0
 
 reporter:
-  deployment: gpt-4.1
+  model: us.anthropic.claude-sonnet-4-20250514-v1:0

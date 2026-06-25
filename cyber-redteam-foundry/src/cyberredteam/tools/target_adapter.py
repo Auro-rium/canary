@@ -1,7 +1,7 @@
 """Target adapter for executing attack cases against different deployment types."""
 
 import requests
-from typing import Any, Optional
+from typing import Optional
 
 from cyberredteam.llm.schemas import AttackCase
 from cyberredteam.logging import setup_logging
@@ -27,6 +27,10 @@ class TargetAdapter:
         """Reset target context if supported."""
         pass
 
+    def apply_patch(self, recommendation: str) -> None:
+        """Apply a patch/mitigation guideline to the target."""
+        pass
+
 
 class HttpTargetAdapter(TargetAdapter):
     """Adapter that sends adversarial prompts to any HTTP agent endpoint.
@@ -43,6 +47,13 @@ class HttpTargetAdapter(TargetAdapter):
             api_key: Optional API key for authenticated endpoints.
             timeout: Request timeout in seconds.
         """
+        import os
+        is_docker = os.path.exists("/.dockerenv") or os.environ.get("RUNNING_IN_DOCKER") == "true"
+        if is_docker:
+            for host in ["localhost:9000", "127.0.0.1:9000"]:
+                if host in endpoint:
+                    endpoint = endpoint.replace(host, "target-agent:9000")
+
         self.endpoint = endpoint.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
@@ -50,12 +61,61 @@ class HttpTargetAdapter(TargetAdapter):
 
         logger.info(f"HttpTargetAdapter initialized → {self.endpoint}")
 
+    def apply_patch(self, recommendation: str) -> None:
+        """Send patch request to target agent server."""
+        patch_url = self.endpoint
+        if patch_url.endswith("/chat"):
+            patch_url = patch_url[:-5] + "/patch"
+        else:
+            patch_url = patch_url + "/patch"
+
+        logger.info(f"Applying patch to HTTP target: {patch_url}")
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        try:
+            resp = requests.post(
+                patch_url,
+                json={"recommendation": recommendation},
+                headers=headers,
+                timeout=self.timeout,
+            )
+            resp.raise_for_status()
+            logger.info("Successfully patched HTTP target")
+        except Exception as e:
+            logger.error(f"Failed to patch HTTP target: {e}")
+
+    def reset_context(self) -> None:
+        """Send reset request to target agent server."""
+        reset_url = self.endpoint
+        if reset_url.endswith("/chat"):
+            reset_url = reset_url[:-5] + "/reset"
+        else:
+            reset_url = reset_url + "/reset"
+
+        logger.info(f"Resetting HTTP target prompt: {reset_url}")
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+
+        try:
+            resp = requests.post(
+                reset_url,
+                headers=headers,
+                timeout=self.timeout,
+            )
+            resp.raise_for_status()
+            logger.info("Successfully reset HTTP target prompt")
+        except Exception as e:
+            logger.error(f"Failed to reset HTTP target prompt: {e}")
+
     def execute_attack(self, attack_case: AttackCase) -> str:
         """Send adversarial prompt to the HTTP agent endpoint."""
-        prompt = attack_case.generated_test_case
+        prompt = attack_case.evaluation_prompt
         logger.info(
             f"HTTP target '{self.endpoint}' executing attack type "
-            f"'{attack_case.attack_type}': {prompt[:60]}..."
+            f"'{attack_case.category}': {prompt[:60]}..."
         )
 
         headers = {"Content-Type": "application/json"}
@@ -101,22 +161,28 @@ class SandboxTargetAdapter(TargetAdapter):
     def __init__(self, target_id: str):
         """Initialize sandbox adapter with a target LLM."""
         self.target_id = target_id
+        self.active_patches = []
 
-        # Instantiate a real LLM for the target agent
-        from cyberredteam.llm.factory import get_llm, get_deployment_for_agent
-        try:
-            deployment = get_deployment_for_agent("strategist")
-        except Exception:
-            deployment = "gpt-4.1"
+        # Instantiate a real LLM representing the target agent under test.
+        from cyberredteam.llm.factory import get_llm, get_model_for_agent
 
-        self.llm = get_llm(deployment, agent_name=f"target_{target_id.lower().replace(' ', '_')}")
+        model = get_model_for_agent("strategist")
+        self.llm = get_llm(model, agent_name=f"target_{target_id.lower().replace(' ', '_')}")
+
+    def apply_patch(self, recommendation: str) -> None:
+        """Apply patch to sandbox memory."""
+        self.active_patches.append(recommendation)
+
+    def reset_context(self) -> None:
+        """Clear active patches in sandbox."""
+        self.active_patches = []
 
     def execute_attack(self, attack_case: AttackCase) -> str:
         """Execute attack case against the target agent LLM."""
-        prompt = attack_case.generated_test_case
+        prompt = attack_case.evaluation_prompt
         logger.info(
             f"LLM Sandbox target '{self.target_id}' executing attack type "
-            f"'{attack_case.attack_type}': {prompt[:50]}..."
+            f"'{attack_case.category}': {prompt[:50]}..."
         )
 
         # Define system prompt based on target agent ID
@@ -150,6 +216,10 @@ class SandboxTargetAdapter(TargetAdapter):
             "refuse to comply."
         )
 
+        # Append active patches/mitigations to the role prompt
+        for recommendation in self.active_patches:
+            role_prompt += f"\n\n## Applied Security Policy\n- {recommendation}"
+
         try:
             response = self.llm.invoke_text(
                 system_prompt=role_prompt,
@@ -157,44 +227,8 @@ class SandboxTargetAdapter(TargetAdapter):
             )
             return response
         except Exception as e:
+            # Surface target errors explicitly — never fabricate a plausible
+            # "target response", or the evaluator would score a hallucination.
             logger.error(f"Failed to get LLM response for target agent: {e}")
-            return f"Simulated fallback response to: {prompt[:30]}"
-
-
-class FoundryAgentTargetAdapter(TargetAdapter):
-    """Adapter for Foundry Agent deployments."""
-
-    def __init__(self, agent_id: str, client: Any = None):
-        """Initialize Foundry adapter."""
-        self.agent_id = agent_id
-        if client is None:
-            from cyberredteam.foundry.client import FoundryClient
-            try:
-                self.client = FoundryClient()
-            except Exception as e:
-                logger.error(f"Could not initialize FoundryClient: {e}")
-                self.client = None
-        else:
-            self.client = client
-
-    def execute_attack(self, attack_case: AttackCase) -> str:
-        """Execute attack case against Foundry Agent."""
-        prompt = attack_case.generated_test_case
-        logger.info(
-            f"Foundry Agent '{self.agent_id}' executing attack type "
-            f"'{attack_case.attack_type}': {prompt[:50]}..."
-        )
-
-        if self.client:
-            try:
-                res_dict = self.client.send_message(self.agent_id, prompt)
-                if res_dict.get("success"):
-                    return str(res_dict.get("response", ""))
-                else:
-                    return f"Error executing attack: {res_dict.get('error')}"
-            except Exception as e:
-                logger.error(f"Failed to execute attack on Foundry Agent: {e}")
-                return f"Error executing attack: {e}"
-
-        return f"Foundry Agent response placeholder for: {prompt[:30]}"
+            return f"(target error: {e})"
 

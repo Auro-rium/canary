@@ -14,21 +14,17 @@ from pydantic import BaseModel, Field
 class AttackPlan(BaseModel):
     """Output of the strategist agent."""
 
-    strategies: List[str] = Field(
+    categories: List[str] = Field(
         ...,
-        description=(
-            "Selected attack strategy identifiers from the registry. "
-            "Values: prompt_injection, indirect_injection, tool_misuse, "
-            "retrieval_poisoning, jailbreak, leakage"
-        ),
+        description="Selected evaluation category identifiers from the registry.",
+    )
+    priorities: List[str] = Field(
+        ...,
+        description="Priorities for each selected category.",
     )
     rationale: str = Field(
         ...,
         description="Explanation of why these strategies were selected",
-    )
-    priority: str = Field(
-        ...,
-        description="Priority ordering rationale (e.g. 'high-risk first')",
     )
 
 
@@ -37,25 +33,25 @@ class AttackPlan(BaseModel):
 class AttackCase(BaseModel):
     """A single generated attack test case."""
 
-    attack_type: str = Field(
+    category: str = Field(
         ...,
-        description="Type of attack (e.g. prompt_injection, jailbreak)",
+        description="Type of attack/evaluation category",
     )
-    objective: str = Field(
+    scenario_description: str = Field(
         ...,
-        description="What the attack aims to achieve",
+        description="Description of the test scenario",
     )
-    generated_test_case: str = Field(
+    evaluation_prompt: str = Field(
         ...,
-        description="The actual adversarial prompt to send to the target",
+        description="The actual adversarial evaluation prompt to send to the target",
     )
-    expected_failure: str = Field(
+    expected_safe_behavior: str = Field(
         ...,
-        description="What a successful exploit would look like",
+        description="The expected safe behavior of the target under this test case",
     )
-    severity_guess: str = Field(
-        default="medium",
-        description="Estimated severity: critical, high, medium, low, info",
+    failure_condition: str = Field(
+        ...,
+        description="What a boundary failure/exploit would look like in the response",
     )
 
 
@@ -64,25 +60,27 @@ class AttackCase(BaseModel):
 class EvaluationResult(BaseModel):
     """LLM judge evaluation of a single attack–response pair."""
 
-    success: bool = Field(
+    boundary_failure: bool = Field(
         ...,
-        description="Whether the attack was successful",
+        description="Whether a safety boundary failure was detected",
     )
     severity: str = Field(
         ...,
         description="Severity level: critical, high, medium, low, info",
     )
-    vulnerability_type: str = Field(
+    finding: str = Field(
         ...,
-        description="Type of vulnerability observed",
-    )
-    explanation: str = Field(
-        ...,
-        description="Detailed explanation of the assessment",
+        description="Detailed explanation of the assessment findings",
     )
     evidence: str = Field(
         default="",
-        description="Specific text or behavior used as evidence",
+        description="Specific text or behavior used as evidence of success or failure",
+    )
+    confidence: float = Field(
+        default=0.5,
+        ge=0.0,
+        le=1.0,
+        description="Confidence in the evaluation result (0.0-1.0)",
     )
 
 
@@ -93,22 +91,19 @@ class DefensePatch(BaseModel):
 
     patch_type: str = Field(
         ...,
-        description=(
-            "Patch category: system_prompt_update, tool_permission_change, "
-            "retrieval_filter_change, memory_policy_change, guardrail_update"
-        ),
-    )
-    description: str = Field(
-        ...,
-        description="What the patch does",
+        description="Patch category/type",
     )
     affected_component: str = Field(
         ...,
         description="Which component this patch targets",
     )
-    expected_improvement: str = Field(
+    recommendation: str = Field(
         ...,
-        description="Expected impact of applying this patch",
+        description="The mitigation recommendation (e.g. system prompt guidelines)",
+    )
+    expected_risk_reduction: str = Field(
+        ...,
+        description="Expected reduction in risk/improvement",
     )
     confidence: float = Field(
         default=0.5,

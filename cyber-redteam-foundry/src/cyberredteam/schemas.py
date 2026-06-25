@@ -12,10 +12,17 @@ class StrategyType(str, Enum):
 
     PROMPT_INJECTION = "prompt_injection"
     INDIRECT_INJECTION = "indirect_injection"
+    JAILBREAK = "jailbreak"
     TOOL_MISUSE = "tool_misuse"
     RETRIEVAL_POISONING = "retrieval_poisoning"
-    JAILBREAK = "jailbreak"
-    LEAKAGE = "leakage"
+    MEMORY_POISONING = "memory_poisoning"
+    SENSITIVE_DATA_EXPOSURE = "sensitive_data_exposure"
+    WORKFLOW_MANIPULATION = "workflow_manipulation"
+    AGENT_HANDOFF_CORRUPTION = "agent_handoff_corruption"
+    AUTHORIZATION_BOUNDARY = "authorization_boundary"
+    INSTRUCTION_HIERARCHY = "instruction_hierarchy"
+    CONTEXT_ISOLATION = "context_isolation"
+
 
 
 class AttackSeverity(str, Enum):

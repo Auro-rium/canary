@@ -207,64 +207,60 @@ def graph(
 
 @app.command()
 def doctor() -> None:
-    """Verify environment variables and test Azure OpenAI connectivity."""
+    """Verify environment variables and test AWS Bedrock connectivity."""
     console.print("[bold blue]Running Diagnostics / Doctor Command[/bold blue]\n")
     settings = get_settings()
+    from cyberredteam.llm.factory import get_model_for_agent
 
     errors = []
 
-    # Check Azure OpenAI
-    console.print("[bold]Checking Azure OpenAI Configuration...[/bold]")
-    if not settings.azure_openai_endpoint:
-        console.print("[red]✗ AZURE_OPENAI_ENDPOINT is not set.[/red]")
-        errors.append("AZURE_OPENAI_ENDPOINT missing")
+    # Check AWS Bedrock configuration
+    console.print("[bold]Checking AWS Bedrock Configuration...[/bold]")
+    if not settings.aws_region:
+        console.print("[red]✗ AWS_REGION is not set.[/red]")
+        errors.append("AWS_REGION missing")
     else:
-        console.print(f"✓ AZURE_OPENAI_ENDPOINT: {settings.azure_openai_endpoint}")
+        console.print(f"✓ AWS_REGION: {settings.aws_region}")
 
-    if not settings.azure_openai_api_key:
-        console.print("[red]✗ AZURE_OPENAI_API_KEY is not set.[/red]")
-        errors.append("AZURE_OPENAI_API_KEY missing")
+    console.print(
+        "  (AWS credentials are resolved via the standard boto3 chain: "
+        "env vars, shared config, or instance/role profile.)"
+    )
+
+    # Show per-agent model assignment
+    console.print("\n[bold]Model assignment per agent:[/bold]")
+    for agent in ("strategist", "attacker", "evaluator", "defender", "reporter"):
+        console.print(f"✓ {agent}: {get_model_for_agent(agent)}")
+
+    # Check API auth configuration
+    console.print("\n[bold]Checking API Authentication...[/bold]")
+    if not settings.api_secret_key:
+        console.print("[yellow]! API_SECRET_KEY is not set — the API will refuse all requests.[/yellow]")
     else:
-        # Mask the key for security
-        key = settings.azure_openai_api_key
-        masked_key = key[:4] + "..." + key[-4:] if len(key) > 8 else "..."
-        console.print(f"✓ AZURE_OPENAI_API_KEY: {masked_key}")
-
-    console.print(f"✓ AZURE_OPENAI_API_VERSION: {settings.azure_openai_api_version}")
-
-    # Check Azure AI Foundry Projects configuration
-    console.print("\n[bold]Checking Azure AI Foundry Configuration...[/bold]")
-    if settings.azure_project_connection_string:
-        console.print(f"✓ AZURE_PROJECT_CONNECTION_STRING: {settings.azure_project_connection_string}")
-    else:
-        console.print("[yellow]! AZURE_PROJECT_CONNECTION_STRING is not set (optional if using local sandbox).[/yellow]")
+        console.print("✓ API_SECRET_KEY is set.")
 
     if errors:
         console.print("\n[bold red]Diagnostics failed. Please set required variables in your .env file.[/bold red]")
         raise typer.Exit(code=1)
 
     # Test actual connectivity
-    console.print("\n[bold]Testing connectivity to Azure OpenAI...[/bold]")
+    console.print("\n[bold]Testing connectivity to AWS Bedrock...[/bold]")
     try:
-        from langchain_openai import AzureChatOpenAI
-        endpoint = settings.azure_openai_endpoint
-        if endpoint and "/openai/v1" in endpoint:
-            endpoint = endpoint.split("/openai/v1")[0]
+        from langchain_core.messages import HumanMessage
 
-        llm = AzureChatOpenAI(
-            azure_endpoint=endpoint,
-            api_key=settings.azure_openai_api_key,
-            api_version=settings.azure_openai_api_version,
-            azure_deployment=settings.azure_openai_deployment or "gpt-4o-mini",
-            temperature=0.0,
-            max_tokens=5,
-        )
-        response = llm.invoke("Hello, connection check.")
+        from cyberredteam.llm.factory import get_llm
+
+        llm = get_llm(get_model_for_agent("evaluator"), agent_name="doctor")
+        response = llm.llm.invoke([HumanMessage(content="Hello, connection check.")])
         console.print("[green]✓ Connection test succeeded![/green]")
         console.print(f"Response: {response.content.strip()}")
     except Exception as e:
         console.print(f"[red]✗ Connection test failed: {e}[/red]")
-        console.print("\n[bold red]Please verify your Azure OpenAI service, endpoint, API key, and model deployment.[/bold red]")
+        console.print(
+            "\n[bold red]Verify AWS_REGION, AWS credentials, that the configured "
+            "Bedrock model/inference-profile IDs exist in the region, and that your "
+            "IAM principal has bedrock:InvokeModel on them.[/bold red]"
+        )
         raise typer.Exit(code=1)
 
     console.print("\n[bold green]All systems nominal. Doctor check passed successfully![/bold green]")

@@ -1,6 +1,6 @@
 """Tests for the CLI commands."""
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 from typer.testing import CliRunner
 
@@ -24,35 +24,22 @@ def test_cli_graph():
     assert "StateGraph" in result.stdout or "state" in result.stdout or "strategist" in result.stdout
 
 
-@patch.dict("os.environ", {"AZURE_OPENAI_ENDPOINT": ""})
-def test_cli_doctor_missing_endpoint():
-    """Test that doctor fails and outputs diagnostics when endpoint is missing."""
-    # Force reload of settings to pick up mocked env var
-    from cyberredteam import settings
-    settings._settings = None  # Clear settings cache if any exists
-
+@patch.dict("os.environ", {"AWS_REGION": ""})
+def test_cli_doctor_missing_region():
+    """Doctor fails with diagnostics when AWS_REGION is missing."""
     runner = CliRunner()
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 1
-    assert "AZURE_OPENAI_ENDPOINT is not set" in result.stdout
+    assert "AWS_REGION is not set" in result.stdout
 
 
-@patch.dict("os.environ", {
-    "AZURE_OPENAI_ENDPOINT": "https://dummy.openai.azure.com/",
-    "AZURE_OPENAI_API_KEY": "dummykey123",
-    "AZURE_OPENAI_API_VERSION": "2024-02-15-preview"
-})
-@patch("langchain_openai.AzureChatOpenAI.invoke")
-def test_cli_doctor_success(mock_invoke):
-    """Test that doctor passes when all configs are set and invoke succeeds."""
-    # Force reload of settings to pick up mocked env var
-    from cyberredteam import settings
-    settings._settings = None  # Clear settings cache if any exists
+@patch.dict("os.environ", {"AWS_REGION": "us-east-1"})
+def test_cli_doctor_success():
+    """Doctor passes when Bedrock is configured and connectivity succeeds.
 
-    mock_response = MagicMock()
-    mock_response.content = "Hello, checked!"
-    mock_invoke.return_value = mock_response
-
+    The conftest autouse fixture patches ``factory.get_llm`` to a fake, so
+    the connectivity probe returns the fake's canned response.
+    """
     runner = CliRunner()
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0

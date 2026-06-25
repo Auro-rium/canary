@@ -40,6 +40,11 @@ class SQLiteStore:
     def save_run_start(self, run_id: str, target_id: str) -> None:
         """Record the start of a run."""
         with self.SessionLocal() as session:
+            stmt = select(RunRecord).where(RunRecord.run_id == run_id)
+            existing = session.scalar(stmt)
+            if existing:
+                logger.info(f"Run {run_id} already exists in DB, skipping insert")
+                return
             run = RunRecord(run_id=run_id, target_id=target_id)
             session.add(run)
             session.commit()

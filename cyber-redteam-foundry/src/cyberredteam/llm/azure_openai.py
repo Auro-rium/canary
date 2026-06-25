@@ -1,7 +1,9 @@
-"""Azure OpenAI client wrapper with observability.
+"""LLM client wrapper with observability.
 
-Every LLM call logs: agent name, deployment, latency, token usage,
-input/output hashes.  Logs are stored in SQLite via the artifact store.
+Provider-neutral wrapper around any LangChain ``BaseChatModel`` (now
+``ChatBedrockConverse`` for Claude on AWS Bedrock).  Every LLM call logs:
+agent name, model, latency, token usage, input/output hashes.  Logs are
+stored in SQLite via the artifact store.
 """
 
 import hashlib
@@ -21,9 +23,9 @@ class ObservableLLM:
     """Wrapper around a LangChain chat model that logs every call.
 
     Args:
-        llm: Underlying ``BaseChatModel`` (e.g. ``AzureChatOpenAI``).
+        llm: Underlying ``BaseChatModel`` (e.g. ``ChatBedrockConverse``).
         agent_name: Name of the calling agent (for observability).
-        deployment: Azure deployment name (for observability).
+        deployment: Bedrock model / inference-profile ID (for observability).
         store: Optional ``SQLiteStore`` for persisting call logs.
     """
 
@@ -161,14 +163,43 @@ class ObservableLLM:
 
     @staticmethod
     def _extract_tokens(result: Any) -> Optional[Dict[str, int]]:
-        """Try to extract token usage from response."""
+        """Try to extract token usage from response.
+
+        Handles LangChain's normalized ``usage_metadata`` (used by
+        ``ChatBedrockConverse``: ``input_tokens``/``output_tokens``) and
+        falls back to the older OpenAI-shaped ``response_metadata``.
+        Structured-output calls return a Pydantic model with no usage
+        metadata, in which case this returns ``None``.
+        """
+        # LangChain normalized usage (Bedrock Converse, current models)
+        usage_meta = getattr(result, "usage_metadata", None)
+        if usage_meta:
+            input_tokens = usage_meta.get("input_tokens", 0)
+            output_tokens = usage_meta.get("output_tokens", 0)
+            return {
+                "prompt_tokens": input_tokens,
+                "completion_tokens": output_tokens,
+                "total_tokens": usage_meta.get(
+                    "total_tokens", input_tokens + output_tokens
+                ),
+            }
+
+        # Fallback: provider-specific response_metadata shapes
         if hasattr(result, "response_metadata"):
-            meta = result.response_metadata
-            usage = meta.get("token_usage") or meta.get("usage")
+            meta = result.response_metadata or {}
+            usage = meta.get("token_usage") or meta.get("usage") or {}
             if usage:
+                # Bedrock Converse uses inputTokens/outputTokens; OpenAI uses
+                # prompt_tokens/completion_tokens.
+                prompt = usage.get("prompt_tokens", usage.get("inputTokens", 0))
+                completion = usage.get(
+                    "completion_tokens", usage.get("outputTokens", 0)
+                )
                 return {
-                    "prompt_tokens": usage.get("prompt_tokens", 0),
-                    "completion_tokens": usage.get("completion_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
+                    "prompt_tokens": prompt,
+                    "completion_tokens": completion,
+                    "total_tokens": usage.get(
+                        "total_tokens", usage.get("totalTokens", prompt + completion)
+                    ),
                 }
         return None

@@ -1,4 +1,4 @@
-"""LLM abstraction layer for Azure OpenAI / Azure AI Foundry.
+"""LLM abstraction layer for AWS Bedrock (Claude).
 
 Provides per-agent model factories and structured output support.
 """

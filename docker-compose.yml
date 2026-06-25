@@ -1,0 +1,43 @@
+services:
+  target-agent:
+    build:
+      context: ./cyber-redteam-foundry
+      dockerfile: Dockerfile
+    command: python -m target_agent.server --host 0.0.0.0 --port 9000
+    ports:
+      - "9000:9000"
+    environment:
+      - RUNNING_IN_DOCKER=true
+    env_file:
+      - ./cyber-redteam-foundry/.env
+    restart: unless-stopped
+
+  redteam-backend:
+    build:
+      context: ./cyber-redteam-foundry
+      dockerfile: Dockerfile
+    command: uvicorn cyberredteam.api:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8000:8000"
+    environment:
+      - RUNNING_IN_DOCKER=true
+    env_file:
+      - ./cyber-redteam-foundry/.env
+    volumes:
+      - ./cyber-redteam-foundry/runs:/app/runs
+      - ./cyber-redteam-foundry/reports:/app/reports
+    restart: unless-stopped
+    depends_on:
+      - target-agent
+
+  canary-frontend:
+    build:
+      context: ./canary
+      dockerfile: Dockerfile
+      args:
+        - VITE_API_URL=http://localhost:8000
+    ports:
+      - "3000:3000"
+    restart: unless-stopped
+    depends_on:
+      - redteam-backend

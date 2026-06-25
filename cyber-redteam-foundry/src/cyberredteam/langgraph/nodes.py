@@ -247,9 +247,24 @@ def node_defender(state: RedTeamState) -> dict:
     patches = defender.plan_defenses(successful)
     applied = defender.apply_patches(patches)
 
+    target_id = state["target_id"]
+    target_adapter = None
+    if target_id.startswith("http://") or target_id.startswith("https://"):
+        from cyberredteam.tools.target_adapter import HttpTargetAdapter
+        target_adapter = HttpTargetAdapter(endpoint=target_id)
+    else:
+        from cyberredteam.tools.target_adapter import SandboxTargetAdapter
+        target_adapter = SandboxTargetAdapter(target_id=target_id)
+
+    evaluator = _evaluator_factory(store=get_node_store())
+
     for patch in applied:
-        prompts = [r.prompt for r in successful]
-        defender.retest_after_patch(patch, prompts)
+        defender.retest_after_patch(
+            patch=patch,
+            successful_attacks=successful,
+            target_adapter=target_adapter,
+            evaluator=evaluator,
+        )
 
     new_iteration = state["iteration"] + 1
     can_continue = (

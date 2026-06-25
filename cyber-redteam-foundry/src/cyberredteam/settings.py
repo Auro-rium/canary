@@ -3,35 +3,43 @@
 from pathlib import Path
 from typing import Optional
 
+from dotenv import load_dotenv
 from pydantic_settings import BaseSettings
+
+# Load .env into the process environment so that libraries reading os.environ
+# directly — notably boto3's credential chain (AWS_ACCESS_KEY_ID, etc.) — pick
+# up values placed in .env. pydantic-settings reads .env for its own fields,
+# but does NOT export to os.environ; without this, AWS creds in .env are
+# ignored and boto3 falls back to the default ~/.aws profile. override=False
+# keeps any credentials already exported in the shell authoritative.
+load_dotenv(override=False)
 
 
 class Settings(BaseSettings):
     """Application settings from environment variables."""
 
-    # Azure Foundry
-    azure_project_connection_string: Optional[str] = None
-    azure_subscription_id: Optional[str] = None
-    azure_resource_group: Optional[str] = None
-    azure_project_name: Optional[str] = None
-    azure_use_default_credential: bool = True
-    azure_tenant_id: Optional[str] = None
-    azure_client_id: Optional[str] = None
-    azure_client_secret: Optional[str] = None
+    # AWS Bedrock
+    # Credentials are resolved by the standard boto3 chain (env vars,
+    # shared config/credentials file, or instance/role profile). Only the
+    # region is read explicitly here; least-privilege IAM should grant
+    # bedrock:InvokeModel on the configured model/inference-profile ARNs.
+    aws_region: Optional[str] = None
 
-    # Azure OpenAI
-    azure_openai_endpoint: Optional[str] = None
-    azure_openai_api_key: Optional[str] = None
-    azure_openai_api_version: str = "2024-02-15-preview"
-    azure_openai_deployment: Optional[str] = None
+    # API authentication — bearer token required on every API request.
+    # Must match the VITE_API_TOKEN configured in the frontend.
+    api_secret_key: Optional[str] = None
+
+    # Authorization scope: comma-separated list of target_ids a run may be
+    # created against. When set, a run targeting anything else is rejected —
+    # "attack only what you're allowed to" as a hard constraint. When empty,
+    # no allowlist is enforced (a warning is logged; do not rely on this in
+    # production).
+    allowed_targets: str = ""
 
     # Target
-    target_mode: str = "sandbox"  # sandbox | http | foundry_agent
+    target_mode: str = "sandbox"  # sandbox | http
     target_endpoint: Optional[str] = None
     target_api_key: Optional[str] = None
-
-    # Local Red Teaming
-    local_redteam_enabled: bool = False
 
     # Logging
     log_level: str = "INFO"
@@ -53,6 +61,7 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
+        extra = "ignore"  # tolerate leftover AWS_*/legacy env vars
 
 
 def get_settings() -> Settings:

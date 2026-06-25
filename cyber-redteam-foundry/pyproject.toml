@@ -5,22 +5,20 @@ build-backend = "hatchling.build"
 [project]
 name = "cyber-redteam-foundry"
 version = "0.1.0"
-description = "Local cybersecurity red-team and defense loop for AI agents using Azure AI Foundry"
+description = "Local cybersecurity red-team and defense loop for AI agents using AWS Bedrock (Claude)"
 requires-python = ">=3.10,<3.14"
 authors = [
     {name = "Cyber Red Team", email = "team@example.com"},
 ]
 dependencies = [
-    "azure-ai-projects>=2.0.0",
-    "azure-ai-evaluation[redteam]>=0.1.0",
-    "azure-identity>=1.14.0",
+    "boto3>=1.34.0",
     "python-dotenv>=1.0.0",
     "pydantic>=2.0.0",
     "pydantic-settings>=2.0.0",
     "langgraph>=0.0.1",
     "langgraph-checkpoint-sqlite>=2.0.0",
     "langchain>=0.1.0",
-    "langchain-openai>=0.1.0",
+    "langchain-aws>=0.2.0",
     "rich>=13.0.0",
     "typer>=0.9.0",
     "pyyaml>=6.0",

@@ -185,3 +185,31 @@ The repository uses `pytest` for unit testing and code coverage:
 - **No Mock Fallbacks in Real Audits**: Real client SDKs are executed during active targeting; placeholders are restricted to unit test suites.
 - **Retesting is Mandatory**: When the Defender proposes prompt/tool policy fixes, the system automatically runs target validation to ensure the vulnerability is closed.
 - **Secure by Default**: Never perform scanning or adversarial testing on unauthorized endpoints.
+
+---
+
+## 🐳 Docker Deployment
+
+The entire stack (React frontend, red-team backend API, and local target agent) is dockerized and can be started with a single command using Docker Compose.
+
+### Services Orchestrated:
+1. **`canary-frontend`**: React Vite application served via Nginx on port `3000`.
+2. **`redteam-backend`**: Red Team API FastAPI server running on port `8000`.
+3. **`target-agent`**: FastAPI Target ReAct agent representing a vulnerable target surface running on port `9000`.
+
+### Prerequisites
+Make sure Docker and Docker Compose are installed on your system.
+
+### Quick Start with Docker
+1. Ensure your `.env` configuration exists at `cyber-redteam-foundry/.env` (or copy `cyber-redteam-foundry/.env.example` to `.env` and fill in the Azure keys).
+2. Start all services in the background:
+   ```bash
+   docker compose up -d --build
+   ```
+3. Access the interfaces:
+   - **Frontend Dashboard**: [http://localhost:3000](http://localhost:3000)
+   - **Red-Team Backend API Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
+   - **Target Agent API**: [http://localhost:9000/health](http://localhost:9000/health)
+
+### Managing Data & Artifacts
+The SQLite database and generated audit reports are persisted locally via volumes mapped to `cyber-redteam-foundry/runs` and `cyber-redteam-foundry/reports`.

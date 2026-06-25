@@ -12,7 +12,7 @@ logger = setup_logging()
 
 
 class StrategistAgent:
-    """Selects attack strategies using Azure OpenAI reasoning."""
+    """Selects attack strategies using AWS Bedrock (Claude) reasoning."""
 
     def __init__(self, llm=None, store=None):
         """Initialize strategist agent.
@@ -71,7 +71,7 @@ class StrategistAgent:
 
             # Filter selected strategies: must exist in registry & in candidates
             selected_types = []
-            for s in plan.strategies:
+            for s in plan.categories:
                 try:
                     strategy_enum = StrategyType(s.strip())
                     if strategy_enum.value in candidates:

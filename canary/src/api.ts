@@ -1,8 +1,11 @@
-const API = 'http://localhost:8000';
+const API = import.meta.env.VITE_API_URL || 'http://localhost:8000';
 
 async function request<T>(path: string, opts?: RequestInit): Promise<T> {
+  const token = import.meta.env.VITE_API_TOKEN;
+  const headers: Record<string, string> = { 'Content-Type': 'application/json' };
+  if (token) headers['Authorization'] = `Bearer ${token}`;
   const res = await fetch(`${API}${path}`, {
-    headers: { 'Content-Type': 'application/json', ...(opts?.headers || {}) },
+    headers: { ...headers, ...(opts?.headers || {}) },
     ...opts,
   });
   if (!res.ok) {

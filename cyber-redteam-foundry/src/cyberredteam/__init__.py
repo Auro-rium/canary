@@ -1,4 +1,4 @@
-"""Azure AI Foundry Cyber Red Team Framework."""
+"""AWS Bedrock Cyber Red Team Framework."""
 
 __version__ = "0.1.0"
 __author__ = "Cyber Red Team"

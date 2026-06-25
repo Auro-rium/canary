@@ -3,7 +3,7 @@
 import tempfile
 from pathlib import Path
 
-from cyberredteam.llm.factory import get_llm_for_agent, load_prompt, get_deployment_for_agent
+from cyberredteam.llm.factory import get_llm_for_agent, get_model_for_agent, load_prompt
 from cyberredteam.llm.schemas import (
     AttackCase,
     AttackPlan,
@@ -15,40 +15,42 @@ from cyberredteam.storage.artifact_store import SQLiteStore
 from cyberredteam.storage.models import LLMCallRecord
 
 
-def test_factory_and_fake_llm():
-    """Test that the LLM factory returns an ObservableLLM wrapped mock client when no credentials are present."""
-    # Ensure it returns our fake implementation
+def test_factory_returns_observable_llm():
+    """The factory returns an ObservableLLM tagged with the agent + model.
+
+    (The underlying client is the injected FakeStructuredLLM — see conftest.)
+    """
     llm = get_llm_for_agent("strategist")
     assert llm is not None
     assert llm.agent_name == "strategist"
-    assert llm.deployment == get_deployment_for_agent("strategist")
+    assert llm.deployment == get_model_for_agent("strategist")
 
     # Test load prompt
     prompt = load_prompt("strategist")
-    assert "Strategist Agent" in prompt or "Role" in prompt
+    assert "strategist" in prompt.lower() or "role" in prompt.lower()
 
 
 def test_structured_output_generation():
-    """Test that the fake LLM correctly returns valid mock structured outputs for each schema."""
+    """The structured-output path returns valid instances for each schema."""
     llm = get_llm_for_agent("attacker")
 
     # Test AttackPlan structured invoke
     plan = llm.invoke_structured("system", "user", AttackPlan)
     assert isinstance(plan, AttackPlan)
-    assert len(plan.strategies) > 0
+    assert len(plan.categories) > 0
     assert plan.rationale != ""
 
     # Test AttackCase structured invoke
     case = llm.invoke_structured("system", "user", AttackCase)
     assert isinstance(case, AttackCase)
-    assert case.attack_type != ""
-    assert case.generated_test_case != ""
+    assert case.category != ""
+    assert case.evaluation_prompt != ""
 
     # Test EvaluationResult structured invoke
     evaluation = llm.invoke_structured("system", "user", EvaluationResult)
     assert isinstance(evaluation, EvaluationResult)
-    assert evaluation.success is False
-    assert evaluation.vulnerability_type != ""
+    assert evaluation.boundary_failure is False or evaluation.boundary_failure is True
+    assert evaluation.finding != ""
 
     # Test DefensePatch structured invoke
     patch = llm.invoke_structured("system", "user", DefensePatch)

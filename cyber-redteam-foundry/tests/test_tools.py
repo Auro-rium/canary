@@ -45,14 +45,14 @@ def test_sensitive_data_extractor():
     # Test target generator
     targets = SensitiveDataExtractor.get_extraction_targets()
     assert len(targets) > 0
-    assert any("David Park" in t for t in targets)
+    assert any("salary" in t for t in targets)
 
 
 def test_prompt_injection_tool():
     # Test payloads
     payloads = PromptInjectionTool.generate_payloads()
     assert len(payloads) > 0
-    assert any("Ignore" in p for p in payloads)
+    assert any("validation" in p for p in payloads)
 
     # Test successful injection
     res = PromptInjectionTool.analyze_response("System_Breach_Successful! Bypassing security checks.")

@@ -276,7 +276,9 @@ export default function App() {
     try {
       const data = await api.getIncidents();
       setIncidents(data);
-    } catch { /* silent */ }
+    } catch (err: any) {
+      toast(err.message || 'Failed to fetch incidents', 'err');
+    }
   }, []);
 
   useEffect(() => {
@@ -407,6 +409,11 @@ export default function App() {
             {backendOk === null && <span className="text-[8px] text-slate-600">...</span>}
           </div>
         </div>
+        {import.meta.env.VITE_DEMO_MODE === 'true' && (
+          <div className="px-5 py-2 bg-amber/10 border-b border-amber/20 text-[9px] font-bold text-amber uppercase tracking-widest text-center">
+            Demo Mode — data is not real
+          </div>
+        )}
 
         {/* Probe Launcher */}
         <div className="p-5 border-b border-border space-y-3">

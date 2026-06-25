@@ -8,7 +8,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from fastapi import BackgroundTasks, FastAPI, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy import select
@@ -22,18 +22,45 @@ from cyberredteam.storage.models import AttackRecord, PatchRecord, RunRecord
 logger = logging.getLogger("cyberredteam.api")
 logging.basicConfig(level=logging.INFO)
 
-app = FastAPI(title="Agent Canary Red Team API Backend")
+settings = get_settings()
 
-# Enable CORS for the React frontend
+
+def require_auth(authorization: Optional[str] = Header(None)) -> None:
+    """Require a valid bearer token on every request.
+
+    The token must equal ``API_SECRET_KEY`` (matched to the frontend's
+    ``VITE_API_TOKEN``). Fails closed: if no key is configured the API
+    refuses all requests rather than running wide open.
+    """
+    if not settings.api_secret_key:
+        raise HTTPException(
+            status_code=503,
+            detail="API authentication is not configured (set API_SECRET_KEY).",
+        )
+    scheme, _, token = (authorization or "").partition(" ")
+    if scheme != "Bearer" or token != settings.api_secret_key:
+        raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
+
+
+def _authorized_targets() -> list[str]:
+    return [t.strip() for t in settings.allowed_targets.split(",") if t.strip()]
+
+
+# Auth is enforced on every route via the app-level dependency.
+app = FastAPI(
+    title="Agent Canary Red Team API Backend",
+    dependencies=[Depends(require_auth)],
+)
+
+# Enable CORS for the React frontend. Auth is via bearer token (not cookies),
+# so credentials are not allowed and a wildcard origin is safe.
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Adjust in production
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-settings = get_settings()
 
 
 class RunRequest(BaseModel):
@@ -104,11 +131,23 @@ def get_status():
 @app.post("/api/runs")
 def create_run(req: RunRequest, background_tasks: BackgroundTasks):
     """Trigger a new red team run against a target."""
+    # Authorization scope: only attack targets we're allowed to.
+    target_id = req.target_id
+    allowed = _authorized_targets()
+    if allowed:
+        if target_id not in allowed:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Target '{target_id}' is not in the authorized allowlist.",
+            )
+    else:
+        logger.warning(
+            "ALLOWED_TARGETS is empty — no target allowlist enforced. "
+            "Set it before exposing this API."
+        )
+
     run_id = uuid.uuid4().hex[:8]
     active_runs[run_id] = "running"
-
-    # Map UI targets to internal IDs if necessary
-    target_id = req.target_id
 
     # Map UI strategies to StrategyType values
     strategy_mapping = {
@@ -257,28 +296,23 @@ def get_analysis_report(run_id: str):
         except Exception as e:
             logger.error(f"[API] Error loading JSON report {report_file}: {e}")
 
-    # Build default fallback narratives if empty
+    # Narratives come ONLY from the real LLM-generated report. We never
+    # fabricate security analysis: a missing narrative is reported as a
+    # factual statement of absence, not an invented vulnerability claim.
+    # The executive summary may fall back to a purely factual restatement
+    # of the recorded attack counts (no interpretation).
     executive_summary = narratives.get(
         "executive_summary",
-        f"Controlled red team probe sequence completed against target {run.target_id}. "
-        f"A total of {run.total_attacks} attacks were executed, resulting in {run.successful_attacks} successful breaches."
+        f"Red team run against target {run.target_id}: "
+        f"{run.total_attacks} attacks executed, {run.successful_attacks} successful. "
+        f"No narrative report was generated for this run."
+        if not narratives
+        else "",
     )
-    vulnerabilities_found = narratives.get(
-        "vulnerabilities_found",
-        "Direct model input prompt manipulation allowed retrieval of system context and execution of tool-calling bypasses."
-    )
-    remaining_risks = narratives.get(
-        "remaining_risks",
-        "If left unmitigated, attackers can inject adversarial contexts, access local databases, or bypass agent access control boundaries."
-    )
-    attack_campaign = narratives.get(
-        "attack_campaign",
-        "Lack of input sanitization and verification on core LLM tool call response streams."
-    )
-    fixes_applied = narratives.get(
-        "fixes_applied",
-        f"Synthesized and deployed {len(patches)} yaml guardrails mapping strict tool usage schemas and prompt isolation templates."
-    )
+    vulnerabilities_found = narratives.get("vulnerabilities_found", "")
+    remaining_risks = narratives.get("remaining_risks", "")
+    attack_campaign = narratives.get("attack_campaign", "")
+    fixes_applied = narratives.get("fixes_applied", "")
 
     # Calculate average confidence based on scores
     avg_score = sum(a.score for a in attacks) / len(attacks) if attacks else 0.5
