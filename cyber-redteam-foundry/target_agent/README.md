@@ -146,6 +146,20 @@ Sends a message to the agent and executes the ReAct loop (up to 5 tool-calling r
 
 ---
 
+## 🔑 Environment Configuration
+
+CompanyBot requires Azure OpenAI credentials to execute downstream inference. Configure the following environment variables in your active environment or within `.env`:
+
+```env
+# Azure OpenAI Credentials for Target Agent
+AZURE_OPENAI_ENDPOINT="https://your-resource-name.openai.azure.com/"
+AZURE_OPENAI_API_KEY="your-azure-api-key"
+AZURE_OPENAI_API_VERSION="2024-02-15-preview"
+AZURE_OPENAI_DEPLOYMENT="gpt-4"
+```
+
+---
+
 ## 🚀 Execution & Setup
 
 ### Running Locally

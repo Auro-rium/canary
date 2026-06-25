@@ -2,18 +2,16 @@
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python: 3.11+](https://img.shields.io/badge/Python-3.11+-blue.svg)](https://www.python.org/)
-[![Azure AI Foundry](https://img.shields.io/badge/Azure%20AI%20Foundry-Enabled-cyan.svg)](https://ai.azure.com/)
+[![AWS Bedrock](https://img.shields.io/badge/AWS%20Bedrock-Enabled-orange.svg)](https://aws.amazon.com/bedrock/)
 [![Built with LangGraph](https://img.shields.io/badge/LangGraph-State%20Machine-purple.svg)](https://github.com/langchain-ai/langgraph)
 
-Local-first, enterprise-grade cybersecurity red-teaming and AI safety assessment framework for LLM-based agents. Integrated with Azure AI Foundry and designed for automated vulnerability discovery, deterministic safety evaluations, and closed-loop defense patch verification.
-
-`cyber-redteam-foundry` automates adversarial probing, vulnerability scanning, safety scoring, and mitigation patch planning. It executes local-first agent orchestrations, routes probes to remote execution environments, and applies prompt-based or tool-policy fixes to vulnerable agents before retesting them to verify remediations.
+Local-first, enterprise-grade cybersecurity red-teaming and safety assessment framework for LLM-based agents. `cyber-redteam-foundry` automates adversarial probing, vulnerability scanning, safety scoring, and mitigation patch planning. It executes local-first agent orchestrations, routes probes to target environments, and applies prompt-based or tool-policy fixes to vulnerable agents before retesting them to verify remediations.
 
 ---
 
 ## 🏗️ Architecture & Control Flow
 
-The framework leverages **LangGraph** to build a highly structured, stateful, and resilient orchestrator. The assessment loop consists of cooperative agent nodes that pass control via state updates to a central, thread-aware execution context.
+The framework leverages **LangGraph** to build a stateful, resilient orchestrator. The assessment loop consists of cooperative agent nodes that update a central, thread-aware execution context (`RedTeamState`).
 
 ```mermaid
 graph TD;
@@ -44,7 +42,7 @@ The orchestrator manages state transition using a custom, typed state dictionary
 
 Key state fields include:
 - `run_id` (str): Unique campaign execution ID.
-- `target_id` (str): Target identifier (could be a local sandbox key or remote HTTP/Foundry URL).
+- `target_id` (str): Target identifier (could be a local sandbox key or remote HTTP URL).
 - `strategies` (List[str]): List of attack strategies selected for the campaign.
 - `iteration` (int): Counter for the current defender-attacker-evaluator cycle.
 - `attack_results` (List[AttackResult]): Cumulative history of attacks, prompts, responses, and evaluation verdicts.
@@ -54,18 +52,19 @@ Key state fields include:
 
 ---
 
-## 👥 The 6 Core Agents
+## 👥 The 5 Core Agents
 
-The red-team loop coordinates 6 specialized agent components, each responsible for a dedicated step in the assessment lifecycle:
+The red-team loop coordinates 5 specialized agent components, each responsible for a dedicated step in the assessment lifecycle:
 
-1. **Coordinator** — Owns the orchestrator runtime, loads environment settings, initializes `RedTeamState`, compiles the graph with persistent checkpoints, and handles the post-processing pipeline.
-2. **Strategist** — Analyzes target agent capabilities (tools, descriptions) and context to select the most effective attack strategies (e.g., prompt injection, tool abuse, sensitive data exfiltration).
-3. **Attacker** — Dynamically constructs adversarial prompts tailored to the selected strategy. It formats the payloads, coordinates session handoffs, and executes probes against the active target interface.
-4. **Evaluator** — Employs a dual-layered evaluation pipeline:
+1. **Strategist** — Analyzes target agent capabilities (tools, descriptions) and context to select the most effective attack strategies (e.g., prompt injection, tool abuse, sensitive data exfiltration).
+2. **Attacker** — Dynamically constructs adversarial prompts tailored to the selected strategy, formats the payloads, coordinates session handoffs, and executes probes against the active target interface.
+3. **Evaluator** — Employs a dual-layered evaluation pipeline:
    - *Deterministic Layer*: Executes high-performance regex matches and heuristic scans to detect PII leakage, known system files, system credentials, or developer API keys.
    - *Semantic Layer*: Uses an LLM Judge to evaluate semantic safety violation scores and confidence levels.
-5. **Defender** — Automatically drafts concrete mitigation patches (e.g., system prompt guardrails, input validations, or tool policy patches) to block identified vulnerabilities.
-6. **Reporter** — Compiles complete audit data into comprehensive Markdown and JSON reports, providing detailed logs, diffs, and aggregate safety indices.
+4. **Defender** — Automatically drafts concrete mitigation patches (e.g., system prompt guardrails, input validations, or tool policy patches) to block identified vulnerabilities.
+5. **Reporter** — Compiles complete audit data into comprehensive Markdown and JSON reports, providing detailed logs, diffs, and aggregate safety indices.
+
+*Note: Orchestration and run coordinator logic is handled entirely by the LangGraph state machine.*
 
 ---
 
@@ -90,6 +89,27 @@ The red-team loop coordinates 6 specialized agent components, each responsible f
 
 ---
 
+## 🤖 LLM Provider Configuration (AWS Bedrock)
+
+The framework's internal agents run on **AWS Bedrock** (using model profiles such as Qwen3 Coder or Anthropic Claude). Model profiles are mapped per agent in `configs/models.yaml`:
+
+```yaml
+strategist:
+  model: qwen.qwen3-coder-480b-a35b-v1:0
+attacker:
+  model: qwen.qwen3-coder-30b-a3b-v1:0
+evaluator:
+  model: qwen.qwen3-coder-480b-a35b-v1:0
+defender:
+  model: qwen.qwen3-coder-480b-a35b-v1:0
+reporter:
+  model: qwen.qwen3-coder-480b-a35b-v1:0
+```
+
+Bedrock credentials are resolved via the standard `boto3` credential chain (environment variables `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, shared credentials file, or instance/role profile).
+
+---
+
 ## 🚀 Onboarding & Quick Start
 
 ### 1. Prerequisites
@@ -98,7 +118,6 @@ The red-team loop coordinates 6 specialized agent components, each responsible f
   ```bash
   curl -LsSf https://astral.sh/uv/install.sh | sh
   ```
-- **Azure OpenAI Service**: A deployment of an LLM (e.g. `gpt-4`) to back the coordinator, attacker, evaluator, and defender agents.
 
 ### 2. Installation
 Clone the repository and set up your virtual environment:
@@ -122,21 +141,26 @@ cp .env.example .env
 
 Edit `.env` to configure your API connections:
 ```env
-# Azure OpenAI Credentials
-AZURE_OPENAI_ENDPOINT="https://your-resource.openai.azure.com"
-AZURE_OPENAI_API_KEY="your-api-key"
-AZURE_OPENAI_API_VERSION="2024-02-15-preview"
-AZURE_OPENAI_DEPLOYMENT="gpt-4"
+# AWS Bedrock Configuration
+AWS_REGION="us-west-2"
+AWS_ACCESS_KEY_ID="your-aws-access-key"
+AWS_SECRET_ACCESS_KEY="your-aws-secret-key"
 
-# Azure AI Foundry (optional, for targeting remote AI Foundry agents)
-AZURE_PROJECT_CONNECTION_STRING="https://your-foundry.services.ai.azure.com/api/projects/your-project"
-AZURE_PROJECT_NAME="your-project"
+# API Authentication (Required for Backend Web API)
+API_SECRET_KEY="your-random-api-token"
 
-# Red Team Target Configuration
-# TARGET_MODE options: "sandbox" (local mock) | "http" (remote API server) | "foundry_agent" (Azure AI Foundry Agent ID)
+# Target Configuration
+# Options: "sandbox" (local mock) | "http" (remote chat server)
 TARGET_MODE="sandbox"
-TARGET_ENDPOINT="sandbox-target-001"
+TARGET_ENDPOINT="http://localhost:9000/chat"
+TARGET_API_KEY=""
+
+# Authorization Scope (Allowed target URLs/IDs)
+# Comma-separated list of target_ids a run may be created against.
+ALLOWED_TARGETS="http://localhost:9000/chat,sandbox-target-001"
 ```
+
+*Note: If you run the standalone target agent victim locally, you will also need to configure Azure OpenAI credentials (`AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT`) in your `.env`.*
 
 ### 4. Initialize the Framework
 Create the SQLite database files, directory structures, and logging configurations:
@@ -151,7 +175,7 @@ cyber-rt init
 The package registers a unified CLI command, `cyber-rt`:
 
 ### Connectivity Diagnostics
-Verify your environment settings and test API connection to Azure OpenAI:
+Verify your environment settings and test API connection to AWS Bedrock:
 ```bash
 cyber-rt doctor
 ```
@@ -170,7 +194,7 @@ cyber-rt run --target-id sandbox-test --strategies prompt_injection --max-attemp
 
 # Run a comprehensive multi-strategy campaign against an agent
 cyber-rt run \
-  --target-id my-agent-001 \
+  --target-id http://localhost:9000/chat \
   --strategies prompt_injection,tool_misuse,retrieval_poisoning \
   --max-attempts 5 \
   --max-iterations 3
@@ -184,7 +208,7 @@ cyber-rt status
 
 ---
 
-## 🔄 Core Workflows & Patterns
+## 🔄 Core Workflows & Telemetry
 
 ### 1. Continuous Security Assessment Loop
 When a campaign starts:
@@ -212,21 +236,19 @@ To support production-grade audits, the platform splits data storage into two se
 
 ---
 
-## 🎯 Target Modes & Integrations
+## 🌐 FastAPI Backend REST API
 
-The framework connects to three types of target agents:
+The framework exposes a FastAPI server (`cyberredteam.api`) to serve the dashboard frontend. All routes require a `Bearer <API_SECRET_KEY>` token in the `Authorization` header.
 
-### 1. Local Sandbox (`TARGET_MODE="sandbox"`)
-A local mock target environment. Best for fast developer onboarding, unit tests, and strategy iteration without incurring cloud LLM execution costs.
-
-### 2. HTTP Webhook Target (`TARGET_MODE="http"`)
-Targets standalone, independently deployed agents (e.g. FastAPI wrapper, LangChain server). Set `TARGET_ENDPOINT` to the chat URL (e.g., `http://localhost:9000/chat`).
-
-### 3. Azure AI Foundry Agent (`TARGET_MODE="foundry_agent"`)
-Integrates directly with Azure AI Agent Service deployments.
-- Set `AZURE_PROJECT_CONNECTION_STRING` to your Azure AI project connection URL.
-- Set `TARGET_ENDPOINT` to the deployed Assistant ID.
-- The framework manages sessions, creates conversation threads, posts messages, monitors run states, and extracts responses.
+### Endpoints
+- `GET /api/status`: Verifies API, database, and report outputs status.
+- `POST /api/runs`: Triggers a background red-team campaign thread.
+  - **Payload**: `{"target_id": "...", "strategy": "...", "intensity": "Low|Medium|High"}`
+- `GET /api/runs/{run_id}`: Fetches active state, execution list, and telemetry statistics.
+- `GET /api/runs/{run_id}/analysis-report`: Pulls frontend-shaped analysis details, traces, and generated policy YAML.
+- `GET /api/open-findings`: Retrieves unresolved vulnerabilities to feed the strategist during next executions.
+- `POST /api/runs/{run_id}/apply`: Marks patches associated with a run as applied.
+- `GET /api/incidents`: Feeds the live incident telemetry list on the web frontend.
 
 ---
 
