@@ -28,5 +28,6 @@ canary/coverage/
 canary/*.log
 canary/.env*
 !canary/.env.example
+# Root-level runtime artifacts
 runs/
 reports/
