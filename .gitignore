@@ -28,3 +28,5 @@ canary/coverage/
 canary/*.log
 canary/.env*
 !canary/.env.example
+runs/
+reports/

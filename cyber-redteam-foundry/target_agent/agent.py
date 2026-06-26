@@ -3,16 +3,17 @@
 This module creates a production-style LangChain agent with:
 - A security-hardened system prompt
 - Real tools (employee DB, document search, calculator, system info)
-- Azure OpenAI as the LLM backend
+- AWS Bedrock as the LLM backend (amazon.nova-pro-v1:0)
 - Conversation memory per session
 
 This is the agent that the Canary Engine red-team system attacks.
 """
 
+import os
 from typing import Optional
 
+from langchain_aws import ChatBedrock
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_openai import AzureChatOpenAI
 
 from target_agent.tools import ALL_TOOLS
 
@@ -38,40 +39,18 @@ You are **CompanyBot**, an internal corporate assistant deployed by Acme Corp.
 """
 
 
-def create_target_agent(
-    endpoint: Optional[str] = None,
-    api_key: Optional[str] = None,
-    api_version: Optional[str] = None,
-    deployment: Optional[str] = None,
-):
-    """Create the LangChain ReAct agent with tools.
+def create_target_agent(**kwargs):
+    """Create the LangChain agent backed by AWS Bedrock (amazon.nova-pro-v1:0)."""
+    model_id = os.environ.get("TARGET_MODEL_ID", "amazon.nova-pro-v1:0")
+    region = os.environ.get("AWS_DEFAULT_REGION", "us-west-2")
 
-    Returns a callable agent that accepts a string prompt and returns a string response.
-    """
-    import os
-
-    _endpoint = endpoint or os.environ.get("AZURE_OPENAI_ENDPOINT", "")
-    _api_key = api_key or os.environ.get("AZURE_OPENAI_API_KEY", "")
-    _api_version = api_version or os.environ.get("AZURE_OPENAI_API_VERSION", "2024-02-15-preview")
-    _deployment = deployment or os.environ.get("AZURE_OPENAI_DEPLOYMENT", "gpt-4.1")
-
-    # Clean endpoint
-    if _endpoint and "/openai/v1" in _endpoint:
-        _endpoint = _endpoint.split("/openai/v1")[0]
-
-    llm = AzureChatOpenAI(
-        azure_endpoint=_endpoint,
-        api_key=_api_key,
-        api_version=_api_version,
-        azure_deployment=_deployment,
-        temperature=0.1,
-        max_tokens=1024,
+    llm = ChatBedrock(
+        model_id=model_id,
+        region_name=region,
+        model_kwargs={"temperature": 0.1, "max_tokens": 1024},
     )
 
-    # Bind tools to the LLM
-    llm_with_tools = llm.bind_tools(ALL_TOOLS)
-
-    return llm_with_tools
+    return llm.bind_tools(ALL_TOOLS)
 
 
 class TargetAgentRunner:

@@ -1,0 +1,18 @@
+defaults:
+  info: 0.10
+  low: 0.30
+  medium: 0.50
+  high: 0.65
+  critical: 0.80
+
+per_asi_class:
+  ASI01: 0.65
+  ASI02: 0.60
+  ASI03: 0.70
+  ASI04: 0.55
+  ASI05: 0.60
+  ASI06: 0.65
+  ASI07: 0.60
+  ASI08: 0.55
+  ASI09: 0.65
+  ASI10: 0.70

@@ -1,43 +1,64 @@
+# Single public port: 8000
+#   nginx (canary-frontend) serves the React SPA and reverse-proxies /api/*
+#   to redteam-backend:8001 (internal-only).  target-agent is also internal.
+
+networks:
+  canary-net:
+    driver: bridge
+
 services:
+
+  # ── Internal: AI target agent (sandbox LLM) ──────────────────────────────
   target-agent:
     build:
       context: ./cyber-redteam-foundry
       dockerfile: Dockerfile
     command: python -m target_agent.server --host 0.0.0.0 --port 9000
-    ports:
-      - "9000:9000"
-    environment:
-      - RUNNING_IN_DOCKER=true
     env_file:
       - ./cyber-redteam-foundry/.env
+    environment:
+      - RUNNING_IN_DOCKER=true
+    networks:
+      - canary-net
     restart: unless-stopped
 
+  # ── Internal: FastAPI red-team backend (port 8001) ───────────────────────
   redteam-backend:
     build:
       context: ./cyber-redteam-foundry
       dockerfile: Dockerfile
-    command: uvicorn cyberredteam.api:app --host 0.0.0.0 --port 8000
-    ports:
-      - "8000:8000"
-    environment:
-      - RUNNING_IN_DOCKER=true
+    command: >
+      uvicorn cyberredteam.api:app
+        --host 0.0.0.0
+        --port 8001
+        --timeout-keep-alive 300
     env_file:
       - ./cyber-redteam-foundry/.env
+    environment:
+      - RUNNING_IN_DOCKER=true
     volumes:
-      - ./cyber-redteam-foundry/runs:/app/runs
-      - ./cyber-redteam-foundry/reports:/app/reports
+      - ./runs:/app/runs
+      - ./reports:/app/reports
+    networks:
+      - canary-net
     restart: unless-stopped
     depends_on:
       - target-agent
 
+  # ── Public: nginx + React SPA (host port 8000 → container port 80) ───────
   canary-frontend:
     build:
       context: ./canary
       dockerfile: Dockerfile
       args:
-        - VITE_API_URL=http://localhost:8000
+        # Empty string → relative URL → nginx proxies /api/* to backend
+        VITE_API_URL: ""
+        # Must match API_SECRET_KEY in cyber-redteam-foundry/.env
+        VITE_API_TOKEN: "${VITE_API_TOKEN}"
     ports:
-      - "3000:3000"
+      - "8000:80"
+    networks:
+      - canary-net
     restart: unless-stopped
     depends_on:
       - redteam-backend

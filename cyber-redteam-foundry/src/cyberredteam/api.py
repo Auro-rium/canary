@@ -10,6 +10,7 @@ from typing import Dict, List, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -416,16 +417,119 @@ def get_analysis_report(run_id: str):
 
 @app.get("/api/open-findings")
 def get_open_findings(target_id: Optional[str] = None):
-    """Return findings with no passing retest across all historical runs.
-
-    Used by the next campaign's strategist to avoid re-discovering known
-    open issues from scratch.  Each entry carries finding_id, the affected
-    component, when it was last seen, and how many patch attempts failed.
-    """
+    """Return findings with no passing retest across all historical runs."""
     store = SQLiteStore(Path(settings.db_path))
-    findings = store.get_open_findings(target_id=target_id)
+    findings = store.get_findings(status="open", target_id=target_id)
     store.close()
     return findings
+
+
+# ── Phase 3: Findings endpoints ──────────────────────────────────────────────
+
+class FindingStatusUpdate(BaseModel):
+    status: str
+    reviewer_id: Optional[str] = None
+    rationale: Optional[str] = None
+    replay_run_id: Optional[str] = None
+    guardrail_intervened: Optional[bool] = None
+    patch_ref: Optional[str] = None
+
+
+@app.get("/api/findings")
+def list_findings(
+    target_id: Optional[str] = None,
+    asi_class: Optional[str] = None,
+    severity: Optional[str] = None,
+    status: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 50,
+):
+    """Paginated findings list with optional filters."""
+    store = SQLiteStore(Path(settings.db_path))
+    result = store.get_findings(
+        target_id=target_id,
+        asi_class=asi_class,
+        status=status,
+        severity=severity,
+        page=page,
+        page_size=page_size,
+    )
+    store.close()
+    return result
+
+
+@app.get("/api/findings/{finding_id}")
+def get_finding(finding_id: str):
+    """Single finding with its most recent evaluator verdict."""
+    store = SQLiteStore(Path(settings.db_path))
+    result = store.get_finding(finding_id)
+    store.close()
+    if result is None:
+        raise HTTPException(status_code=404, detail="Finding not found")
+    return result
+
+
+@app.get("/api/findings/{finding_id}/attempts")
+def get_finding_attempts(finding_id: str):
+    """All attack records that contributed to a finding across all runs."""
+    store = SQLiteStore(Path(settings.db_path))
+    result = store.get_finding_attempts(finding_id)
+    store.close()
+    return result
+
+
+@app.put("/api/findings/{finding_id}/status")
+def update_finding_status(finding_id: str, body: FindingStatusUpdate):
+    """Manual lifecycle transition for a finding.
+
+    Enforces the transition rules defined in artifact_store.py.
+    Returns 409 for illegal transitions.
+    """
+    store = SQLiteStore(Path(settings.db_path))
+    try:
+        store.transition_finding_status(
+            finding_id,
+            body.status,
+            {
+                "reviewer_id": body.reviewer_id,
+                "rationale": body.rationale,
+                "replay_run_id": body.replay_run_id,
+                "guardrail_intervened": body.guardrail_intervened,
+                "patch_ref": body.patch_ref,
+            },
+        )
+    except ValueError as e:
+        store.close()
+        raise HTTPException(status_code=409, detail=str(e))
+    store.close()
+    return {"status": "ok", "finding_id": finding_id, "new_status": body.status}
+
+
+@app.get("/api/targets/{target_id}/coverage")
+def get_target_coverage(target_id: str):
+    """Which ASI classes have been tested and which have open findings."""
+    store = SQLiteStore(Path(settings.db_path))
+    result = store.get_target_coverage(target_id)
+    store.close()
+    return result
+
+
+@app.get("/api/targets/{target_id}/trends")
+def get_target_trends(target_id: str, days: int = 30):
+    """Success rate per strategy per day for the last N days."""
+    store = SQLiteStore(Path(settings.db_path))
+    result = store.get_target_trends(target_id, days=days)
+    store.close()
+    return result
+
+
+@app.get("/api/runs/{run_id}/findings")
+def get_run_findings(run_id: str):
+    """All findings first seen or updated in this run."""
+    store = SQLiteStore(Path(settings.db_path))
+    result = store.get_run_findings(run_id)
+    store.close()
+    return result
 
 
 @app.post("/api/runs/{run_id}/apply")
@@ -497,3 +601,289 @@ def get_incidents():
 
     store.close()
     return incidents
+
+
+# ── SSE Campaign Endpoint ─────────────────────────────────────────────────────
+
+_TECHNIQUE_TO_STRATEGY: Dict[str, StrategyType] = {
+    "prompt-injection":     StrategyType.PROMPT_INJECTION,
+    "memory-poisoning":     StrategyType.MEMORY_POISONING,
+    "tool-abuse":           StrategyType.TOOL_MISUSE,
+    "privilege-escalation": StrategyType.JAILBREAK,
+    "goal-hijacking":       StrategyType.INSTRUCTION_HIERARCHY,
+    "data-exfiltration":    StrategyType.SENSITIVE_DATA_EXPOSURE,
+    "supply-chain":         StrategyType.RETRIEVAL_POISONING,
+    "denial-of-service":    StrategyType.WORKFLOW_MANIPULATION,
+}
+
+_STRATEGY_TO_ASI: Dict[str, str] = {
+    "prompt_injection":       "ASI-01",
+    "indirect_injection":     "ASI-01",
+    "memory_poisoning":       "ASI-02",
+    "tool_misuse":            "ASI-03",
+    "jailbreak":              "ASI-04",
+    "instruction_hierarchy":  "ASI-05",
+    "sensitive_data_exposure": "ASI-06",
+    "retrieval_poisoning":    "ASI-08",
+    "workflow_manipulation":  "ASI-09",
+}
+
+
+class CampaignRunRequest(BaseModel):
+    campaign_id: str
+    target_url: str = ""
+    target_type: str = "rest_api"
+    auth: dict = {}
+    techniques: List[str]
+
+
+def _build_finding(atk: AttackRecord, run_id: str) -> dict:
+    """Convert an AttackRecord to a FindingPayload dict (frontend schema)."""
+    indicators = atk.indicators or {}
+    verdict = "VULNERABLE" if atk.success else "RESILIENT"
+    sev = (atk.severity or "high").upper()
+    return {
+        "finding_id": atk.finding_id or f"{run_id}{atk.id:04x}",
+        "technique_id": atk.strategy_type,
+        "asi_code": _STRATEGY_TO_ASI.get(atk.strategy_type, "ASI-01"),
+        "severity": sev,
+        "verdict": verdict,
+        "verdict_path": indicators.get("verdict_path", "consensus"),
+        "score": float(atk.score or 0.0),
+        "adversarial_input": atk.prompt or "",
+        "target_response_summary": (atk.response or "")[:300],
+        "deterministic_hits": indicators.get("deterministic_hits", []),
+        "threshold_used": float(atk.score_threshold or 0.5),
+        "recommendation": indicators.get(
+            "recommendation",
+            "Harden the target's system prompt and add input validation guardrails.",
+        ),
+    }
+
+
+@app.post("/api/campaigns/run")
+async def campaign_run_sse(req: CampaignRunRequest):
+    """Start a red-team campaign and stream SSE events back to the browser.
+
+    Event types: agent_state | log | finding | campaign_complete
+    Each line: ``data: <json>\\n\\n``
+    """
+    import asyncio
+
+    # Map technique slugs → StrategyType
+    strategies = [
+        _TECHNIQUE_TO_STRATEGY[t]
+        for t in req.techniques
+        if t in _TECHNIQUE_TO_STRATEGY
+    ]
+    if not strategies:
+        strategies = [StrategyType.PROMPT_INJECTION]
+
+    # Use sandbox adapter for internal docker service or when no URL provided.
+    # Only use the raw URL as target_id when it's a truly external HTTP endpoint.
+    raw_url = req.target_url.strip()
+    _internal = ("target-agent" in raw_url or "localhost" in raw_url or "127.0.0.1" in raw_url)
+    target_id = "HR Agent" if (not raw_url or _internal) else raw_url
+
+    # Authorisation check (reuses the same allowlist logic as /api/runs)
+    allowed = _authorized_targets()
+    if allowed and target_id not in allowed:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Target '{target_id}' is not in the authorised allowlist.",
+        )
+
+    run_id = uuid.uuid4().hex[:8]
+    active_runs[run_id] = "running"
+
+    store = SQLiteStore(Path(settings.db_path))
+    store.save_run_start(run_id, target_id)
+    store.close()
+
+    # Launch orchestrator in a background thread (non-blocking)
+    t = threading.Thread(
+        target=run_orchestrator_thread,
+        args=(run_id, target_id, strategies, 2, max(4, len(strategies) * 2)),
+        daemon=True,
+    )
+    t.start()
+
+    async def generate():
+        def sse(data: dict) -> str:
+            data.setdefault("timestamp", datetime.utcnow().isoformat())
+            return f"data: {json.dumps(data)}\n\n"
+
+        campaign_id = req.campaign_id
+
+        # ── Phase: startup ────────────────────────────────────────────────────
+        yield sse({"type": "log", "payload": {
+            "level": "SYSTEM",
+            "message": f"Campaign {campaign_id} initialised. {len(req.techniques)} technique(s) queued.",
+        }})
+
+        await asyncio.sleep(0.5)
+        yield sse({"type": "agent_state", "payload": {"agent_id": "orchestrator", "status": "active"}})
+
+        await asyncio.sleep(0.8)
+        yield sse({"type": "agent_state", "payload": {"agent_id": "orchestrator", "status": "processing"}})
+        yield sse({"type": "log", "payload": {
+            "level": "SYSTEM", "message": "Orchestrator online. Dispatching agent pipeline.",
+        }})
+
+        await asyncio.sleep(1.0)
+        yield sse({"type": "agent_state", "payload": {
+            "agent_id": "attacker", "status": "active", "active_edge": "orchestrator->attacker",
+        }})
+
+        await asyncio.sleep(0.6)
+        yield sse({"type": "agent_state", "payload": {"agent_id": "attacker", "status": "processing"}})
+        yield sse({"type": "log", "payload": {
+            "level": "ATTACK",
+            "message": f"Attacker agent online. Dispatching {len(strategies)} strategy probe(s) against {target_id}.",
+        }})
+
+        await asyncio.sleep(1.5)
+        yield sse({"type": "agent_state", "payload": {
+            "agent_id": "target", "status": "active", "active_edge": "attacker->target",
+        }})
+        yield sse({"type": "log", "payload": {
+            "level": "ATTACK", "message": "Attack probes dispatched. Awaiting target responses.",
+        }})
+
+        # ── Phase: poll for real results ──────────────────────────────────────
+        last_attack_count = 0
+        elapsed = 0
+        max_wait = 300  # seconds
+
+        while elapsed < max_wait:
+            await asyncio.sleep(4)
+            elapsed += 4
+
+            try:
+                def _read_db():
+                    s = SQLiteStore(Path(settings.db_path))
+                    with s.SessionLocal() as sess:
+                        run_rec = sess.scalar(select(RunRecord).where(RunRecord.run_id == run_id))
+                        atks = list(sess.scalars(select(AttackRecord).where(AttackRecord.run_id == run_id)).all())
+                        status = run_rec.status if run_rec else "running"
+                    s.close()
+                    return status, atks
+
+                current_status, attacks = await asyncio.to_thread(_read_db)
+            except Exception as exc:
+                logger.warning(f"[SSE] DB poll error: {exc}")
+                current_status = active_runs.get(run_id, "running")
+                attacks = []
+
+            # Emit new attack results
+            if len(attacks) > last_attack_count:
+                new_attacks = attacks[last_attack_count:]
+                last_attack_count = len(attacks)
+
+                for atk in new_attacks:
+                    yield sse({"type": "log", "payload": {
+                        "level": "EVAL",
+                        "message": f"Target responded to {atk.strategy_type} probe. Evaluating indicators.",
+                    }})
+                    yield sse({"type": "agent_state", "payload": {
+                        "agent_id": "evaluator", "status": "processing", "active_edge": "evaluator->target",
+                    }})
+
+                    await asyncio.sleep(0.5)
+
+                    finding = _build_finding(atk, run_id)
+
+                    if atk.success:
+                        yield sse({"type": "agent_state", "payload": {
+                            "agent_id": "evaluator", "status": "done", "active_edge": "evaluator->findings",
+                        }})
+                        yield sse({"type": "finding", "payload": finding})
+                        yield sse({"type": "log", "payload": {
+                            "level": "FINDING",
+                            "message": f"{finding['severity']}: {finding['asi_code']} — VULNERABLE  score={atk.score:.2f}",
+                        }})
+                    else:
+                        yield sse({"type": "agent_state", "payload": {"agent_id": "evaluator", "status": "done"}})
+                        yield sse({"type": "log", "payload": {
+                            "level": "EVAL",
+                            "message": f"Probe blocked. Score={atk.score:.2f} below threshold {atk.score_threshold:.2f}.",
+                        }})
+
+            # Heartbeat log every 20 s
+            if elapsed % 20 == 0 and elapsed > 0:
+                yield sse({"type": "log", "payload": {
+                    "level": "SYSTEM",
+                    "message": f"Run {run_id} — {elapsed}s elapsed — {last_attack_count} probe(s) recorded.",
+                }})
+
+            if current_status in ("completed", "failed"):
+                break
+
+        # ── Phase: defender + completion ──────────────────────────────────────
+        yield sse({"type": "agent_state", "payload": {
+            "agent_id": "defender", "status": "active", "active_edge": "orchestrator->defender",
+        }})
+        yield sse({"type": "log", "payload": {"level": "DEFEND", "message": "Defender agent generating remediations."}})
+
+        await asyncio.sleep(1.5)
+
+        yield sse({"type": "agent_state", "payload": {
+            "agent_id": "defender", "status": "done", "active_edge": "defender->findings",
+        }})
+        yield sse({"type": "agent_state", "payload": {"agent_id": "orchestrator", "status": "done"}})
+        yield sse({"type": "agent_state", "payload": {"agent_id": "attacker",     "status": "done"}})
+
+        # Build final CompletePayload from DB
+        try:
+            def _final_read():
+                s = SQLiteStore(Path(settings.db_path))
+                with s.SessionLocal() as sess:
+                    run_rec = sess.scalar(select(RunRecord).where(RunRecord.run_id == run_id))
+                    all_atks = list(sess.scalars(select(AttackRecord).where(AttackRecord.run_id == run_id)).all())
+                s.close()
+                return run_rec, all_atks
+
+            run_rec, all_atks = await asyncio.to_thread(_final_read)
+
+            all_findings = [_build_finding(a, run_id) for a in all_atks]
+            vulnerable = [f for f in all_findings if f["verdict"] == "VULNERABLE"]
+            critical_count = len([f for f in vulnerable if f["severity"] == "CRITICAL"])
+            high_count     = len([f for f in vulnerable if f["severity"] == "HIGH"])
+
+            start_dt = run_rec.start_time if run_rec and run_rec.start_time else datetime.utcnow()
+            duration = int((datetime.utcnow() - start_dt).total_seconds())
+
+            complete_payload = {
+                "campaign_id":    campaign_id,
+                "total_findings": len(vulnerable),
+                "critical_count": critical_count,
+                "high_count":     high_count,
+                "duration_seconds": max(elapsed, duration),
+                "findings":       all_findings,
+            }
+        except Exception as exc:
+            logger.error(f"[SSE] Final report build failed: {exc}")
+            complete_payload = {
+                "campaign_id":    campaign_id,
+                "total_findings": 0,
+                "critical_count": 0,
+                "high_count":     0,
+                "duration_seconds": elapsed,
+                "findings":       [],
+            }
+
+        total = complete_payload["total_findings"]
+        yield sse({"type": "log", "payload": {
+            "level": "SYSTEM",
+            "message": f"Campaign complete. {total} finding(s) confirmed. Report ready.",
+        }})
+        yield sse({"type": "campaign_complete", "payload": complete_payload})
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+        },
+    )

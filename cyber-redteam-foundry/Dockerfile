@@ -1,26 +1,30 @@
 FROM python:3.11-slim
 
-# Install system dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     curl \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
 WORKDIR /app
 
-# Copy application source code first so pip can build the package
-COPY . .
+# Copy manifest first for better layer caching
+COPY pyproject.toml ./
+COPY src ./src
+COPY configs ./configs
+COPY prompts ./prompts
+COPY target_agent ./target_agent
 
-# Install project and dependencies
+# Pre-install CPU torch to avoid downloading the 4 GB CUDA wheel
+RUN pip install --no-cache-dir \
+    "torch>=2.0.0" \
+    --index-url https://download.pytorch.org/whl/cpu
+
+# Install the project (torch requirement already satisfied above)
 RUN pip install --no-cache-dir -e .
 
-# Set python path to allow target_agent and cyberredteam to be found
 ENV PYTHONPATH=/app:/app/src
 
-# Expose ports
-EXPOSE 8000
+EXPOSE 8001
 EXPOSE 9000
 
-# Default command to run the backend API
-CMD ["uvicorn", "cyberredteam.api:app", "--host", "0.0.0.0", "--port", "8000"]
+CMD ["uvicorn", "cyberredteam.api:app", "--host", "0.0.0.0", "--port", "8001"]

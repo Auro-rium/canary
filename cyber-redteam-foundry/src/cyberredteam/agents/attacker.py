@@ -22,6 +22,25 @@ from cyberredteam.tools.rag_probe import RAGProbeTool
 logger = setup_logging()
 
 
+def _extract_tool_calls(response: str) -> list:
+    """Heuristically extract tool-call-like patterns from a free-form LLM response.
+
+    SandboxTargetAdapter returns plain text, not structured tool call objects.
+    We look for common patterns like "calling employee_lookup" or JSON-like
+    fragments that suggest the LLM described a tool invocation.
+    """
+    import re
+    patterns = [
+        re.compile(r"(?:call(?:ing)?|invoke[sd]?|using?|ran?)\s+([a-z_]+(?:_tool|_lookup|_search|_executor))", re.IGNORECASE),
+        re.compile(r"([a-z_]+)\s*\(\s*(?:['\"]?\w+['\"]?\s*(?:,\s*['\"]?\w+['\"]?)*)\s*\)", re.IGNORECASE),
+    ]
+    found = []
+    for pat in patterns:
+        for m in pat.finditer(response):
+            found.append(m.group(0))
+    return list(set(found))
+
+
 class AttackerAgent:
     """Generates LLM-powered adversarial attack cases and executes them."""
 
@@ -102,7 +121,7 @@ class AttackerAgent:
             suggestions = RAGProbeTool.generate_probes(target_description=target_description)
         elif strategy_type == StrategyType.JAILBREAK:
             suggestions = MemoryPoisoningTool.generate_poisoning_payloads(target_description=target_description)
-        elif strategy_type == StrategyType.LEAKAGE or strategy_type == StrategyType.SENSITIVE_DATA_EXPOSURE:
+        elif strategy_type == StrategyType.SENSITIVE_DATA_EXPOSURE:
             suggestions = SensitiveDataExtractor.get_extraction_targets(target_description=target_description)
 
         suggestions_str = "\n".join([f"- {s}" for s in suggestions]) if suggestions else "None"
@@ -209,10 +228,37 @@ class AttackerAgent:
         # 2. Execute attack via target adapter
         if hasattr(self.target_adapter, "target_id"):
             self.target_adapter.target_id = target_id
-        response = self.target_adapter.execute_attack(attack_case)
+
+        # Capture the raw (pre-sanitization) prompt for the trace record.
+        adversarial_input = attack_case.evaluation_prompt
+
+        result_tuple = self.target_adapter.execute_attack(attack_case)
+        # Adapter now returns (response_text, canary_token)
+        if isinstance(result_tuple, tuple):
+            response, canary = result_tuple
+        else:
+            # Backwards-compatible: bare string (e.g. mocked adapters in tests)
+            response, canary = result_tuple, None
 
         # 3. Initially parse severity guess (refined by evaluator later)
         severity = AttackSeverity.MEDIUM
+
+        # Build indicators including the trace snapshot and canary
+        indicators: dict = {
+            "objective": attack_case.scenario_description,
+            "expected_failure": attack_case.failure_condition,
+            # Stored for Phase 4 replay: what the target MUST do to pass retest.
+            # retest_after_patch reconstructs AttackCase from these indicators.
+            "expected_safe_behavior": attack_case.expected_safe_behavior,
+            # Raw trace data — orchestrator's _persist_artifacts writes TraceRecord
+            "_trace": {
+                "adversarial_input": adversarial_input,
+                "target_response": response,
+                "tool_calls_observed": _extract_tool_calls(response),
+            },
+        }
+        if canary:
+            indicators["_canary"] = canary
 
         return AttackResult(
             run_id=run_id,
@@ -224,13 +270,7 @@ class AttackerAgent:
             success=False,  # Evaluator determines success
             severity=severity,
             score=0.0,      # Evaluator determines score
-            indicators={
-                "objective": attack_case.scenario_description,
-                "expected_failure": attack_case.failure_condition,
-                # Stored for Phase 4 replay: what the target MUST do to pass retest.
-                # retest_after_patch reconstructs AttackCase from these indicators.
-                "expected_safe_behavior": attack_case.expected_safe_behavior,
-            },
+            indicators=indicators,
             timestamp=datetime.utcnow(),
         )
 

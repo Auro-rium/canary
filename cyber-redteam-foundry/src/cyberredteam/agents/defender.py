@@ -5,6 +5,8 @@ import uuid
 from datetime import datetime
 from typing import List, Optional, Any
 
+from cyberredteam.evaluation.taxonomy import lookup as taxonomy_lookup
+
 from cyberredteam.llm.factory import get_llm_for_agent, load_prompt
 from cyberredteam.llm.schemas import DefensePatch, AttackCase
 from cyberredteam.logging import setup_logging
@@ -98,17 +100,18 @@ class DefenderAgent:
                 elif "guardrail" in p_type_lower or "regression" in p_type_lower:
                     mapped_type = PatchType.REGRESSION_RULE
 
-                # Stable finding_id: sha256(strategy + target_id + affected_component)[:12].
-                # Same vulnerability found in a future campaign against the same target
-                # produces the same ID — makes open issues queryable across runs.
-                finding_id = hashlib.sha256(
-                    f"{result.strategy_type.value}:{result.target_id}:{llm_patch.affected_component}".encode()
-                ).hexdigest()[:12]
+                # Resolve ASI class from taxonomy (authoritative, not LLM-guessed).
+                asi_class, _ = taxonomy_lookup(result.strategy_type.value, llm_patch.affected_component)
 
-                # Back-annotate the source AttackResult so the attack record carries
-                # the same finding_id as its patch (in-place mutation is safe here
-                # because _persist_artifacts runs after the graph completes).
-                result.finding_id = finding_id
+                # Reuse finding_id already computed by the evaluator (canonical authority).
+                # Only compute here as fallback when evaluator did not set one (e.g. failed verdict).
+                if result.finding_id:
+                    finding_id = result.finding_id
+                else:
+                    finding_id = hashlib.sha256(
+                        f"{result.target_id}:{result.strategy_type.value}:{asi_class}".encode()
+                    ).hexdigest()[:16]
+                    result.finding_id = finding_id
 
                 # Generate a unique patch ID
                 unique_suffix = str(uuid.uuid4())[:6]
@@ -139,10 +142,14 @@ class DefenderAgent:
                 # Fallback patch — use "system_prompt" as a generic component so the
                 # finding_id is still stable (strategy + target + generic component).
                 fallback_component = "system_prompt"
-                finding_id = hashlib.sha256(
-                    f"{result.strategy_type.value}:{result.target_id}:{fallback_component}".encode()
-                ).hexdigest()[:12]
-                result.finding_id = finding_id
+                asi_class, _ = taxonomy_lookup(result.strategy_type.value, fallback_component)
+                if result.finding_id:
+                    finding_id = result.finding_id
+                else:
+                    finding_id = hashlib.sha256(
+                        f"{result.target_id}:{result.strategy_type.value}:{asi_class}".encode()
+                    ).hexdigest()[:16]
+                    result.finding_id = finding_id
                 unique_suffix = str(uuid.uuid4())[:6]
                 fallback = PatchResult(
                     run_id=result.run_id,
@@ -235,8 +242,9 @@ class DefenderAgent:
                 ),
                 failure_condition=result.indicators.get("expected_failure", "Refusal"),
             )
-            # Execute the attack against the patched target
-            response = target_adapter.execute_attack(attack_case)
+            # Execute the attack against the patched target (adapter returns tuple)
+            exec_result = target_adapter.execute_attack(attack_case)
+            response = exec_result[0] if isinstance(exec_result, tuple) else exec_result
             last_retest_prompt = result.prompt
             last_retest_response = response
 

@@ -82,6 +82,66 @@ class LLMCallRecord(Base):
     timestamp = Column(DateTime, default=datetime.utcnow)
 
 
+class FindingRecord(Base):
+    """Canonical vulnerability finding, stable across campaigns."""
+
+    __tablename__ = "findings"
+
+    finding_id = Column(String, primary_key=True)
+    target_id = Column(String, nullable=False, index=True)
+    component = Column(String, nullable=True)
+    strategy = Column(String, nullable=True)
+    asi_class = Column(String, nullable=True, index=True)
+    atlas_technique = Column(String, nullable=True)
+    severity = Column(String, nullable=True)
+    status = Column(String, default="open", index=True)
+    first_seen_run = Column(String, nullable=True)
+    last_seen_run = Column(String, nullable=True)
+    seen_in_runs = Column(JSON, default=list)
+    patch_ref = Column(String, nullable=True)
+    embedding = Column(JSON, nullable=True)
+    trace_s3_uri = Column(String, nullable=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class VerdictRecord(Base):
+    """Evaluator verdict for a single attack attempt."""
+
+    __tablename__ = "evaluator_verdicts"
+
+    verdict_id = Column(String, primary_key=True)
+    finding_id = Column(String, nullable=True, index=True)
+    run_id = Column(String, index=True)
+    attempt_number = Column(Integer)
+    deterministic_score = Column(Float, default=0.0)
+    llm_judge_score = Column(Float, default=0.0)
+    consensus_score = Column(Float, default=0.0)
+    threshold_used = Column(Float, default=0.5)
+    verdict = Column(String)  # confirmed | unconfirmed | inconclusive | failed
+    confidence = Column(String)  # high | medium | low
+    rationale = Column(String, nullable=True)
+    inconclusive_reason = Column(String, nullable=True)
+    asi_class_suggested = Column(String, nullable=True)
+    verdict_path = Column(String, nullable=True)  # consensus | deterministic_only | llm_only | heuristic_fallback
+    timestamp = Column(DateTime, default=datetime.utcnow)
+
+
+class TraceRecord(Base):
+    """Verbatim attack trace for Phase 4 replay."""
+
+    __tablename__ = "attack_traces"
+
+    trace_id = Column(String, primary_key=True)
+    attempt_id = Column(Integer, nullable=True, index=True)
+    finding_id = Column(String, nullable=True, index=True)
+    run_id = Column(String, index=True)
+    adversarial_input = Column(String)  # raw prompt before sanitization
+    tool_calls_observed = Column(JSON, default=list)
+    target_response = Column(String)  # full unsanitized response
+    captured_at = Column(DateTime, default=datetime.utcnow)
+
+
 def get_engine(db_path: str):
     """Create SQLAlchemy engine for the database."""
     return create_engine(f"sqlite:///{db_path}")
@@ -92,7 +152,8 @@ def _migrate_columns(engine) -> None:
 
     SQLite does not support IF NOT EXISTS on ALTER TABLE, so we read
     the current column list via PRAGMA and skip columns that are
-    already present.
+    already present.  New tables are created by create_all(); this
+    function only handles column additions to *existing* tables.
     """
     migrations = {
         "attacks": [
@@ -105,10 +166,28 @@ def _migrate_columns(engine) -> None:
             ("retest_prompt",   "TEXT"),
             ("retest_response", "TEXT"),
         ],
+        "findings": [
+            ("patch_ref",      "VARCHAR"),
+            ("embedding",      "TEXT"),
+            ("trace_s3_uri",   "VARCHAR"),
+        ],
+        "evaluator_verdicts": [
+            ("asi_class_suggested", "VARCHAR"),
+            ("inconclusive_reason", "TEXT"),
+        ],
+        "attack_traces": [
+            ("finding_id",     "VARCHAR"),
+        ],
     }
     with engine.connect() as conn:
         for table, cols in migrations.items():
-            rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+            # Skip migration for tables that may not exist yet (create_all handles them)
+            try:
+                rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+            except Exception:
+                continue
+            if not rows:
+                continue
             existing = {row[1] for row in rows}  # column_name is index 1
             for col_name, col_type in cols:
                 if col_name not in existing:

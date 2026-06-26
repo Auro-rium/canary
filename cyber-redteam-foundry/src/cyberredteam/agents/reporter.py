@@ -12,18 +12,18 @@ from cyberredteam.schemas import AttackResult, PatchResult, RedTeamReport
 
 logger = setup_logging()
 
+# Hardcoded per the reporter spec — must not be LLM-generated.
+_ASSUMPTIONS = [
+    "Target is sandbox or owned deployment.",
+    "Attack traces stored at run_id level in object store.",
+    "Evaluator verdicts are evidence-based. Inconclusive verdicts are not resolved automatically.",
+]
+
 
 class ReporterAgent:
-    """Generates red team reports in multiple formats using LLM-generated explanations."""
+    """Generates red team reports in multiple formats using LLM-generated narratives."""
 
     def __init__(self, output_dir: Path, llm=None, store=None):
-        """Initialize reporter agent.
-
-        Args:
-            output_dir: Directory for report output.
-            llm: Optional pre-configured ObservableLLM.
-            store: Optional SQLiteStore for call logging.
-        """
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.llm = llm or get_llm_for_agent("reporter", store=store)
@@ -38,65 +38,73 @@ class ReporterAgent:
         start_time: datetime,
         end_time: datetime,
     ) -> RedTeamReport:
-        """Generate comprehensive red team report using LLM for narratives.
-
-        Args:
-            run_id: Run identifier.
-            target_id: Target identifier.
-            attack_results: List of attack results.
-            patches: List of patches applied.
-            start_time: Run start time.
-            end_time: Run end time.
-
-        Returns:
-            RedTeamReport object.
-        """
+        """Generate comprehensive red team report using LLM for narratives."""
         logger.info(f"Reporter generating report for run {run_id}")
 
-        # 1. Compute statistics deterministically (never from LLM alone)
         total_attacks = len(attack_results)
         successful_attacks = sum(1 for r in attack_results if r.success)
         success_rate = successful_attacks / total_attacks if total_attacks > 0 else 0.0
 
-        # Severity distribution
         severity_dist = {}
         for result in attack_results:
             key = result.severity
             severity_dist[key] = severity_dist.get(key, 0) + 1
 
-        # Format input facts for LLM narrative generation
+        # Build richer attack context for LLM — include finding_ids, det_hits, components
         attacks_fact = []
         for r in attack_results:
+            verdict = r.indicators.get("verdict", "unknown")
+            finding_id = r.finding_id or "—"
+            det_hits = r.indicators.get(
+                "deterministic_hits",
+                list(r.indicators.get("deterministic_checks", {}).keys()),
+            )
+            asi_class = r.indicators.get("asi_class", "")
+            component = r.indicators.get("component", "")
+            atlas = r.indicators.get("atlas_technique", "")
+            inconclusive_reason = (
+                r.indicators.get("_verdict", {}).get("inconclusive_reason", "") or ""
+            )
             attacks_fact.append(
-                f"- Attempt {r.attempt_number}: Strategy={r.strategy_type.value}, "
-                f"Success={r.success}, Severity={r.severity.value}, "
-                f"Objective={r.indicators.get('objective', 'N/A')}"
+                f"- Attempt {r.attempt_number}: strategy={r.strategy_type.value}, "
+                f"component={component}, verdict={verdict}, "
+                f"finding_id={finding_id}, asi_class={asi_class}, "
+                f"atlas={atlas}, score={r.score:.2f}, "
+                f"deterministic_hits={det_hits}, "
+                f"success={r.success}, severity={r.severity.value}, "
+                f"objective={r.indicators.get('objective', 'N/A')}, "
+                f"inconclusive_reason={inconclusive_reason!r}"
             )
         attacks_fact_str = "\n".join(attacks_fact) if attacks_fact else "None"
 
         patches_fact = []
         for p in patches:
+            retest_vp = "not_retested"
+            if p.applied:
+                retest_vp = "consensus" if p.retest_passed else None
             patches_fact.append(
-                f"- Patch {p.patch_id}: Type={p.patch_type.value}, Applied={p.applied}, "
-                f"RetestPassed={p.retest_passed}, Component={p.target_component}"
+                f"- Patch {p.patch_id}: finding_id={p.finding_id or '—'}, "
+                f"type={p.patch_type.value}, applied={p.applied}, "
+                f"retest_passed={p.retest_passed}, component={p.target_component}, "
+                f"retest_verdict_path={retest_vp}"
             )
         patches_fact_str = "\n".join(patches_fact) if patches_fact else "None"
 
         user_message = (
             f"Run ID: {run_id}\n"
             f"Target ID: {target_id}\n"
+            f"Start: {start_time.isoformat()}\n"
+            f"End: {end_time.isoformat()}\n"
             f"Factual Attack Log:\n{attacks_fact_str}\n\n"
             f"Factual Patches Log:\n{patches_fact_str}\n"
         )
 
         try:
-            # 2. Invoke LLM to generate narrative explanations
             sec_report: SecurityReport = self.llm.invoke_structured(
                 system_prompt=self.system_prompt,
                 user_message=user_message,
                 output_schema=SecurityReport,
             )
-
             narratives = {
                 "executive_summary": sec_report.executive_summary,
                 "attack_campaign": sec_report.attack_campaign,
@@ -105,11 +113,9 @@ class ReporterAgent:
                 "fixes_applied": sec_report.fixes_applied,
                 "regression_results": sec_report.regression_results,
                 "remaining_risks": sec_report.remaining_risks,
-                "assumptions": sec_report.assumptions,
             }
         except Exception as e:
             logger.error(f"Reporter agent failed to generate narratives: {e}")
-            # Fallback narratives
             narratives = {
                 "executive_summary": "Security assessment complete. Factual metrics are listed below.",
                 "attack_campaign": "Assessment of targeted strategies against the system.",
@@ -118,18 +124,9 @@ class ReporterAgent:
                 "fixes_applied": "Remediation patches applied by the defender.",
                 "regression_results": "Retesting performed on applied patches.",
                 "remaining_risks": "Residual risks based on remaining unmitigated findings.",
-                "assumptions": "Assessment assumptions and scope boundaries.",
             }
 
-        # Recommendations
         recommendations = self._generate_recommendations(attack_results, patches)
-
-        # Assumptions list
-        assumptions_list = [
-            "Target is sandbox or owned deployment.",
-            "LLM narratives are generated based on deterministic logs.",
-            "Checkpoints and persistence are active."
-        ]
 
         report = RedTeamReport(
             run_id=run_id,
@@ -143,7 +140,7 @@ class ReporterAgent:
             severity_distribution=severity_dist,
             success_rate=success_rate,
             recommendations=recommendations,
-            assumptions=assumptions_list,
+            assumptions=_ASSUMPTIONS,
             narratives=narratives,
         )
 
@@ -151,42 +148,173 @@ class ReporterAgent:
         return report
 
     def write_markdown(self, report: RedTeamReport) -> Path:
-        """Write report in Markdown format with required sections."""
+        """Write report in Markdown format per spec structure."""
         output_file = self.output_dir / f"{report.run_id}_report.md"
+        duration_s = int((report.end_time - report.start_time).total_seconds())
+
+        # Build findings and inconclusive_attempts for the markdown sections
+        findings_by_id: dict = {}
+        inconclusive_list = []
+        for r in report.attack_results:
+            verdict = r.indicators.get("verdict", "unknown")
+            if verdict in ("confirmed", "unconfirmed") and r.finding_id:
+                fid = r.finding_id
+                if fid not in findings_by_id:
+                    findings_by_id[fid] = {
+                        "finding_id": fid,
+                        "verdict": verdict,
+                        "verdict_path": r.indicators.get("verdict_path", ""),
+                        "asi_class": r.indicators.get("asi_class", ""),
+                        "atlas_technique": r.indicators.get("atlas_technique"),
+                        "severity": r.severity.value,
+                        "component": r.indicators.get("component", ""),
+                        "strategy": r.strategy_type.value,
+                        "score": r.score,
+                        "threshold_used": r.score_threshold,
+                        "confidence": r.indicators.get("_verdict", {}).get("confidence", "low"),
+                        "deterministic_hits": r.indicators.get(
+                            "deterministic_hits",
+                            list(r.indicators.get("deterministic_checks", {}).keys()),
+                        ),
+                        "evidence_summary": (
+                            r.indicators.get("evidence_summary")
+                            or r.indicators.get("evidence", "")
+                        ),
+                        "adversarial_input_hash": r.indicators.get("adversarial_input_hash", ""),
+                        "attempt_numbers": [],
+                    }
+                findings_by_id[fid]["attempt_numbers"].append(r.attempt_number)
+            elif verdict == "inconclusive":
+                inconclusive_list.append({
+                    "attempt_number": r.attempt_number,
+                    "strategy": r.strategy_type.value,
+                    "component": r.indicators.get("component", ""),
+                    "inconclusive_reason": (
+                        r.indicators.get("_verdict", {}).get("inconclusive_reason", "") or ""
+                    ),
+                    "score": r.score,
+                    "threshold_used": r.score_threshold,
+                })
+
+        # Patches with finding_ids
+        patches_with_fid = [
+            {
+                "patch_id": p.patch_id,
+                "finding_id": p.finding_id or "—",
+                "type": p.patch_type.value,
+                "applied": p.applied,
+                "retest_passed": p.retest_passed,
+                "retest_verdict_path": (
+                    "consensus" if p.applied and p.retest_passed else None
+                ),
+            }
+            for p in report.patches_applied
+        ]
+
+        confirmed_ids = {fid for fid, f in findings_by_id.items() if f["verdict"] == "confirmed"}
+        unconfirmed_ids = {fid for fid, f in findings_by_id.items() if f["verdict"] == "unconfirmed"}
 
         with open(output_file, "w", encoding="utf-8") as f:
             f.write(f"# Red Team Report: {report.run_id}\n\n")
-            f.write(f"**Target:** {report.target_id}\n")
-            f.write(f"**Date:** {report.start_time.strftime('%Y-%m-%d %H:%M:%S')}\n\n")
 
-            f.write("## Executive Summary\n\n")
-            f.write(f"{report.narratives.get('executive_summary', '')}\n\n")
-            f.write("### Factual Metrics\n")
-            f.write(f"- **Total Attacks:** {report.total_attacks}\n")
-            f.write(f"- **Successful Attacks:** {report.successful_attacks}\n")
-            f.write(f"- **Success Rate:** {report.success_rate:.1%}\n")
-            f.write(f"- **Patches Applied:** {len(report.patches_applied)}\n\n")
+            # Factual metrics table
+            f.write("## Factual Metrics\n\n")
+            f.write("| Field | Value |\n|---|---|\n")
+            f.write(f"| Run ID | {report.run_id} |\n")
+            f.write(f"| Target | {report.target_id} |\n")
+            f.write(f"| Date | {report.start_time.strftime('%Y-%m-%d %H:%M:%S')} |\n")
+            f.write(f"| Duration | {duration_s}s |\n")
+            f.write(f"| Total Attacks | {report.total_attacks} |\n")
+            f.write(f"| Confirmed Findings | {len(confirmed_ids)} |\n")
+            f.write(f"| Unconfirmed Findings | {len(unconfirmed_ids)} |\n")
+            f.write(f"| Success Rate | {report.success_rate:.1%} |\n")
+            f.write(f"| Patches Applied | {sum(1 for p in report.patches_applied if p.applied)} |\n")
+            f.write(f"| Patches Passing Retest | {sum(1 for p in report.patches_applied if p.applied and p.retest_passed)} |\n")
+            f.write("\n")
 
-            f.write("## Attack Campaign\n\n")
-            f.write(f"{report.narratives.get('attack_campaign', '')}\n\n")
+            # Per-attack evidence table
+            f.write("## Per-Attack Evidence\n\n")
+            f.write("| # | Strategy | Component | Verdict | Path | Score | Threshold | Det Hits | Finding ID |\n")
+            f.write("|---|---|---|---|---|---|---|---|---|\n")
+            for r in report.attack_results:
+                det = ", ".join(r.indicators.get(
+                    "deterministic_hits",
+                    list(r.indicators.get("deterministic_checks", {}).keys()),
+                )) or "—"
+                fid = r.finding_id or "—"
+                thr = getattr(r, "score_threshold", "—")
+                cmp = r.indicators.get("component", "—")
+                f.write(
+                    f"| {r.attempt_number} "
+                    f"| {r.strategy_type.value} "
+                    f"| {cmp} "
+                    f"| {r.indicators.get('verdict','?')} "
+                    f"| {r.indicators.get('verdict_path','?')} "
+                    f"| {r.score:.2f} "
+                    f"| {thr} "
+                    f"| {det} "
+                    f"| {fid} |\n"
+                )
+            f.write("\n")
 
-            f.write("## Vulnerabilities Found\n\n")
-            f.write(f"{report.narratives.get('vulnerabilities_found', '')}\n\n")
+            # Confirmed findings (one subsection per finding_id)
+            f.write("## Confirmed Findings\n\n")
+            if not findings_by_id:
+                f.write("No confirmed or unconfirmed findings.\n\n")
+            else:
+                for fid, fi in findings_by_id.items():
+                    patch_ids = [p["patch_id"] for p in patches_with_fid if p["finding_id"] == fid]
+                    patch_status = ", ".join(patch_ids) if patch_ids else "no patch"
+                    f.write(f"### Finding `{fid}`\n\n")
+                    f.write(f"| Field | Value |\n|---|---|\n")
+                    f.write(f"| Verdict | {fi['verdict']} |\n")
+                    f.write(f"| ASI Class | {fi['asi_class']} |\n")
+                    f.write(f"| Severity | {fi['severity']} |\n")
+                    f.write(f"| Component | {fi['component']} |\n")
+                    f.write(f"| Strategy | {fi['strategy']} |\n")
+                    f.write(f"| Verdict Path | {fi['verdict_path']} |\n")
+                    f.write(f"| Score | {fi['score']:.2f} |\n")
+                    f.write(f"| Attempts | {fi['attempt_numbers']} |\n")
+                    f.write(f"| Deterministic Hits | {fi['deterministic_hits'] or '—'} |\n")
+                    f.write(f"| Input Hash | {fi['adversarial_input_hash'] or '—'} |\n")
+                    f.write(f"| Patch | {patch_status} |\n")
+                    if fi["evidence_summary"]:
+                        f.write(f"\n**Evidence:** {fi['evidence_summary']}\n")
+                    f.write("\n")
 
-            f.write("## Evidence\n\n")
-            f.write(f"{report.narratives.get('evidence_summary', '')}\n\n")
+            # Inconclusive attempts
+            f.write("## Inconclusive Attempts\n\n")
+            if not inconclusive_list:
+                f.write("None.\n\n")
+            else:
+                for ia in inconclusive_list:
+                    f.write(
+                        f"- Attempt {ia['attempt_number']}: {ia['strategy']} / {ia['component']} — "
+                        f"score={ia['score']:.2f}, threshold={ia['threshold_used']}, "
+                        f"reason={ia['inconclusive_reason']!r}\n"
+                    )
+                f.write("\n")
 
-            f.write("## Fixes Applied\n\n")
-            f.write(f"{report.narratives.get('fixes_applied', '')}\n\n")
+            # Patch results
+            f.write("## Patch Results\n\n")
+            if not patches_with_fid:
+                f.write("No patches.\n\n")
+            else:
+                f.write("| Patch ID | Finding ID | Type | Retest Passed | Retest Path |\n")
+                f.write("|---|---|---|---|---|\n")
+                for p in patches_with_fid:
+                    f.write(
+                        f"| {p['patch_id'][:20]} "
+                        f"| {p['finding_id']} "
+                        f"| {p['type']} "
+                        f"| {p['retest_passed']} "
+                        f"| {p['retest_verdict_path'] or '—'} |\n"
+                    )
+                f.write("\n")
 
-            f.write("## Regression Results\n\n")
-            f.write(f"{report.narratives.get('regression_results', '')}\n\n")
-
+            # Remaining risks
             f.write("## Remaining Risks\n\n")
             f.write(f"{report.narratives.get('remaining_risks', '')}\n\n")
-
-            f.write("## Assumptions\n\n")
-            f.write(f"{report.narratives.get('assumptions', '')}\n\n")
 
             # Recommendations
             f.write("## Recommendations\n\n")
@@ -197,39 +325,123 @@ class ReporterAgent:
         return output_file
 
     def write_json(self, report: RedTeamReport) -> Path:
-        """Write report in JSON format."""
+        """Write report in JSON format per spec schema."""
         output_file = self.output_dir / f"{report.run_id}_report.json"
+        duration_s = int((report.end_time - report.start_time).total_seconds())
+
+        # Group attacks by finding_id for findings[] section
+        findings_by_id: dict = {}
+        inconclusive_attempts = []
+
+        for r in report.attack_results:
+            verdict = r.indicators.get("verdict", "unknown")
+            fid = r.finding_id
+
+            if verdict in ("confirmed", "unconfirmed") and fid:
+                if fid not in findings_by_id:
+                    findings_by_id[fid] = {
+                        "finding_id": fid,
+                        "verdict": verdict,
+                        "verdict_path": r.indicators.get("verdict_path", ""),
+                        "asi_class": r.indicators.get("asi_class", ""),
+                        "atlas_technique": r.indicators.get("atlas_technique"),
+                        "severity": r.severity.value,
+                        "component": r.indicators.get("component", ""),
+                        "strategy": r.strategy_type.value,
+                        "score": r.score,
+                        "threshold_used": r.score_threshold,
+                        "confidence": r.indicators.get("_verdict", {}).get("confidence", "low"),
+                        "deterministic_hits": r.indicators.get(
+                            "deterministic_hits",
+                            list(r.indicators.get("deterministic_checks", {}).keys()),
+                        ),
+                        "evidence_summary": (
+                            r.indicators.get("evidence_summary")
+                            or r.indicators.get("evidence", "")
+                        ),
+                        "adversarial_input_hash": r.indicators.get("adversarial_input_hash", ""),
+                        "attempt_numbers": [],
+                    }
+                findings_by_id[fid]["attempt_numbers"].append(r.attempt_number)
+
+            elif verdict == "inconclusive":
+                inconclusive_attempts.append({
+                    "attempt_number": r.attempt_number,
+                    "strategy": r.strategy_type.value,
+                    "component": r.indicators.get("component", ""),
+                    "inconclusive_reason": (
+                        r.indicators.get("_verdict", {}).get("inconclusive_reason", "") or ""
+                    ),
+                    "score": r.score,
+                    "threshold_used": r.score_threshold,
+                })
+
+        confirmed_ids = {fid for fid, f in findings_by_id.items() if f["verdict"] == "confirmed"}
+        unconfirmed_ids = {fid for fid, f in findings_by_id.items() if f["verdict"] == "unconfirmed"}
+        inconclusive_count = sum(
+            1 for r in report.attack_results
+            if r.indicators.get("verdict") == "inconclusive"
+        )
+        failed_count = sum(
+            1 for r in report.attack_results
+            if r.indicators.get("verdict") == "failed"
+        )
+
+        # Patch summary
+        applied_count = sum(1 for p in report.patches_applied if p.applied)
+        retest_passed_count = sum(
+            1 for p in report.patches_applied if p.applied and p.retest_passed
+        )
+        retest_failed_count = sum(
+            1 for p in report.patches_applied if p.applied and not p.retest_passed
+        )
+        not_retested_count = len(report.patches_applied) - applied_count
 
         data = {
             "run_id": report.run_id,
             "target_id": report.target_id,
             "start_time": report.start_time.isoformat(),
             "end_time": report.end_time.isoformat(),
+            "duration_seconds": duration_s,
+
+            "verdict_summary": {
+                "confirmed": len(confirmed_ids),
+                "unconfirmed": len(unconfirmed_ids),
+                "inconclusive": inconclusive_count,
+                "failed": failed_count,
+            },
+
+            "findings": list(findings_by_id.values()),
+            "inconclusive_attempts": inconclusive_attempts,
+
             "total_attacks": report.total_attacks,
-            "successful_attacks": report.successful_attacks,
-            "success_rate": report.success_rate,
-            "attacks": [
-                {
-                    "attempt": r.attempt_number,
-                    "strategy": r.strategy_type.value,
-                    "success": r.success,
-                    "severity": r.severity.value,
-                    "score": r.score,
-                }
-                for r in report.attack_results
-            ],
+            "successful_attacks": len(confirmed_ids),
+            "success_rate": len(confirmed_ids) / report.total_attacks if report.total_attacks > 0 else 0.0,
+
             "patches": [
                 {
                     "patch_id": p.patch_id,
+                    "finding_id": p.finding_id or None,
                     "type": p.patch_type.value,
                     "applied": p.applied,
                     "retest_passed": p.retest_passed,
+                    "retest_verdict_path": (
+                        "consensus" if p.applied and p.retest_passed else None
+                    ),
                 }
                 for p in report.patches_applied
             ],
+
+            "patch_summary": {
+                "applied": applied_count,
+                "retest_passed": retest_passed_count,
+                "retest_failed": retest_failed_count,
+                "not_retested": not_retested_count,
+            },
+
+            "assumptions": _ASSUMPTIONS,
             "recommendations": report.recommendations,
-            "assumptions": report.assumptions,
-            "narratives": report.narratives,
+            "narratives": {k: v for k, v in report.narratives.items() if k != "assumptions"},
         }
 
         with open(output_file, "w", encoding="utf-8") as f:
@@ -243,41 +455,36 @@ class ReporterAgent:
         attack_results: List[AttackResult],
         patches: List[PatchResult],
     ) -> List[str]:
-        """Generate security recommendations."""
+        """Generate finding_id-anchored security recommendations."""
         recommendations = []
-
         successful = [r for r in attack_results if r.success]
+
         if not successful:
-            recommendations.append("No successful attacks detected. Target appears secure.")
+            recommendations.append("No confirmed attacks. Continue monitoring for new vectors.")
             return recommendations
 
-        # Check for injection vulnerabilities
-        injection_attacks = [r for r in successful if "injection" in r.strategy_type.value]
-        if injection_attacks:
-            recommendations.append(
-                "Implement prompt hardening to resist injection attacks"
+        seen_findings: dict = {}
+        for r in successful:
+            fid = r.finding_id or "unknown"
+            if fid in seen_findings:
+                continue
+
+            asi = r.indicators.get("asi_class", "")
+            component = r.indicators.get("component", r.strategy_type.value)
+            strategy = r.strategy_type.value
+            failed_patches = [
+                p for p in patches
+                if p.finding_id == fid and p.applied and not p.retest_passed
+            ]
+            patch_ref = (
+                f", patch {failed_patches[0].patch_id[:8]} failed retest"
+                if failed_patches
+                else ""
             )
-
-        # Check for tool misuse
-        tool_attacks = [r for r in successful if "tool" in r.strategy_type.value]
-        if tool_attacks:
-            recommendations.append("Implement strict tool access policies")
-
-        # Check for retrieval issues
-        retrieval_attacks = [
-            r for r in successful if "retrieval" in r.strategy_type.value
-        ]
-        if retrieval_attacks:
-            recommendations.append("Add content filtering for retrieved documents")
-
-        # Check patch effectiveness
-        retest_failures = [p for p in patches if p.applied and not p.retest_passed]
-        if retest_failures:
             recommendations.append(
-                f"Investigate {len(retest_failures)} patches that failed retest"
+                f"Remediate {component} against {strategy} "
+                f"(finding {fid}, {asi}{patch_ref})."
             )
-
-        if not recommendations:
-            recommendations.append("Continue monitoring for new attack vectors")
+            seen_findings[fid] = True
 
         return recommendations

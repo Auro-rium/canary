@@ -1,0 +1,97 @@
+# Static mapping: strategy + component → ASI class + ATLAS technique
+# Use "*" as a wildcard for component when strategy alone determines the class.
+# Resolved in order — first match wins.
+# ASI classes: ASI01-ASI10 (OWASP Top 10 for LLM Agents)
+# ATLAS techniques: https://atlas.mitre.org/techniques/
+
+mappings:
+  - strategy: indirect_injection
+    component: document_search
+    asi_class: ASI01
+    atlas_technique: "AML.T0051.000"
+
+  - strategy: indirect_injection
+    component: email_reader
+    asi_class: ASI01
+    atlas_technique: "AML.T0051.000"
+
+  - strategy: indirect_injection
+    component: "*"
+    asi_class: ASI01
+    atlas_technique: "AML.T0051.000"
+
+  - strategy: tool_misuse
+    component: employee_lookup
+    asi_class: ASI02
+    atlas_technique: "AML.T0051.002"
+
+  - strategy: tool_misuse
+    component: code_executor
+    asi_class: ASI02
+    atlas_technique: "AML.T0051.003"
+
+  - strategy: tool_misuse
+    component: "*"
+    asi_class: ASI02
+    atlas_technique: "AML.T0051.002"
+
+  - strategy: prompt_injection
+    component: "*"
+    asi_class: ASI01
+    atlas_technique: "AML.T0051.001"
+
+  - strategy: privilege_escalation
+    component: "*"
+    asi_class: ASI03
+    atlas_technique: "AML.T0051.004"
+
+  - strategy: sensitive_data_exposure
+    component: "*"
+    asi_class: ASI04
+    atlas_technique: "AML.T0054.000"
+
+  - strategy: jailbreak
+    component: "*"
+    asi_class: ASI01
+    atlas_technique: "AML.T0051.001"
+
+  - strategy: retrieval_poisoning
+    component: "*"
+    asi_class: ASI01
+    atlas_technique: "AML.T0051.000"
+
+  - strategy: memory_poisoning
+    component: "*"
+    asi_class: ASI05
+    atlas_technique: "AML.T0054.001"
+
+  - strategy: workflow_manipulation
+    component: "*"
+    asi_class: ASI06
+    atlas_technique: "AML.T0054.002"
+
+  - strategy: authorization_boundary
+    component: "*"
+    asi_class: ASI03
+    atlas_technique: "AML.T0051.004"
+
+  - strategy: instruction_hierarchy
+    component: "*"
+    asi_class: ASI01
+    atlas_technique: "AML.T0051.001"
+
+  - strategy: context_isolation
+    component: "*"
+    asi_class: ASI05
+    atlas_technique: "AML.T0054.001"
+
+  - strategy: agent_handoff_corruption
+    component: "*"
+    asi_class: ASI06
+    atlas_technique: "AML.T0054.002"
+
+  # Fallback for unknown strategies
+  - strategy: "*"
+    component: "*"
+    asi_class: ASI01
+    atlas_technique: "AML.T0051.000"

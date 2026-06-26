@@ -1,20 +1,10 @@
-# Bedrock model ID per agent.
-#
-# Verified available in account 732108542989, region us-west-2 (ON_DEMAND —
-# no inference profile / cross-region prefix required).
-#
-#   qwen.qwen3-coder-480b-a35b-v1:0   Qwen3 Coder 480B  — judgment roles
-#   qwen.qwen3-coder-30b-a3b-v1:0     Qwen3 Coder 30B   — high-volume attacker
-#
-# Swap to Claude inference-profile IDs once the Anthropic use-case form is approved:
-#   us.anthropic.claude-sonnet-4-20250514-v1:0  (judgment)
-#   us.anthropic.claude-haiku-4-5-20251001-v1:0 (attacker)
+
 
 strategist:
   model: qwen.qwen3-coder-480b-a35b-v1:0
 
 attacker:
-  model: qwen.qwen3-coder-30b-a3b-v1:0
+  model: deepseek.v3-v1:0
 
 evaluator:
   model: qwen.qwen3-coder-480b-a35b-v1:0
@@ -24,3 +14,6 @@ defender:
 
 reporter:
   model: qwen.qwen3-coder-480b-a35b-v1:0
+
+target:
+  model: amazon.nova-pro-v1:0

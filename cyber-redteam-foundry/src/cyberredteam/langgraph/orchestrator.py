@@ -205,16 +205,69 @@ class GraphOrchestrator:
     # -----------------------------------------------------------------
 
     def _persist_artifacts(self, final_state: Dict[str, Any]) -> None:
-        """Save all attack results and patches to the artifact store."""
+        """Save all attack results, patches, traces, verdicts, and findings."""
+        import uuid as _uuid
+        from cyberredteam.evaluation.taxonomy import lookup as taxonomy_lookup
+
         attack_results = final_state.get("attack_results", [])
         patch_results = final_state.get("patch_results", [])
 
         for result in attack_results:
             self.store.save_attack_result(result)
 
+            # Save attack trace if the attacker captured one
+            trace_data = result.indicators.get("_trace")
+            if trace_data:
+                trace_id = str(_uuid.uuid4())
+                self.store.save_trace({
+                    "trace_id": trace_id,
+                    "run_id": result.run_id,
+                    "finding_id": result.finding_id or None,
+                    "adversarial_input": trace_data.get("adversarial_input", result.prompt),
+                    "tool_calls_observed": trace_data.get("tool_calls_observed", []),
+                    "target_response": trace_data.get("target_response", result.response),
+                })
+
+            # Save evaluator verdict if the evaluator wrote one
+            verdict_data = result.indicators.get("_verdict")
+            if verdict_data:
+                verdict_data["finding_id"] = result.finding_id or None
+                self.store.save_verdict(verdict_data)
+
+            # Upsert finding for confirmed/unconfirmed verdicts
+            verdict = result.indicators.get("verdict", "")
+            if verdict in ("confirmed", "unconfirmed") and result.finding_id:
+                asi_class = result.indicators.get("asi_class", "")
+                atlas_technique = result.indicators.get("atlas_technique", "")
+                # Best-effort component from finding_id components or empty
+                self.store.upsert_finding({
+                    "finding_id": result.finding_id,
+                    "run_id": result.run_id,
+                    "target_id": result.target_id,
+                    "component": "",  # set by defender; empty at evaluator time
+                    "strategy": result.strategy_type.value if hasattr(result.strategy_type, "value") else str(result.strategy_type),
+                    "asi_class": asi_class,
+                    "atlas_technique": atlas_technique,
+                    "severity": result.severity.value if hasattr(result.severity, "value") else str(result.severity),
+                    "adversarial_input": result.indicators.get("_trace", {}).get("adversarial_input", result.prompt),
+                })
+
         for patch in patch_results:
             try:
                 self.store.save_patch_result(patch)
+                # Transition finding to patch_proposed when a patch is created
+                if patch.finding_id:
+                    try:
+                        self.store.transition_finding_status(
+                            patch.finding_id,
+                            "patch_proposed",
+                            {"patch_ref": patch.patch_id},
+                        )
+                    except ValueError:
+                        # Finding may not exist yet or transition not legal — log and continue
+                        logger.debug(
+                            f"Could not transition finding {patch.finding_id} to patch_proposed"
+                        )
             except Exception:
                 # Duplicate patch_id across iterations — skip gracefully
                 logger.debug(

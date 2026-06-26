@@ -35,7 +35,7 @@ logger = setup_logging()
 # Overridable per agent via configs/models.yaml.
 _DEFAULT_MODELS = {
     "strategist": {"model": "qwen.qwen3-coder-480b-a35b-v1:0"},
-    "attacker": {"model": "qwen.qwen3-coder-30b-a3b-v1:0"},
+    "attacker": {"model": "deepseek.v3-v1:0"},
     "evaluator": {"model": "qwen.qwen3-coder-480b-a35b-v1:0"},
     "defender": {"model": "qwen.qwen3-coder-480b-a35b-v1:0"},
     "reporter": {"model": "qwen.qwen3-coder-480b-a35b-v1:0"},
