@@ -9,6 +9,36 @@ Local-first, enterprise-grade cybersecurity red-teaming and safety assessment fr
 
 ---
 
+## 📦 Repository Structure
+
+This monorepo contains three independently deployable services:
+
+```
+canary/
+├── README.md                     ← You are here (root overview)
+├── docker-compose.yml            # Orchestrates all 3 services
+├── canary/                       # 🐤 Agent Canary — React Dashboard Frontend
+│   ├── README.md                 #    → Detailed frontend documentation
+│   ├── src/                      #    → React 19 + TypeScript + Vite 8
+│   ├── Dockerfile                #    → Multi-stage nginx build
+│   └── ...
+├── cyber-redteam-foundry/        # ⚙️ Red Team Engine — Python Backend
+│   ├── README.md                 #    → Detailed backend documentation
+│   ├── src/cyberredteam/         #    → LangGraph orchestrator, agents, API
+│   ├── target_agent/             # 🎯 Target Agent — Victim Sandbox
+│   │   ├── README.md             #    → Detailed target agent documentation
+│   │   └── ...
+│   ├── configs/                  #    → YAML configurations
+│   ├── prompts/                  #    → Agent system prompts
+│   └── ...
+├── runs/                         # Runtime artifacts (SQLite DBs, logs)
+└── reports/                      # Generated audit reports
+```
+
+> **Subproject READMEs**: Each component has its own detailed README — see [`canary/README.md`](canary/README.md), [`cyber-redteam-foundry/README.md`](cyber-redteam-foundry/README.md), and [`target_agent/README.md`](cyber-redteam-foundry/target_agent/README.md).
+
+---
+
 ## 🏗️ Architecture & Control Flow
 
 The framework leverages **LangGraph** to build a stateful, resilient orchestrator. The assessment loop consists of cooperative agent nodes that update a central, thread-aware execution context (`RedTeamState`).
@@ -106,6 +136,8 @@ reporter:
   model: qwen.qwen3-coder-480b-a35b-v1:0
 ```
 
+The **Target Agent** (CompanyBot) also uses AWS Bedrock with `amazon.nova-pro-v1:0` by default. The model can be overridden via the `TARGET_MODEL_ID` environment variable.
+
 Bedrock credentials are resolved via the standard `boto3` credential chain (environment variables `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY`, shared credentials file, or instance/role profile).
 
 ---
@@ -114,6 +146,7 @@ Bedrock credentials are resolved via the standard `boto3` credential chain (envi
 
 ### 1. Prerequisites
 - **Python**: Version `3.11` (or `>=3.10, <3.14`)
+- **Node.js**: Version `20+` (for the frontend dashboard)
 - **Package Manager**: [uv](https://astral.sh/) is highly recommended for speed:
   ```bash
   curl -LsSf https://astral.sh/uv/install.sh | sh
@@ -155,17 +188,26 @@ TARGET_MODE="sandbox"
 TARGET_ENDPOINT="http://localhost:9000/chat"
 TARGET_API_KEY=""
 
+# Target Agent LLM (defaults to Bedrock Nova Pro)
+TARGET_MODEL_ID="amazon.nova-pro-v1:0"
+
 # Authorization Scope (Allowed target URLs/IDs)
 # Comma-separated list of target_ids a run may be created against.
 ALLOWED_TARGETS="http://localhost:9000/chat,sandbox-target-001"
 ```
 
-*Note: If you run the standalone target agent victim locally, you will also need to configure Azure OpenAI credentials (`AZURE_OPENAI_ENDPOINT`, `AZURE_OPENAI_API_KEY`, `AZURE_OPENAI_DEPLOYMENT`) in your `.env`.*
-
 ### 4. Initialize the Framework
 Create the SQLite database files, directory structures, and logging configurations:
 ```bash
 cyber-rt init
+```
+
+### 5. Frontend Dashboard Setup
+```bash
+cd canary/canary
+npm install
+npm run dev -- --port 5174
+# → http://localhost:5174
 ```
 
 ---
@@ -204,6 +246,19 @@ cyber-rt run \
 Display summary statistics and report output locations for the most recent run:
 ```bash
 cyber-rt status
+```
+
+### Visualize the LangGraph Workflow
+Print or save the orchestrator's Mermaid diagram:
+```bash
+cyber-rt graph
+cyber-rt graph --save   # saves to reports/graph.mmd
+```
+
+### Start the API Server
+Launch the FastAPI backend for the frontend dashboard:
+```bash
+cyber-rt server --port 8000
 ```
 
 ---
@@ -254,23 +309,46 @@ The framework exposes a FastAPI server (`cyberredteam.api`) to serve the dashboa
 
 ## 🐳 Docker Deployment
 
-The entire architecture—including the React frontend dashboard, the red-team API backend, and the vulnerable target agent—is containerized and managed via Docker Compose.
+The entire architecture — including the React frontend dashboard, the red-team API backend, and the vulnerable target agent — is containerized and managed via Docker Compose.
 
-### Port Mappings:
-1. **`canary-frontend`**: React Vite dashboard served on port `3000`.
-2. **`redteam-backend`**: FastAPI red-team orchestrator endpoint on port `8000`.
-3. **`target-agent`**: Standalone target agent API server on port `9000`.
+### Service Architecture
+```
+                    ┌─────────────────────────┐
+                    │   canary-frontend        │
+                    │   nginx + React SPA      │
+      Host :8000 ──►│   Port 80                │
+                    │   /api/* → backend:8001  │
+                    └────────────┬────────────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │   redteam-backend        │
+                    │   FastAPI + LangGraph    │
+                    │   Port 8001 (internal)   │
+                    └────────────┬────────────┘
+                                 │
+                    ┌────────────▼────────────┐
+                    │   target-agent           │
+                    │   CompanyBot (LangChain) │
+                    │   Port 9000 (internal)   │
+                    └─────────────────────────┘
+```
 
-### Running with Docker Compose:
+### Port Mappings
+| Service              | Container Port | Host Port | Description                          |
+| :------------------- | :------------- | :-------- | :----------------------------------- |
+| `canary-frontend`    | 80             | **8000**  | nginx serving React SPA + API proxy  |
+| `redteam-backend`    | 8001           | —         | FastAPI orchestrator (internal only)  |
+| `target-agent`       | 9000           | —         | CompanyBot victim agent (internal)   |
+
+### Running with Docker Compose
 1. Ensure your `.env` is configured in `cyber-redteam-foundry/.env`.
 2. Start the services:
    ```bash
    docker compose up -d --build
    ```
 3. Access the interfaces:
-   - **Frontend UI**: [http://localhost:3000](http://localhost:3000)
-   - **Orchestrator Swagger Docs**: [http://localhost:8000/docs](http://localhost:8000/docs)
-   - **Target Agent Endpoint**: [http://localhost:9000/health](http://localhost:9000/health)
+   - **Frontend UI**: [http://localhost:8000](http://localhost:8000)
+   - **Orchestrator Swagger Docs**: [http://localhost:8000/api/docs](http://localhost:8000/api/docs) (proxied through nginx)
 
 ---
 
@@ -278,6 +356,8 @@ The entire architecture—including the React frontend dashboard, the red-team A
 
 Execute unit and integration tests using `pytest`:
 ```bash
+cd cyber-redteam-foundry
+
 # Run all tests
 pytest tests/ -v
 
