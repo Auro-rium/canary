@@ -17,7 +17,7 @@ from typing import Optional
 
 import yaml
 
-from cyberredteam.llm.azure_openai import ObservableLLM
+from cyberredteam.llm.bedrock import ObservableLLM
 from cyberredteam.logging import setup_logging
 
 logger = setup_logging()

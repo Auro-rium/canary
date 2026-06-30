@@ -12,7 +12,7 @@ logger = setup_logging()
 
 
 class StrategistAgent:
-    """Selects attack strategies using AWS Bedrock (Claude) reasoning."""
+    """Selects attack strategies using AWS Bedrock reasoning via an LCEL chain."""
 
     def __init__(self, llm=None, store=None):
         """Initialize strategist agent.
@@ -24,6 +24,8 @@ class StrategistAgent:
         self.llm = llm or get_llm_for_agent("strategist", store=store)
         self.available_strategies = list_strategies()
         self.system_prompt = load_prompt("strategist")
+        # Build LCEL chain once — ChatPromptTemplate | llm.with_structured_output(AttackPlan)
+        self._select_chain = self.llm.build_structured_chain(self.system_prompt, AttackPlan)
 
     def select_strategies(
         self,
@@ -62,11 +64,8 @@ class StrategistAgent:
         )
 
         try:
-            # Get structured output
-            plan: AttackPlan = self.llm.invoke_structured(
-                system_prompt=self.system_prompt,
-                user_message=user_message,
-                output_schema=AttackPlan,
+            plan: AttackPlan = self.llm.invoke_chain(
+                self._select_chain, user_message, system_context=self.system_prompt
             )
 
             # Filter selected strategies: must exist in registry & in candidates

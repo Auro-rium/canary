@@ -628,6 +628,22 @@ _STRATEGY_TO_ASI: Dict[str, str] = {
     "workflow_manipulation":  "ASI-09",
 }
 
+# Severity values accepted by FindingPayload on the frontend.
+# AttackSeverity.INFO ("info") is a valid backend enum value but is not part of
+# the frontend union type ('CRITICAL'|'HIGH'|'MEDIUM'|'LOW'); clamp it to 'LOW'.
+_VALID_FINDING_SEVERITIES: frozenset = frozenset({"CRITICAL", "HIGH", "MEDIUM", "LOW"})
+
+# Normalise evaluator verdict_path values to the two-member union the frontend
+# declares: 'consensus' | 'heuristic_fallback'.
+# - deterministic_only → consensus   (deterministic signal is reliable, not heuristic)
+# - llm_only           → heuristic_fallback (LLM alone is uncertain, unconfirmed)
+_VERDICT_PATH_NORM: Dict[str, str] = {
+    "consensus":          "consensus",
+    "deterministic_only": "consensus",
+    "llm_only":           "heuristic_fallback",
+    "heuristic_fallback": "heuristic_fallback",
+}
+
 
 class CampaignRunRequest(BaseModel):
     campaign_id: str
@@ -642,13 +658,20 @@ def _build_finding(atk: AttackRecord, run_id: str) -> dict:
     indicators = atk.indicators or {}
     verdict = "VULNERABLE" if atk.success else "RESILIENT"
     sev = (atk.severity or "high").upper()
+    # Clamp severity: 'INFO' is a valid backend enum value but is not in the
+    # frontend FindingPayload union type ('CRITICAL'|'HIGH'|'MEDIUM'|'LOW').
+    if sev not in _VALID_FINDING_SEVERITIES:
+        sev = "LOW"
+    raw_vp = indicators.get("verdict_path", "consensus")
+    # Normalise verdict_path to the two values the frontend union type allows.
+    vp = _VERDICT_PATH_NORM.get(raw_vp, "heuristic_fallback")
     return {
         "finding_id": atk.finding_id or f"{run_id}{atk.id:04x}",
         "technique_id": atk.strategy_type,
         "asi_code": _STRATEGY_TO_ASI.get(atk.strategy_type, "ASI-01"),
         "severity": sev,
         "verdict": verdict,
-        "verdict_path": indicators.get("verdict_path", "consensus"),
+        "verdict_path": vp,
         "score": float(atk.score or 0.0),
         "adversarial_input": atk.prompt or "",
         "target_response_summary": (atk.response or "")[:300],
@@ -855,6 +878,7 @@ async def campaign_run_sse(req: CampaignRunRequest):
 
             complete_payload = {
                 "campaign_id":    campaign_id,
+                "run_id":         run_id,
                 "total_findings": len(vulnerable),
                 "critical_count": critical_count,
                 "high_count":     high_count,
@@ -865,6 +889,7 @@ async def campaign_run_sse(req: CampaignRunRequest):
             logger.error(f"[SSE] Final report build failed: {exc}")
             complete_payload = {
                 "campaign_id":    campaign_id,
+                "run_id":         run_id,
                 "total_findings": 0,
                 "critical_count": 0,
                 "high_count":     0,

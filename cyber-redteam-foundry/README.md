@@ -1,317 +1,403 @@
-# Cyber Red Team Foundry — Backend Engine 🛡️⚙️
+# Cyber Red Team Foundry
 
-[![Python 3.11](https://img.shields.io/badge/Python-3.11-blue.svg)](https://www.python.org/)
-[![LangGraph](https://img.shields.io/badge/LangGraph-State%20Machine-purple.svg)](https://github.com/langchain-ai/langgraph)
-[![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688.svg)](https://fastapi.tiangolo.com/)
-[![AWS Bedrock](https://img.shields.io/badge/AWS%20Bedrock-Enabled-orange.svg)](https://aws.amazon.com/bedrock/)
+[![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688.svg?logo=fastapi)](https://fastapi.tiangolo.com/)
+[![LangGraph](https://img.shields.io/badge/LangGraph-state%20machine-7c3aed.svg)](https://github.com/langchain-ai/langgraph)
+[![AWS Bedrock](https://img.shields.io/badge/AWS-Bedrock-FF9900.svg?logo=amazon-aws)](https://aws.amazon.com/bedrock/)
+[![sentence-transformers](https://img.shields.io/badge/sentence--transformers-MiniLM--L6--v2-blue.svg)](https://www.sbert.net/)
+[![pytest](https://img.shields.io/badge/tests-97%20passed-brightgreen.svg?logo=pytest)](https://pytest.org/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-The core adversarial testing engine behind Agent Canary. This subproject implements the full red-team orchestration pipeline — from strategy selection through attack execution, evaluation, defense patching, and report generation — all powered by a LangGraph state machine and AWS Bedrock LLMs.
+Red-team orchestration engine for AI agents. FastAPI + LangGraph on AWS Bedrock. Attacks any HTTP-based AI agent, evaluates findings against an ASI/ATLAS taxonomy, proposes and retests defenses, and generates structured audit reports.
 
 ---
 
-## 📁 Source Layout
+## Contents
+
+- [Source Layout](#source-layout)
+- [5-Agent Pipeline](#5-agent-pipeline)
+- [Targeting Any HTTP Agent](#targeting-any-http-agent)
+- [Attack Strategies](#attack-strategies)
+- [Evaluation Pipeline](#evaluation-pipeline)
+- [ASI/ATLAS Taxonomy](#asiatltas-taxonomy)
+- [Storage](#storage)
+- [REST API](#rest-api)
+- [CLI Reference](#cli-reference)
+- [Environment Config](#environment-config)
+- [Installation](#installation)
+- [Docker](#docker)
+- [Testing](#testing)
+
+---
+
+## Source Layout
 
 ```
 cyber-redteam-foundry/
-├── pyproject.toml                  # Package manifest (hatchling, deps, scripts)
-├── Dockerfile                      # Python 3.11 container with CPU PyTorch
-├── .env.example                    # Template for environment configuration
+├── pyproject.toml
+├── Dockerfile
 ├── configs/
-│   ├── models.yaml                 # Per-agent LLM model assignments
-│   ├── asi_taxonomy.yaml           # ASI safety taxonomy definitions
-│   ├── attack_profiles.yaml        # Attack profile configurations
-│   ├── local.yaml                  # Local development overrides
-│   ├── policies.yaml               # Security policy templates
-│   └── thresholds.yaml             # Evaluation threshold settings
+│   ├── models.yaml          # Per-agent LLM model assignments
+│   ├── asi_taxonomy.yaml    # strategy+component → ASI class + ATLAS technique
+│   ├── thresholds.yaml      # Per-ASI confidence thresholds
+│   ├── attack_profiles.yaml
+│   ├── policies.yaml
+│   └── local.yaml
 ├── prompts/
-│   ├── strategist.md               # Strategist agent system prompt
-│   ├── attacker.md                 # Attacker agent system prompt
-│   ├── evaluator.md                # Evaluator agent system prompt
-│   ├── defender.md                 # Defender agent system prompt
-│   ├── reporter.md                 # Reporter agent system prompt
-│   └── orchestrator.md             # LangGraph orchestrator routing prompt
-├── target_agent/                   # Standalone victim agent (see target_agent/README.md)
-├── tests/                          # pytest test suite
-├── runs/                           # Runtime artifacts (SQLite DBs, logs)
-├── reports/                        # Generated audit reports (MD + JSON)
+│   ├── strategist.md
+│   ├── attacker.md
+│   ├── evaluator.md
+│   ├── defender.md
+│   ├── reporter.md
+│   └── orchestrator.md
+├── target_agent/            # Demo victim agent — see target_agent/README.md
+├── tests/
+├── runs/                    # SQLite DBs, logs (git-ignored)
+├── reports/                 # Generated reports (git-ignored)
 └── src/cyberredteam/
-    ├── __init__.py                 # Package initialization
-    ├── cli.py                      # Typer CLI (cyber-rt command)
-    ├── api.py                      # FastAPI REST backend for the dashboard
-    ├── settings.py                 # Pydantic settings from .env
-    ├── schemas.py                  # Shared Pydantic data models
-    ├── logging.py                  # Structured logging setup
+    ├── api.py               # FastAPI — 15 endpoints
+    ├── cli.py               # cyber-rt CLI
+    ├── settings.py          # Pydantic settings from .env
+    ├── schemas.py           # Shared data models
     ├── agents/
-    │   ├── __init__.py             # Agent exports
-    │   ├── strategist.py           # Strategy selection agent
-    │   ├── attacker.py             # Adversarial prompt construction agent
-    │   ├── evaluator.py            # Dual-layer evaluation agent
-    │   ├── defender.py             # Mitigation patch generation agent
-    │   └── reporter.py             # Audit report compilation agent
+    │   ├── strategist.py
+    │   ├── attacker.py
+    │   ├── evaluator.py
+    │   ├── defender.py
+    │   └── reporter.py
     ├── attack_strategies/
-    │   ├── __init__.py             # Strategy exports
-    │   ├── registry.py             # Strategy registry & metadata
-    │   ├── direct.py               # Direct prompt injection payloads
-    │   ├── indirect.py             # Indirect prompt injection payloads
-    │   ├── jailbreaks.py           # Jailbreak probing payloads
-    │   ├── tool_misuse.py          # Tool abuse & RCE payloads
-    │   └── retrieval_poisoning.py  # RAG/retrieval attack payloads
-    ├── defense/                    # Defensive strategy modules
-    ├── evaluation/                 # Heuristic & semantic evaluation logic
+    │   ├── registry.py
+    │   ├── direct.py
+    │   ├── indirect.py
+    │   ├── jailbreaks.py
+    │   ├── tool_misuse.py
+    │   └── retrieval_poisoning.py
+    ├── evaluation/
+    │   ├── taxonomy.py      # ASI/ATLAS lookup
+    │   ├── scorer.py
+    │   └── metrics.py
     ├── langgraph/
-    │   ├── __init__.py             # LangGraph exports
-    │   ├── state.py                # RedTeamState typed dict definition
-    │   ├── graph.py                # Graph builder & node wiring
-    │   ├── nodes.py                # Individual graph node implementations
-    │   └── orchestrator.py         # GraphOrchestrator run coordinator
-    ├── llm/                        # LLM provider abstraction (AWS Bedrock)
-    ├── storage/                    # SQLAlchemy persistence layer
-    └── tools/                      # Shared tooling utilities
+    │   ├── state.py         # RedTeamState typed dict
+    │   ├── graph.py         # Graph builder + SQLite checkpointing
+    │   ├── nodes.py         # Node implementations
+    │   └── orchestrator.py  # GraphOrchestrator entry point
+    ├── llm/
+    │   ├── bedrock.py       # ChatBedrockConverse wrapper
+    │   ├── factory.py       # get_llm_for_agent()
+    │   └── schemas.py       # AttackCase, EvaluationResult, DefensePatch, SecurityReport
+    ├── storage/
+    │   ├── models.py        # SQLAlchemy ORM: runs, attacks, patches, findings,
+    │   │                    #   evaluator_verdicts, attack_traces
+    │   ├── artifact_store.py # SQLiteStore — all persistence methods
+    │   └── embedder.py      # sentence-transformers all-MiniLM-L6-v2 semantic dedup
+    └── tools/
+        ├── target_adapter.py    # HttpTargetAdapter + SandboxTargetAdapter
+        ├── prompt_injection.py  # Deterministic detector
+        ├── sensitive_data.py    # PII/credential detector
+        ├── tool_abuse.py        # Tool parameter injection detector
+        ├── memory_poisoning.py  # Memory/context violation detector
+        └── rag_probe.py         # RAG/retrieval attack detector
 ```
 
 ---
 
-## 🏗️ Architecture
+## 5-Agent Pipeline
 
-### LangGraph State Machine
+### Agents and models
 
-The orchestrator builds a compiled LangGraph that routes execution through 5 cooperative agent nodes. A central `RedTeamState` dictionary (with append-only list annotations) preserves the full execution timeline across checkpoint boundaries.
+| # | Agent | Model (AWS Bedrock) | Role |
+|---|-------|---------------------|------|
+| 1 | Strategist | `qwen.qwen3-coder-480b-a35b-v1:0` | Selects attack strategies for the target |
+| 2 | Attacker | `deepseek.v3-v1:0` | Generates and executes adversarial prompts |
+| 3 | Evaluator | `qwen.qwen3-coder-480b-a35b-v1:0` | Deterministic detectors + LLM judge, 4-case consensus |
+| 4 | Defender | `qwen.qwen3-coder-480b-a35b-v1:0` | Generates guardrail patches, applies via `/patch` |
+| 5 | Reporter | `qwen.qwen3-coder-480b-a35b-v1:0` | Markdown + JSON audit reports |
+
+Models are configured in `configs/models.yaml`. Credentials resolve via the standard `boto3` chain (env vars → shared credentials file → instance/role profile).
+
+### LangGraph flow
 
 ```mermaid
-graph TD;
-    __start__([Start Audit Campaign]) --> strategist[1. Strategist Agent];
-    strategist --> attacker[2. Attacker Agent];
-    attacker --> target[Target Agent / Sandbox / Endpoint];
-    target --> evaluator[3. Evaluator Agent];
-    evaluator --> routing_eval{Vulnerability Found?};
-    routing_eval -.->|Yes| defender[4. Defender Agent];
-    routing_eval -.->|No / Clean| reporter[5. Reporter Agent];
-    
-    defender --> routing_iter{Retest Passed &<br/>Iterations Remain?};
-    routing_iter -.->|Yes| attacker;
-    routing_iter -.->|No / Exhausted| reporter;
-    
-    reporter --> __end__([Generate Reports & Persist]);
+flowchart TD
+    START([Campaign start]) --> S[1 · Strategist\nSelect attack strategies]
+    S --> A[2 · Attacker\nGenerate + execute prompts]
+    A --> T[Target agent\nHTTP endpoint or sandbox]
+    T --> E[3 · Evaluator\nDetectors + LLM judge]
+    E --> R{Finding?}
+    R -->|None| REP[5 · Reporter\nCompile audit report]
+    R -->|Confirmed / Unconfirmed| D[4 · Defender\nPropose guardrail patch]
+    D --> I{Retest passed\nor max iterations?}
+    I -->|Retest | A
+    I -->|Done| REP
+    REP --> END([Reports persisted\nruns/ + reports/])
 
-    style __start__ fill:#10b981,stroke:#047857,stroke-width:2px,color:#fff
-    style __end__ fill:#6366f1,stroke:#4f46e5,stroke-width:2px,color:#fff
-    style target fill:#f59e0b,stroke:#d97706,stroke-width:1px,color:#fff
-    style routing_eval fill:#3b82f6,stroke:#2563eb,stroke-width:1px,color:#fff
-    style routing_iter fill:#3b82f6,stroke:#2563eb,stroke-width:1px,color:#fff
+    style START fill:#10b981,color:#fff,stroke:none
+    style END   fill:#6366f1,color:#fff,stroke:none
+    style T     fill:#f59e0b,color:#fff,stroke:none
+    style R     fill:#3b82f6,color:#fff,stroke:none
+    style I     fill:#3b82f6,color:#fff,stroke:none
 ```
 
-### `RedTeamState` Fields
+### `RedTeamState` fields
 
-| Field                        | Type                  | Purpose                                           |
-| :--------------------------- | :-------------------- | :------------------------------------------------ |
-| `run_id`                     | `str`                 | Unique campaign execution ID                      |
-| `target_id`                  | `str`                 | Target identifier (sandbox key or HTTP URL)        |
-| `strategies`                 | `List[str]`           | Selected attack strategies for the campaign       |
-| `iteration`                  | `int`                 | Current defender→attacker→evaluator cycle count   |
-| `attack_results`             | `List[AttackResult]`  | Cumulative history of attacks and evaluations     |
-| `patch_results`              | `List[PatchResult]`   | Defensive patches and retest outcomes             |
-| `vulnerability_found`        | `bool`                | Whether any safety threshold was breached         |
-| `should_continue_iterating`  | `bool`                | Decision flag for continued iteration             |
+| Field | Type | Purpose |
+|-------|------|---------|
+| `run_id` | `str` | Unique campaign execution ID |
+| `target_id` | `str` | Target identifier (HTTP URL or sandbox key) |
+| `strategies` | `List[str]` | Attack strategies selected for this campaign |
+| `iteration` | `int` | Current defender → attacker → evaluator cycle count |
+| `attack_results` | `List[AttackResult]` | Cumulative history of all attack attempts |
+| `patch_results` | `List[PatchResult]` | Defensive patches and retest outcomes |
+| `vulnerability_found` | `bool` | Whether any threshold was exceeded |
+| `should_continue_iterating` | `bool` | Routing flag for the retest loop |
 
----
-
-## 👥 The 5 Core Agents
-
-| # | Agent          | Responsibility                                                                       |
-|---|----------------|--------------------------------------------------------------------------------------|
-| 1 | **Strategist** | Analyzes target capabilities to select optimal attack strategies                     |
-| 2 | **Attacker**   | Constructs adversarial prompts, formats payloads, and executes probes                |
-| 3 | **Evaluator**  | Dual-layer evaluation — deterministic regex heuristics + semantic LLM judge          |
-| 4 | **Defender**   | Drafts concrete mitigation patches (prompt guardrails, tool constraints)             |
-| 5 | **Reporter**   | Compiles Markdown & JSON audit reports with aggregate safety indices                 |
-
-Each agent's behavior is governed by a dedicated system prompt in `prompts/` and backed by an AWS Bedrock model configured in `configs/models.yaml`.
+Each agent's system prompt lives in `prompts/<agent>.md`. `RedTeamState` uses append-only list annotations so every node sees the complete execution timeline across SQLite checkpoint boundaries.
 
 ---
 
-## ⚡ Supported Attack Strategies
+## Targeting Any HTTP Agent
 
-| Strategy Key               | Category                    | Risk Level |
-| :------------------------- | :-------------------------- | :--------- |
-| `prompt_injection`         | Direct Prompt Injection     | High       |
-| `indirect_injection`       | Indirect Prompt Injection   | High       |
-| `jailbreak`                | Jailbreak Probing           | Critical   |
-| `tool_misuse`              | Tool Abuse & RCE            | Critical   |
-| `memory_poisoning`         | Memory & Context Poisoning  | High       |
-| `retrieval_poisoning`      | RAG Probing & Exfiltration  | High       |
-| `sensitive_data_exposure`  | Sensitive Data Exposure     | High       |
-| `workflow_manipulation`    | Workflow Manipulation       | Medium     |
-| `agent_handoff_corruption` | Agent Handoff Corruption    | Medium     |
-| `authorization_boundary`   | Authorization Boundary      | Critical   |
-| `instruction_hierarchy`    | Instruction Hierarchy       | High       |
-| `context_isolation`        | Context Isolation            | Medium     |
+`HttpTargetAdapter` (in `tools/target_adapter.py`) sends `POST {endpoint}` with body `{"message": "..."}` and reads `response` from the JSON reply. To red-team your own agent:
+
+```bash
+cyber-rt run \
+  --target-id http://your-agent.example.com/chat \
+  --strategies prompt_injection,tool_misuse,sensitive_data_exposure
+```
+
+The adapter auto-resolves `localhost` to `host.docker.internal` when running inside Docker. `SandboxTargetAdapter` is available for offline testing against the bundled demo victim in `target_agent/`.
 
 ---
 
-## 🤖 LLM Configuration (AWS Bedrock)
+## Attack Strategies
 
-Models are assigned per-agent in `configs/models.yaml`:
+| Strategy key | Category | ASI class |
+|---|---|---|
+| `prompt_injection` | Direct prompt injection | ASI01 |
+| `indirect_injection` | Indirect prompt injection | ASI01 |
+| `jailbreak` | Jailbreak probing | ASI01 |
+| `tool_misuse` | Tool abuse / RCE | ASI02 |
+| `privilege_escalation` | Privilege escalation | ASI03 |
+| `sensitive_data_exposure` | PII / credential exfiltration | ASI04 |
+| `memory_poisoning` | Memory / context poisoning | ASI05 |
+| `context_isolation` | Context isolation bypass | ASI05 |
+| `workflow_manipulation` | Workflow manipulation | ASI06 |
+| `agent_handoff_corruption` | Agent handoff corruption | ASI06 |
+| `authorization_boundary` | Authorization boundary | ASI03 |
+| `instruction_hierarchy` | Instruction hierarchy | ASI01 |
+| `retrieval_poisoning` | RAG probing / exfiltration | ASI01 |
+
+---
+
+## Evaluation Pipeline
+
+### Deterministic layer (no LLM cost, runs first)
+
+| Tool | What it checks |
+|---|---|
+| `PromptInjectionTool` | Instruction-override patterns in responses |
+| `SensitiveDataExtractor` | PII / credentials in data context (requires data context, not keyword match) |
+| `ToolAbuseTool` | Wildcard / injection in tool call parameters |
+| `MemoryPoisoningTool` | Schema violations / unauthorized memory writes |
+| `RAGProbeTool` | Retrieval manipulation signatures |
+| Canary token check | Injected canary token exfiltration (highest confidence) |
+
+### 4-case consensus
+
+```
+det hit + LLM agrees   → confirmed     (high confidence)
+det hit + LLM unsure   → confirmed     (medium confidence)
+LLM only               → unconfirmed   (low — human review required)
+neither                → inconclusive  (never auto-escalates)
+```
+
+Only `confirmed` and `unconfirmed` verdicts create finding records. `inconclusive` is stored in `evaluator_verdicts` for audit but does not open a finding.
+
+---
+
+## ASI/ATLAS Taxonomy
+
+`configs/asi_taxonomy.yaml` maps `strategy + component → ASI class + ATLAS technique`. Resolution is first-match, with `*` as wildcard:
 
 ```yaml
-strategist:
-  model: qwen.qwen3-coder-480b-a35b-v1:0
-attacker:
-  model: qwen.qwen3-coder-30b-a3b-v1:0
-evaluator:
-  model: qwen.qwen3-coder-480b-a35b-v1:0
-defender:
-  model: qwen.qwen3-coder-480b-a35b-v1:0
-reporter:
-  model: qwen.qwen3-coder-480b-a35b-v1:0
+mappings:
+  - strategy: tool_misuse
+    component: employee_lookup
+    asi_class: ASI02
+    atlas_technique: "AML.T0051.002"
+
+  - strategy: prompt_injection
+    component: "*"
+    asi_class: ASI01
+    atlas_technique: "AML.T0051.001"
 ```
 
-Credentials are resolved via the standard `boto3` chain (environment variables `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`, shared credentials file, or instance/role profile).
+Per-ASI confidence thresholds (`configs/thresholds.yaml`):
+
+```yaml
+per_asi_class:
+  ASI01: 0.65
+  ASI02: 0.60
+  ASI03: 0.70
+  ASI04: 0.55
+  ASI05: 0.60
+  ASI06: 0.65
+```
 
 ---
 
-## 🔑 Environment Configuration
+## Storage
 
-Copy `.env.example` to `.env` and configure:
+### Dual-database layout
+
+```
+runs/checkpoints.db   — LangGraph checkpoint state (resume interrupted runs)
+runs/redteam.db       — Audit artifacts (6 tables)
+```
+
+### `redteam.db` tables
+
+| Table | Purpose |
+|---|---|
+| `runs` | Campaign metadata: start/end times, success rates |
+| `attacks` | Every attack attempt: prompt, response, score, severity, strategy |
+| `patches` | Defender recommendations and retest outcomes |
+| `findings` | Deduplicated by `sha256(target:component:strategy:asi_class)[:16]`; lifecycle state machine |
+| `evaluator_verdicts` | Verdict, confidence, threshold used, rationale per attempt |
+| `attack_traces` | Raw pre-sanitisation prompt, tool calls observed, full response |
+
+### Finding lifecycle
+
+```
+open → patch_proposed → pending_retest → verified_fixed
+                                       → regressed
+any  → wont_fix        (manual; requires reviewer_id + rationale)
+any  → false_positive  (manual)
+```
+
+### Semantic deduplication
+
+`embedder.py` uses `sentence-transformers/all-MiniLM-L6-v2` (384-dim embeddings). A new finding is only inserted if no existing finding has cosine similarity ≥ 0.92 against the same target + strategy combination.
+
+---
+
+## REST API
+
+All endpoints require `Authorization: Bearer <API_SECRET_KEY>`.
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| `GET` | `/api/status` | Health check + system status |
+| `POST` | `/api/runs` | Launch background campaign |
+| `GET` | `/api/runs/{run_id}` | Run state + telemetry |
+| `GET` | `/api/runs/{run_id}/analysis-report` | Full analysis details |
+| `GET` | `/api/runs/{run_id}/findings` | Findings from this run |
+| `POST` | `/api/runs/{run_id}/apply` | Mark patches as applied |
+| `GET` | `/api/open-findings` | All open findings |
+| `GET` | `/api/incidents` | Live incident feed |
+| `GET` | `/api/findings` | Paginated; filter by `severity`, `status`, `asi_class` |
+| `GET` | `/api/findings/{finding_id}` | Single finding + latest verdict |
+| `GET` | `/api/findings/{finding_id}/attempts` | All attack attempts for this finding |
+| `PUT` | `/api/findings/{finding_id}/status` | Lifecycle transition |
+| `GET` | `/api/targets/{target_id}/coverage` | ASI class coverage map |
+| `GET` | `/api/targets/{target_id}/trends` | Attack success rate over time |
+| `POST` | `/api/campaigns/run` | SSE streaming campaign run |
+
+Interactive docs: `http://localhost:8001/docs` (Swagger UI) after `cyber-rt server`.
+
+---
+
+## CLI Reference
+
+```
+cyber-rt init                        # Create DBs, dirs, logging
+cyber-rt doctor                      # Verify env + test Bedrock connectivity
+cyber-rt list-strategies             # Show all strategies with ASI class
+cyber-rt run \
+  --target-id <id> \
+  --strategies <s1,s2,...> \
+  --max-attempts 3 \
+  --max-iterations 3
+cyber-rt status                      # Summary of last run
+cyber-rt graph                       # Print LangGraph as Mermaid diagram
+cyber-rt server --port 8001          # Start FastAPI server
+```
+
+---
+
+## Environment Config
 
 ```env
 # AWS Bedrock
-AWS_REGION="us-west-2"
-AWS_ACCESS_KEY_ID="your-aws-access-key"
-AWS_SECRET_ACCESS_KEY="your-aws-secret-key"
+AWS_ACCESS_KEY_ID=
+AWS_SECRET_ACCESS_KEY=
+AWS_DEFAULT_REGION=us-west-2
 
-# API Authentication (required for the FastAPI backend)
-API_SECRET_KEY="your-random-api-token"
+# API auth — must match VITE_API_TOKEN in the frontend
+API_SECRET_KEY=
 
-# Target Configuration
-TARGET_MODE="sandbox"                            # sandbox | http
-TARGET_ENDPOINT="http://localhost:9000/chat"      # used when TARGET_MODE=http
-TARGET_API_KEY=""
+# Target
+TARGET_MODE=http                     # http | sandbox
+TARGET_ENDPOINT=http://localhost:9000/chat
+TARGET_API_KEY=                      # optional
 
-# Authorization Scope (comma-separated allowed target IDs)
-ALLOWED_TARGETS="http://localhost:9000/chat,sandbox-target-001"
+# LangSmith tracing (optional)
+LANGCHAIN_TRACING_V2=true
+LANGCHAIN_API_KEY=
+LANGCHAIN_PROJECT=canary-redteam
+
+# DB paths
+DB_PATH=runs/redteam.db
 ```
+
+Copy `.env.example` to `.env`, then run `cyber-rt doctor` to verify connectivity before the first campaign.
 
 ---
 
-## 💻 CLI Reference (`cyber-rt`)
-
-The package registers a unified CLI via the `cyber-rt` entrypoint:
-
-| Command              | Description                                               |
-| :------------------- | :-------------------------------------------------------- |
-| `cyber-rt init`      | Create SQLite databases, directories, and logging configs  |
-| `cyber-rt run`       | Execute a red-team campaign with specified strategies     |
-| `cyber-rt list-strategies` | Show all supported strategies with risk levels       |
-| `cyber-rt status`    | Display summary of the most recent run                    |
-| `cyber-rt graph`     | Print the LangGraph workflow as a Mermaid diagram         |
-| `cyber-rt doctor`    | Verify environment settings and test Bedrock connectivity |
-| `cyber-rt server`    | Start the FastAPI backend server for the dashboard        |
-
-### Examples
+## Installation
 
 ```bash
-# Initialize the environment
+cd cyber-redteam-foundry
+
+# 1. Create virtual environment (Python 3.11)
+uv venv --python 3.11
+source .venv/bin/activate
+
+# 2. Install package + dev extras
+uv pip install -e ".[dev]"
+
+# 3. Configure
+cp .env.example .env
+# fill in AWS credentials and API_SECRET_KEY
+
+# 4. Initialise databases and verify
 cyber-rt init
-
-# Run a prompt injection campaign against the local sandbox
-cyber-rt run --target-id sandbox-test --strategies prompt_injection --max-attempts 3
-
-# Multi-strategy campaign against a live target agent
-cyber-rt run \
-  --target-id http://localhost:9000/chat \
-  --strategies prompt_injection,tool_misuse,retrieval_poisoning \
-  --max-attempts 5 \
-  --max-iterations 3
-
-# Start the API server for the frontend dashboard
-cyber-rt server --port 8000
+cyber-rt doctor
 ```
 
 ---
 
-## 🌐 FastAPI REST API
-
-The backend (`cyberredteam.api`) serves the Agent Canary dashboard frontend. All routes require `Authorization: Bearer <API_SECRET_KEY>`.
-
-| Method | Endpoint                             | Purpose                                  |
-| :----- | :----------------------------------- | :--------------------------------------- |
-| `GET`  | `/api/status`                        | Health check & system status             |
-| `POST` | `/api/runs`                          | Launch a background campaign thread      |
-| `GET`  | `/api/runs/{run_id}`                 | Fetch run state and telemetry            |
-| `GET`  | `/api/runs/{run_id}/analysis-report` | Pull analysis details & policy YAML      |
-| `GET`  | `/api/open-findings`                 | List unresolved vulnerabilities          |
-| `POST` | `/api/runs/{run_id}/apply`           | Mark patches as applied                  |
-| `GET`  | `/api/incidents`                     | Live incident telemetry feed             |
-
----
-
-## 💾 Data Persistence
-
-The platform uses a dual-database architecture:
-
-```
-[Campaign Run]
-   ├──> SQLite Checkpoint Saver ───> runs/checkpoints.db  (LangGraph execution state)
-   └──> SQLite Artifact Store   ───> runs/redteam.db      (Audit trails, attacks, patches)
-```
-
-- **`runs/checkpoints.db`**: LangGraph checkpoint histories and thread state for resuming interrupted runs.
-- **`runs/redteam.db`**: Campaign runs, attack results, patch results, and report metadata.
-
----
-
-## 🐳 Docker
-
-The `Dockerfile` builds a Python 3.11 slim image with CPU-only PyTorch:
+## Docker
 
 ```bash
-# Build the image
+# Build
 docker build -t redteam-backend .
 
 # Run standalone
 docker run -p 8001:8001 --env-file .env redteam-backend
 
-# Or via docker compose (from repo root):
+# Or via Compose from the repo root
 docker compose up -d redteam-backend
 ```
 
-**Exposed ports**: `8001` (FastAPI API), `9000` (target agent).
+The image exposes port `8001` (FastAPI). The demo target agent exposes `9000`.
 
 ---
 
-## 🧪 Testing
+## Testing
 
 ```bash
-# Run all tests with coverage
 pytest tests/ -v --cov=src/cyberredteam --cov-report=term-missing
-
-# Run a specific test file
-pytest tests/test_evaluator.py -v
 ```
 
----
-
-## 🚀 Quick Start
-
-```bash
-# 1. Install uv (recommended)
-curl -LsSf https://astral.sh/uv/install.sh | sh
-
-# 2. Create venv and install
-uv venv --python 3.11
-source .venv/bin/activate
-uv pip install -e ".[dev]"
-
-# 3. Configure environment
-cp .env.example .env
-# Edit .env with your AWS credentials and API key
-
-# 4. Initialize
-cyber-rt init
-
-# 5. Verify connectivity
-cyber-rt doctor
-
-# 6. Run your first campaign
-cyber-rt run --target-id sandbox-test --strategies prompt_injection
-```
+97 tests. Coverage report printed to terminal.

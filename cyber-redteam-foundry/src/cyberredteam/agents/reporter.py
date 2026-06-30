@@ -28,6 +28,8 @@ class ReporterAgent:
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.llm = llm or get_llm_for_agent("reporter", store=store)
         self.system_prompt = load_prompt("reporter")
+        # Build LCEL chain once — ChatPromptTemplate | llm.with_structured_output(SecurityReport)
+        self._report_chain = self.llm.build_structured_chain(self.system_prompt, SecurityReport)
 
     def generate_report(
         self,
@@ -100,10 +102,8 @@ class ReporterAgent:
         )
 
         try:
-            sec_report: SecurityReport = self.llm.invoke_structured(
-                system_prompt=self.system_prompt,
-                user_message=user_message,
-                output_schema=SecurityReport,
+            sec_report: SecurityReport = self.llm.invoke_chain(
+                self._report_chain, user_message, system_context=self.system_prompt
             )
             narratives = {
                 "executive_summary": sec_report.executive_summary,

@@ -27,6 +27,8 @@ class DefenderAgent:
         """
         self.llm = llm or get_llm_for_agent("defender", store=store)
         self.system_prompt = load_prompt("defender")
+        # Build LCEL chain once — ChatPromptTemplate | llm.with_structured_output(DefensePatch)
+        self._patch_chain = self.llm.build_structured_chain(self.system_prompt, DefensePatch)
 
     def plan_defenses(self, attack_results: List[AttackResult]) -> List[PatchResult]:
         """Plan remediation patches for successful attacks using LLM.
@@ -81,11 +83,8 @@ class DefenderAgent:
             )
 
             try:
-                # 1. Plan remediation patch via LLM
-                llm_patch: DefensePatch = self.llm.invoke_structured(
-                    system_prompt=self.system_prompt,
-                    user_message=user_message,
-                    output_schema=DefensePatch,
+                llm_patch: DefensePatch = self.llm.invoke_chain(
+                    self._patch_chain, user_message, system_context=self.system_prompt
                 )
 
                 # 2. Map LLM patch_type to PatchType Enum

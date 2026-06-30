@@ -2,6 +2,8 @@
 
 from typing import Dict, List, Any, Optional
 
+from langchain_core.tools import tool
+
 
 class PromptInjectionTool:
     """Generates direct prompt injection payloads and analyzes target responses for compliance."""
@@ -80,3 +82,22 @@ class PromptInjectionTool:
             "indicators": complied_indicators,
             "injection_score": score,
         }
+
+
+# ─── LangChain @tool wrappers ─────────────────────────────────────────────────
+# Class methods above stay intact for all existing direct callers.
+# These @tool instances make the same logic available to LangChain agents
+# via bind_tools() and are collected in tools.ALL_RED_TEAM_TOOLS.
+
+@tool
+def generate_prompt_injection_payloads(target_description: str = "") -> List[str]:
+    """Generate direct prompt injection payloads tailored to the target agent's role."""
+    return PromptInjectionTool.generate_payloads(
+        target_description=target_description or None
+    )
+
+
+@tool
+def analyze_prompt_injection_response(response: str) -> Dict[str, Any]:
+    """Analyze a target agent response to determine if a prompt injection attack succeeded."""
+    return PromptInjectionTool.analyze_response(response)

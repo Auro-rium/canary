@@ -15,7 +15,7 @@ ensuring the *runtime* code path never fabricates output:
 import pytest
 from fixtures.fake_llm import FakeStructuredLLM
 
-from cyberredteam.llm.azure_openai import ObservableLLM
+from cyberredteam.llm.bedrock import ObservableLLM
 
 
 @pytest.fixture(autouse=True)

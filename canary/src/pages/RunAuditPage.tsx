@@ -43,6 +43,7 @@ interface FindingPayload {
 
 interface CompletePayload {
   campaign_id: string
+  run_id: string
   total_findings: number
   critical_count: number
   high_count: number
@@ -763,6 +764,7 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
       appendLog('SYSTEM', `Campaign complete. ${findings.filter(f => f.verdict === 'VULNERABLE').length} findings. Report generating.`)
       setReport({
         campaign_id:      campaignId,
+        run_id:           '',
         total_findings:   findings.filter(f => f.verdict !== 'RESILIENT').length,
         critical_count:   critical,
         high_count:       high,
@@ -1044,6 +1046,7 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
             <div className="flex flex-col gap-1">
               <span className="text-white/30 text-[10px] uppercase tracking-wider">Campaign</span>
               <span className="text-white font-bold text-lg tracking-tight">{report.campaign_id}</span>
+              <span className="text-white/30 text-[10px] font-mono">run: {report.run_id}</span>
             </div>
             <div className="flex gap-3 flex-wrap">
               <div className="border border-red-600/40 bg-red-950/20 px-4 py-2 flex flex-col items-center">
@@ -1061,6 +1064,12 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
               <div className="border border-white/10 px-4 py-2 flex flex-col items-center">
                 <span className="text-white text-xl font-bold">{report.duration_seconds}s</span>
                 <span className="text-white/30 text-[9px] uppercase tracking-wider">Duration</span>
+              </div>
+              <div className="border border-white/10 px-4 py-2 flex flex-col items-center">
+                <span className="text-white/40 text-xs font-mono truncate max-w-[160px]">
+                  {targetUrl.trim() || 'HR Agent'}
+                </span>
+                <span className="text-white/30 text-[9px] uppercase tracking-wider">Target</span>
               </div>
             </div>
           </div>

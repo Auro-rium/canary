@@ -8,6 +8,8 @@ unconfigured; a security tool must never fabricate findings in production.
 
 from typing import Any
 
+from langchain_core.runnables import RunnableLambda
+
 
 class _FakeStructuredRunnable:
     """Returns deterministic, schema-valid mock instances."""
@@ -93,13 +95,26 @@ class _FakeMessage:
 
 
 class FakeStructuredLLM:
-    """Mock ``BaseChatModel`` standing in for ``ChatBedrockConverse`` in tests."""
+    """Mock ``BaseChatModel`` standing in for ``ChatBedrockConverse`` in tests.
+
+    Returns ``RunnableLambda`` from ``with_structured_output`` so it composes
+    with LCEL pipe chains (``ChatPromptTemplate | llm.with_structured_output(schema)``).
+    Implements ``__or__`` / ``__ror__`` so plain text chains work too
+    (``ChatPromptTemplate | llm | StrOutputParser()``).
+    """
 
     def __init__(self, **kwargs: Any):
         pass
 
-    def with_structured_output(self, schema: Any, **kwargs: Any) -> Any:
-        return _FakeStructuredRunnable(schema)
+    def with_structured_output(self, schema: Any, **kwargs: Any) -> RunnableLambda:
+        runner = _FakeStructuredRunnable(schema)
+        return RunnableLambda(runner.invoke)
 
     def invoke(self, messages: Any, **kwargs: Any) -> Any:
         return _FakeMessage()
+
+    def __or__(self, other: Any) -> Any:
+        return RunnableLambda(self.invoke) | other
+
+    def __ror__(self, other: Any) -> Any:
+        return other | RunnableLambda(self.invoke)

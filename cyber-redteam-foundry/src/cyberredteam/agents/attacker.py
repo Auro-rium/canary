@@ -54,6 +54,8 @@ class AttackerAgent:
         """
         self.llm = llm or get_llm_for_agent("attacker", store=store)
         self.system_prompt = load_prompt("attacker")
+        # Build LCEL chain once — ChatPromptTemplate | llm.with_structured_output(AttackCase)
+        self._attack_chain = self.llm.build_structured_chain(self.system_prompt, AttackCase)
 
         if target_adapter is None:
             # Create default based on settings
@@ -136,10 +138,8 @@ class AttackerAgent:
 
 
         try:
-            attack_case: AttackCase = self.llm.invoke_structured(
-                system_prompt=self.system_prompt,
-                user_message=user_message,
-                output_schema=AttackCase,
+            attack_case: AttackCase = self.llm.invoke_chain(
+                self._attack_chain, user_message, system_context=self.system_prompt
             )
             # Ensure the output strategy matches what we asked
             attack_case.category = strategy_type.value

@@ -16,7 +16,7 @@ export default function App() {
   return (
     <main className="bg-black min-h-screen font-mono">
       <Navbar onRunAudit={() => setPage('audit')} />
-      <Hero onRunAudit={() => setPage('audit')} />
+      <Hero />
     </main>
   )
 }

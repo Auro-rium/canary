@@ -1,6 +1,6 @@
-# Single public port: 8000
-#   nginx (canary-frontend) serves the React SPA and reverse-proxies /api/*
-#   to redteam-backend:8001 (internal-only).  target-agent is also internal.
+# Ports: 8000 (nginx/React SPA), 8001 (FastAPI/uvicorn direct access)
+#   nginx reverse-proxies /api/* to redteam-backend:8001 internally.
+#   8001 is also mapped to the host for direct FastAPI/uvicorn inspection.
 
 networks:
   canary-net:
@@ -18,6 +18,8 @@ services:
       - ./cyber-redteam-foundry/.env
     environment:
       - RUNNING_IN_DOCKER=true
+    ports:
+      - "9000:9000"
     networks:
       - canary-net
     restart: unless-stopped
@@ -36,6 +38,8 @@ services:
       - ./cyber-redteam-foundry/.env
     environment:
       - RUNNING_IN_DOCKER=true
+    ports:
+      - "8001:8001"
     volumes:
       - ./runs:/app/runs
       - ./reports:/app/reports

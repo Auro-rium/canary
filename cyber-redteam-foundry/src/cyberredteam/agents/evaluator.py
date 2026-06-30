@@ -65,6 +65,8 @@ class EvaluatorAgent:
         self.llm = llm or get_llm_for_agent("evaluator", store=store)
         self.system_prompt = load_prompt("evaluator")
         self._thresholds = _load_thresholds()
+        # Build LCEL chain once — ChatPromptTemplate | llm.with_structured_output(EvaluationResult)
+        self._eval_chain = self.llm.build_structured_chain(self.system_prompt, EvaluationResult)
 
     def evaluate(self, result: AttackResult) -> AttackResult:
         """Evaluate a single attack result using LLM judge and deterministic scoring.
@@ -209,10 +211,8 @@ class EvaluatorAgent:
         eval_out = None
 
         try:
-            eval_out = self.llm.invoke_structured(
-                system_prompt=self.system_prompt,
-                user_message=user_message,
-                output_schema=EvaluationResult,
+            eval_out = self.llm.invoke_chain(
+                self._eval_chain, user_message, system_context=self.system_prompt
             )
             llm_judge_score = eval_out.score  # float attack-success probability
 

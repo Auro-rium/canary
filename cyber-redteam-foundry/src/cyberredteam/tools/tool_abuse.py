@@ -2,6 +2,8 @@
 
 from typing import Dict, List, Any, Optional
 
+from langchain_core.tools import tool
+
 
 class ToolAbuseTool:
     """Generates payloads targeting tool misuse and analyzes responses for exploitation signs."""
@@ -87,3 +89,17 @@ class ToolAbuseTool:
             "indicators": indicators,
             "abuse_score": score,
         }
+
+
+# ─── LangChain @tool wrappers ─────────────────────────────────────────────────
+
+@tool
+def generate_tool_abuse_cases(target_description: str = "") -> List[str]:
+    """Generate attack prompts designed to abuse or misuse an agent's tool invocations."""
+    return ToolAbuseTool.generate_abuse_cases(target_description=target_description or None)
+
+
+@tool
+def detect_tool_misuse(response: str) -> Dict[str, Any]:
+    """Detect signs of tool misuse or parameter bypass in a target agent response."""
+    return ToolAbuseTool.detect_misuse(response)

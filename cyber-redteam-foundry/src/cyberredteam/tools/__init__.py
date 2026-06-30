@@ -1,24 +1,75 @@
-"""Tools module initialization."""
+"""Tools module — LangChain-based red-team detection and payload tools."""
 
 from cyberredteam.tools.target_adapter import (
     HttpTargetAdapter,
     SandboxTargetAdapter,
     TargetAdapter,
 )
-from cyberredteam.tools.prompt_injection import PromptInjectionTool
-from cyberredteam.tools.tool_abuse import ToolAbuseTool
-from cyberredteam.tools.memory_poisoning import MemoryPoisoningTool
-from cyberredteam.tools.sensitive_data import SensitiveDataExtractor
-from cyberredteam.tools.rag_probe import RAGProbeTool
+from cyberredteam.tools.prompt_injection import (
+    PromptInjectionTool,
+    generate_prompt_injection_payloads,
+    analyze_prompt_injection_response,
+)
+from cyberredteam.tools.tool_abuse import (
+    ToolAbuseTool,
+    generate_tool_abuse_cases,
+    detect_tool_misuse,
+)
+from cyberredteam.tools.memory_poisoning import (
+    MemoryPoisoningTool,
+    generate_memory_poisoning_payloads,
+    check_memory_poisoning,
+)
+from cyberredteam.tools.sensitive_data import (
+    SensitiveDataExtractor,
+    scan_response_for_sensitive_data,
+    check_canary_token_exfiltration,
+    get_sensitive_data_extraction_targets,
+)
+from cyberredteam.tools.rag_probe import (
+    RAGProbeTool,
+    generate_rag_probes,
+    analyze_rag_retrieval_response,
+)
+
+# All LangChain @tool instances — pass to llm.bind_tools() to give an agent
+# direct access to every red-team detector and payload generator.
+ALL_RED_TEAM_TOOLS = [
+    generate_prompt_injection_payloads,
+    analyze_prompt_injection_response,
+    generate_tool_abuse_cases,
+    detect_tool_misuse,
+    generate_memory_poisoning_payloads,
+    check_memory_poisoning,
+    scan_response_for_sensitive_data,
+    check_canary_token_exfiltration,
+    get_sensitive_data_extraction_targets,
+    generate_rag_probes,
+    analyze_rag_retrieval_response,
+]
 
 __all__ = [
+    # Adapters
     "TargetAdapter",
     "SandboxTargetAdapter",
     "HttpTargetAdapter",
+    # Legacy class interfaces
     "PromptInjectionTool",
     "ToolAbuseTool",
     "MemoryPoisoningTool",
     "SensitiveDataExtractor",
     "RAGProbeTool",
+    # @tool instances
+    "generate_prompt_injection_payloads",
+    "analyze_prompt_injection_response",
+    "generate_tool_abuse_cases",
+    "detect_tool_misuse",
+    "generate_memory_poisoning_payloads",
+    "check_memory_poisoning",
+    "scan_response_for_sensitive_data",
+    "check_canary_token_exfiltration",
+    "get_sensitive_data_extraction_targets",
+    "generate_rag_probes",
+    "analyze_rag_retrieval_response",
+    "ALL_RED_TEAM_TOOLS",
 ]
-

@@ -2,6 +2,8 @@
 
 from typing import Dict, List, Any, Optional
 
+from langchain_core.tools import tool
+
 
 class RAGProbeTool:
     """Generates RAG exfiltration payloads and checks target responses for retrieved doc leaks."""
@@ -78,3 +80,17 @@ class RAGProbeTool:
             "indicators": indicators,
             "probe_score": score,
         }
+
+
+# ─── LangChain @tool wrappers ─────────────────────────────────────────────────
+
+@tool
+def generate_rag_probes(target_description: str = "") -> List[str]:
+    """Generate prompts to probe a RAG-backed agent and exfiltrate retrieved documents."""
+    return RAGProbeTool.generate_probes(target_description=target_description or None)
+
+
+@tool
+def analyze_rag_retrieval_response(response: str) -> Dict[str, Any]:
+    """Analyze a target response for signs of successful RAG document exfiltration."""
+    return RAGProbeTool.analyze_retrieval(response)

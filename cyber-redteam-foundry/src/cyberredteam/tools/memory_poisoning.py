@@ -2,6 +2,8 @@
 
 from typing import Dict, List, Any, Optional
 
+from langchain_core.tools import tool
+
 
 class MemoryPoisoningTool:
     """Generates context/memory poisoning payloads and checks target responses for corruption."""
@@ -85,3 +87,19 @@ class MemoryPoisoningTool:
             "indicators": indicators,
             "poisoning_score": score,
         }
+
+
+# ─── LangChain @tool wrappers ─────────────────────────────────────────────────
+
+@tool
+def generate_memory_poisoning_payloads(target_description: str = "") -> List[str]:
+    """Generate prompts designed to poison an agent's memory or context with false information."""
+    return MemoryPoisoningTool.generate_poisoning_payloads(
+        target_description=target_description or None
+    )
+
+
+@tool
+def check_memory_poisoning(response: str) -> Dict[str, Any]:
+    """Check if a target agent response indicates successful memory or context poisoning."""
+    return MemoryPoisoningTool.check_poisoning(response)

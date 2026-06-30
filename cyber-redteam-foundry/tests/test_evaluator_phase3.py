@@ -36,7 +36,9 @@ def _eval_with_judge_output(eval_out: EvaluationResult, result: AttackResult = N
     evaluator._thresholds = {"defaults": {"medium": 0.5}, "per_asi_class": {}}
     evaluator.system_prompt = "mock"
     mock_llm = MagicMock()
-    mock_llm.invoke_structured.return_value = eval_out
+    # invoke_chain is the entry point now (LCEL chain built in __init__)
+    mock_llm.invoke_chain.return_value = eval_out
+    evaluator._eval_chain = MagicMock()  # pre-built chain slot required by evaluate()
     evaluator.llm = mock_llm
 
     r = result or _make_result()
