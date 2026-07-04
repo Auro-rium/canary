@@ -9,14 +9,26 @@ const Logo = () => (
   </svg>
 )
 
-const NAV_LINKS = ['Red Team', 'Defenses', 'Findings', 'Docs']
+const NAV_LINKS = [
+  { label: 'Console',   key: 'console'  },
+  { label: 'Red Team',  key: 'redteam'  },
+  { label: 'Defenses',  key: 'defenses' },
+  { label: 'Findings',  key: 'findings' },
+]
 
 interface NavbarProps {
   onRunAudit?: () => void
   onLogoClick?: () => void
+  onRedTeam?: () => void
+  onDefenses?: () => void
+  onFindings?: () => void
+  onConsole?: () => void
 }
 
-export default function Navbar({ onRunAudit, onLogoClick }: NavbarProps) {
+export default function Navbar({ onRunAudit, onLogoClick, onRedTeam, onDefenses, onFindings, onConsole }: NavbarProps) {
+  const handlers: Record<string, (() => void) | undefined> = {
+    console: onConsole, redteam: onRedTeam, defenses: onDefenses, findings: onFindings,
+  }
   const [scrolled, setScrolled] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
 
@@ -49,14 +61,14 @@ export default function Navbar({ onRunAudit, onLogoClick }: NavbarProps) {
 
         {/* Desktop nav links */}
         <div className="hidden lg:flex items-center gap-8">
-          {NAV_LINKS.map((link) => (
-            <a
-              key={link}
-              href="#"
+          {NAV_LINKS.map(({ label, key }) => (
+            <button
+              key={key}
+              onClick={handlers[key]}
               className="text-white/70 text-xs uppercase tracking-[0.2em] font-light hover:text-white transition-colors duration-200"
             >
-              {link}
-            </a>
+              {label}
+            </button>
           ))}
         </div>
 
@@ -101,12 +113,11 @@ export default function Navbar({ onRunAudit, onLogoClick }: NavbarProps) {
         }`}
       >
         <div className="flex flex-col justify-center flex-1 px-6 sm:px-10 pt-20">
-          {NAV_LINKS.map((link, i) => (
-            <a
-              key={link}
-              href="#"
-              onClick={() => setMenuOpen(false)}
-              className="flex items-center justify-between py-6 border-b border-white/10 group"
+          {NAV_LINKS.map(({ label, key }, i) => (
+            <button
+              key={key}
+              onClick={() => { setMenuOpen(false); handlers[key]?.() }}
+              className="flex items-center justify-between w-full py-6 border-b border-white/10 group"
               style={{
                 transitionProperty: 'opacity, transform',
                 transitionDuration: '0.5s',
@@ -117,12 +128,12 @@ export default function Navbar({ onRunAudit, onLogoClick }: NavbarProps) {
               }}
             >
               <span className="text-2xl sm:text-3xl font-light tracking-tight text-white group-hover:text-white/70 transition-colors duration-200">
-                {link}
+                {label}
               </span>
               <span className="text-red-600/60 text-xs font-light">
                 0{i + 1}
               </span>
-            </a>
+            </button>
           ))}
 
           {/* Mobile CTAs */}
