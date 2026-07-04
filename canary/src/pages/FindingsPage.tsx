@@ -1,12 +1,6 @@
 import { useState, useEffect, useCallback } from 'react'
 import Navbar from '../components/Navbar'
-
-// Backend connection — empty string = relative URL, handled by nginx proxy
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const _env = (import.meta as any).env as Record<string, string>
-const API_BASE  = _env.VITE_API_URL  || ''
-const API_TOKEN = _env.VITE_API_TOKEN || ''
-const authHeader = () => ({ 'Authorization': `Bearer ${API_TOKEN}`, 'Content-Type': 'application/json' })
+import { getFindingAttempts, getFinding, updateFindingStatus, getFindings } from '../lib/api'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -62,6 +56,7 @@ const STATUS_TRANSITIONS: Record<string, string[]> = {
 }
 
 const RATIONALE_REQUIRED = new Set(['wont_fix', 'false_positive'])
+const REPLAY_REQUIRED = new Set(['verified_fixed'])
 
 const ALL_SEVERITIES  = ['critical', 'high', 'medium', 'low']
 const ALL_STATUSES    = ['open', 'patch_proposed', 'pending_retest', 'verified_fixed', 'regressed', 'wont_fix', 'false_positive', 'inconclusive']
@@ -109,10 +104,9 @@ function AttemptsTable({ findingId }: { findingId: string }) {
     let cancelled = false
     setLoading(true)
     setErr(null)
-    fetch(`${API_BASE}/api/findings/${findingId}/attempts`, { headers: authHeader() })
-      .then(r => { if (!r.ok) throw new Error(`${r.status}`); return r.json() })
-      .then((data: Attempt[]) => {
-        if (!cancelled) { setAttempts(Array.isArray(data) ? data : []); setLoading(false) }
+    getFindingAttempts(findingId)
+      .then((data) => {
+        if (!cancelled) { setAttempts(Array.isArray(data) ? data as Attempt[] : []); setLoading(false) }
       })
       .catch((e: unknown) => {
         if (!cancelled) { setErr(e instanceof Error ? e.message : 'Error'); setLoading(false) }
@@ -185,27 +179,26 @@ function TransitionPanel({ finding, onRefresh }: { finding: Finding; onRefresh: 
   const [selected,   setSelected]   = useState('')
   const [reviewerId, setReviewerId] = useState('')
   const [rationale,  setRationale]  = useState('')
+  const [replayRunId, setReplayRunId] = useState('')
+  const [guardrailIntervened, setGuardrailIntervened] = useState(false)
   const [loading,    setLoading]    = useState(false)
   const [err,        setErr]        = useState<string | null>(null)
 
   const needsRationale = RATIONALE_REQUIRED.has(selected)
-  const canSubmit = selected !== '' && (!needsRationale || (reviewerId.trim() !== '' && rationale.trim() !== ''))
+  const needsReplay = REPLAY_REQUIRED.has(selected)
+  const canSubmit = selected !== '' && (!needsRationale || (reviewerId.trim() !== '' && rationale.trim() !== '')) && (!needsReplay || (replayRunId.trim() !== '' && guardrailIntervened))
 
-  const handleCancel = () => { setSelected(''); setReviewerId(''); setRationale(''); setErr(null) }
+  const handleCancel = () => { setSelected(''); setReviewerId(''); setRationale(''); setReplayRunId(''); setGuardrailIntervened(false); setErr(null) }
 
   const handleSubmit = async () => {
     if (!canSubmit || loading) return
     setLoading(true)
     setErr(null)
     try {
-      const body: Record<string, string> = { status: selected }
+      const body: Record<string, string | boolean> = { status: selected }
       if (needsRationale) { body.reviewer_id = reviewerId; body.rationale = rationale }
-      const res = await fetch(`${API_BASE}/api/findings/${finding.finding_id}/status`, {
-        method: 'PUT',
-        headers: authHeader(),
-        body: JSON.stringify(body),
-      })
-      if (!res.ok) throw new Error(`Backend responded ${res.status}`)
+      if (needsReplay) { body.replay_run_id = replayRunId; body.guardrail_intervened = guardrailIntervened }
+      await updateFindingStatus(finding.finding_id, body)
       handleCancel()
       onRefresh()
     } catch (e: unknown) {
@@ -264,6 +257,22 @@ function TransitionPanel({ finding, onRefresh }: { finding: Finding; onRefresh: 
         </div>
       )}
 
+      {/* Replay form — required for verified_fixed */}
+      {selected && needsReplay && (
+        <div className="flex flex-col gap-2 mt-2">
+          <input
+            type="text"
+            value={replayRunId}
+            onChange={e => setReplayRunId(e.target.value)}
+            placeholder="Replay Run ID"
+            className="bg-white/[0.03] border border-white/15 text-white text-[10px] px-3 py-2 placeholder:text-white/20 outline-none focus:border-white/30 transition-colors font-mono"
+          />
+          <label className="flex items-center gap-2 text-[10px] text-white/40 font-mono">
+            <input type="checkbox" checked={guardrailIntervened} onChange={e => setGuardrailIntervened(e.target.checked)} /> Guardrail intervened (confirmed via replay)
+          </label>
+        </div>
+      )}
+
       {/* Confirm / cancel row */}
       {selected && (
         <div className="flex items-center gap-3 mt-2 flex-wrap">
@@ -293,10 +302,10 @@ function VerdictBadge({ findingId }: { findingId: string }) {
   const [verdict, setVerdict] = useState<LatestVerdict | null>(null)
 
   useEffect(() => {
-    fetch(`${API_BASE}/api/findings/${findingId}`, { headers: authHeader() })
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
-        if (data?.latest_verdict) setVerdict(data.latest_verdict)
+    getFinding(findingId)
+      .then((data: unknown) => {
+        const latest = (data as { latest_verdict?: LatestVerdict })?.latest_verdict
+        if (latest) setVerdict(latest)
       })
       .catch(() => {})
   }, [findingId])
@@ -428,9 +437,13 @@ function FindingCard({ finding, index, onRefresh }: { finding: Finding; index: n
 
 interface FindingsPageProps {
   onBack: () => void
+  onRunAudit?: () => void
+  onRedTeam?: () => void
+  onDefenses?: () => void
+  onConsole?: () => void
 }
 
-export default function FindingsPage({ onBack }: FindingsPageProps) {
+export default function FindingsPage({ onBack, onRunAudit, onRedTeam, onDefenses, onConsole }: FindingsPageProps) {
   const [findings,     setFindings]     = useState<Finding[]>([])
   const [loading,      setLoading]      = useState(true)
   const [error,        setError]        = useState<string | null>(null)
@@ -465,10 +478,8 @@ export default function FindingsPage({ onBack }: FindingsPageProps) {
     else setLoadingMore(true)
 
     try {
-      const res = await fetch(`${API_BASE}/api/findings?${buildQuery(pageNum)}`, { headers: authHeader() })
-      if (!res.ok) throw new Error(`Backend responded ${res.status}`)
-      const data: Finding[] = await res.json()
-      const arr = Array.isArray(data) ? data : []
+      const data = await getFindings(buildQuery(pageNum))
+      const arr = Array.isArray(data) ? data as Finding[] : []
       setFindings(prev => reset ? arr : [...prev, ...arr])
       setHasMore(arr.length === PAGE_SIZE)
     } catch (e: unknown) {
@@ -501,7 +512,7 @@ export default function FindingsPage({ onBack }: FindingsPageProps) {
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-black text-white font-mono">
-      <Navbar onLogoClick={onBack} />
+      <Navbar onLogoClick={onBack} onRunAudit={onRunAudit} onRedTeam={onRedTeam} onDefenses={onDefenses} onConsole={onConsole} />
 
       {/* ── HEADER ── */}
       <section className="px-6 sm:px-10 md:px-16 lg:px-20 pt-36 pb-8 border-b border-white/10">

@@ -1,12 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import Navbar from '../components/Navbar'
-
-// Backend connection — empty string = relative URL, handled by nginx proxy
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const _env = (import.meta as any).env as Record<string, string>
-const API_BASE  = _env.VITE_API_URL  || ''
-const API_TOKEN = _env.VITE_API_TOKEN || ''
-const authHeader = () => ({ 'Authorization': `Bearer ${API_TOKEN}`, 'Content-Type': 'application/json' })
+import { getTargetCoverage, getTargetTrends, ApiError } from '../lib/api'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -29,6 +23,10 @@ interface TrendEntry {
 
 interface DefensesPageProps {
   onBack: () => void
+  onRunAudit?: () => void
+  onFindings?: () => void
+  onRedTeam?: () => void
+  onConsole?: () => void
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -43,12 +41,12 @@ const ASI_CLASSES = [
   { code: 'ASI07', name: 'Multi-Agent Hijacking' },
   { code: 'ASI08', name: 'Supply Chain Attack' },
   { code: 'ASI09', name: 'Agent DoS' },
-  { code: 'ASI10', name: 'Prompt Leakage' },
+  { code: 'ASI10', name: 'Unbounded Resource Consumption' },
 ]
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function DefensesPage({ onBack }: DefensesPageProps) {
+export default function DefensesPage({ onBack, onRunAudit, onFindings, onRedTeam, onConsole }: DefensesPageProps) {
   const [inputValue, setInputValue]   = useState('HR Agent')
   const [targetId, setTargetId]       = useState('HR Agent')
   const [coverage, setCoverage]       = useState<Coverage | null>(null)
@@ -69,24 +67,21 @@ export default function DefensesPage({ onBack }: DefensesPageProps) {
     setTrends([])
 
     try {
-      const encoded = encodeURIComponent(trimmed)
-      const [covRes, trendsRes] = await Promise.all([
-        fetch(`${API_BASE}/api/targets/${encoded}/coverage`,        { headers: authHeader() }),
-        fetch(`${API_BASE}/api/targets/${encoded}/trends?days=30`,  { headers: authHeader() }),
+      const [covResult, trendsResult] = await Promise.allSettled([
+        getTargetCoverage(trimmed),
+        getTargetTrends(trimmed, 30),
       ])
 
-      if (covRes.status === 404) {
-        setNoData(true)
-        return
+      if (covResult.status === 'rejected') {
+        if (covResult.reason instanceof ApiError && covResult.reason.status === 404) {
+          setNoData(true)
+          return
+        }
+        throw covResult.reason
       }
 
-      if (!covRes.ok) throw new Error(`Coverage API responded ${covRes.status}`)
-
-      const covData: Coverage   = await covRes.json()
-      const trendsData: TrendEntry[] = (trendsRes.ok) ? await trendsRes.json() : []
-
-      setCoverage(covData)
-      setTrends(trendsData)
+      setCoverage(covResult.value as Coverage)
+      setTrends(trendsResult.status === 'fulfilled' ? (trendsResult.value as TrendEntry[]) : [])
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : 'Unknown error occurred')
     } finally {
@@ -142,7 +137,7 @@ export default function DefensesPage({ onBack }: DefensesPageProps) {
   // ─── RENDER ───────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-black text-white font-mono">
-      <Navbar onLogoClick={onBack} />
+      <Navbar onLogoClick={onBack} onRunAudit={onRunAudit} onFindings={onFindings} onRedTeam={onRedTeam} onConsole={onConsole} />
 
       {/* ── TARGET SELECTOR ── */}
       <section className="px-6 sm:px-10 md:px-16 lg:px-20 py-16 border-b border-white/10 pt-36">
