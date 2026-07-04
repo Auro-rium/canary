@@ -94,7 +94,7 @@ export default function Hero({ onRunAudit }: HeroProps) {
                 onClick={onRunAudit}
                 className="px-6 py-3 bg-red-600 text-white text-xs uppercase tracking-[0.15em] font-medium hover:bg-red-500 transition-all duration-200"
               >
-                Run Audit
+                Launch Console
               </button>
               <button className="px-6 py-3 border border-white/30 text-white text-xs uppercase tracking-[0.15em] font-light hover:border-white/60 transition-all duration-200">
                 Request Access

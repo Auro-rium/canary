@@ -6,14 +6,12 @@ interface SidebarProps {
   onFindings?: () => void
   onRedTeam?: () => void
   onDefenses?: () => void
-  onRunAudit?: () => void
 }
 
 const NAV_ITEMS: { label: string; key: keyof SidebarProps }[] = [
   { label: 'Red Team',  key: 'onRedTeam' },
   { label: 'Defenses',  key: 'onDefenses' },
   { label: 'Findings',  key: 'onFindings' },
-  { label: 'Run Audit', key: 'onRunAudit' },
 ]
 
 export default function Sidebar(props: SidebarProps) {

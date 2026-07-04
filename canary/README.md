@@ -13,25 +13,7 @@ Real-time frontend dashboard for the **Cyber Red Team Foundry** backend. Communi
 
 ## Pages
 
-### RunAuditPage — `/audit`
-
-Campaign launch and live monitoring.
-
-- Configure target URL, attack strategy, and intensity level.
-- Submits `POST /api/campaigns/run` and opens an SSE stream to receive live events.
-- Renders a 6-node agent topology diagram (orchestrator, attacker, evaluator, defender, target, findings store) with animated edges during an active run.
-- Three sequential phases: **CONFIG → RUNNING → FINDINGS REPORT**.
-- Final report surfaces `campaign_id`, `run_id`, critical/high/total finding counts, duration, and target.
-- Falls back to a client-side mock simulation when `VITE_API_TOKEN` is not set.
-
-**SSE event types** emitted by `POST /api/campaigns/run`:
-
-| Event | Payload summary |
-|---|---|
-| `agent_state` | Agent name + current state (idle, active, complete) — drives topology animation |
-| `log` | Free-text log line from any agent |
-| `finding` | Structured finding: id, severity, title, description |
-| `campaign_complete` | Terminal event: campaign_id, run_id, summary counts, duration |
+Campaign launch/monitoring (formerly a dedicated RunAuditPage) now lives entirely in the Console — see below. It was removed once the Console covered the same SSE campaign flow and agent graph, to avoid maintaining two parallel implementations.
 
 ### FindingsPage — `/findings`
 
@@ -60,9 +42,9 @@ ASI coverage and attack trend visualization.
 
 ### Console — `/console`
 
-Chat-centric command interface for driving a campaign and querying the backend, alongside a live agent-graph view. Sits next to the existing pages rather than replacing them.
+Chat-centric command interface for launching campaigns and querying the backend, alongside a live agent-graph view. This is now the only way to run a campaign — it replaced the old dedicated RunAuditPage/config-form flow.
 
-- Three-panel layout: run history/navigation sidebar, chat, and a live agent graph (the same topology view used by RunAuditPage).
+- Three-panel layout: run history/navigation sidebar, chat, and a live agent graph.
 - Pattern-matched commands, no LLM involved:
 
   | Command | Effect |
@@ -81,6 +63,15 @@ Chat-centric command interface for driving a campaign and querying the backend, 
 - Completed campaign reports are saved to IndexedDB (via `idb-keyval`) so run history survives a page reload.
 - Console state (chat log, campaign phase, agent statuses, findings) is held in a `zustand` store (`src/store/useConsoleStore.ts`), separate from the local component state used by the other pages.
 
+**SSE event types** emitted by `POST /api/campaigns/run` and consumed by the Console:
+
+| Event | Payload summary |
+|---|---|
+| `agent_state` | Agent name + current state (idle, active, complete) — drives agent-graph animation |
+| `log` | Free-text log line from any agent |
+| `finding` | Structured finding: id, severity, title, description |
+| `campaign_complete` | Terminal event: campaign_id, run_id, summary counts, duration |
+
 ---
 
 ## Source Layout
@@ -95,7 +86,7 @@ canary/
 ├── package.json
 └── src/
     ├── main.tsx
-    ├── App.tsx              # View switch: home, audit, findings, redteam, defenses, console
+    ├── App.tsx              # View switch: home, findings, redteam, defenses, console
     ├── components/
     │   ├── Navbar.tsx
     │   ├── Hero.tsx
@@ -103,7 +94,7 @@ canary/
     │       ├── ConsoleLayout.tsx    # 3-panel shell
     │       ├── Sidebar.tsx          # run history + nav
     │       ├── ChatPanel.tsx        # command parsing + SSE dispatch
-    │       └── AgentGraphPanel.tsx  # shared agent topology SVG (also used by RunAuditPage)
+    │       └── AgentGraphPanel.tsx  # agent topology SVG, driven by Console state
     ├── lib/
     │   ├── api.ts                  # single client for every backend endpoint
     │   ├── commands.ts             # chat command parser
@@ -113,7 +104,6 @@ canary/
     ├── store/
     │   └── useConsoleStore.ts      # zustand store for Console state
     └── pages/
-        ├── RunAuditPage.tsx
         ├── FindingsPage.tsx
         ├── RedTeamPage.tsx
         └── DefensesPage.tsx
@@ -173,7 +163,7 @@ npm install
 npm run dev        # http://localhost:5173
 ```
 
-Create `.env.local` and set `VITE_API_TOKEN` to authenticate against a running backend instance. Without a token, `RunAuditPage` runs the built-in client-side mock simulation instead.
+Create `.env.local` and set `VITE_API_TOKEN` to authenticate against a running backend instance.
 
 ---
 
@@ -225,14 +215,7 @@ All requests are authenticated with `Authorization: Bearer <VITE_API_TOKEN>`. Ev
 
 | Method | Endpoint | Used by |
 |---|---|---|
-| `GET` | `/api/status` | health check |
-| `POST` | `/api/runs` | Console (`createRun`) |
 | `GET` | `/api/runs/{run_id}` | RedTeamPage, Console (`show run`) |
-| `GET` | `/api/runs/{run_id}/analysis-report` | Console (`getRunAnalysisReport`) |
-| `GET` | `/api/runs/{run_id}/report-markdown` | RunAuditPage |
-| `GET` | `/api/runs/{run_id}/findings` | Console (`getRunFindings`) |
-| `POST` | `/api/runs/{run_id}/apply` | Console (`applyRunPatches`) |
-| `GET` | `/api/open-findings` | Console (`getOpenFindings`) |
 | `GET` | `/api/findings` | FindingsPage, Console (`show findings`) |
 | `GET` | `/api/findings/{id}` | FindingsPage |
 | `GET` | `/api/findings/{id}/attempts` | FindingsPage |
@@ -240,4 +223,6 @@ All requests are authenticated with `Authorization: Bearer <VITE_API_TOKEN>`. Ev
 | `GET` | `/api/targets/{id}/coverage` | DefensesPage, Console (`show coverage`) |
 | `GET` | `/api/targets/{id}/trends` | DefensesPage, Console (`show trends`) |
 | `GET` | `/api/incidents` | RedTeamPage, Console (`show incidents`) |
-| `POST` | `/api/campaigns/run` (SSE) | RunAuditPage, Console (`run`) |
+| `POST` | `/api/campaigns/run` (SSE) | Console (`run`) |
+
+Other backend routes (`/api/status`, `/api/runs` POST, `/api/runs/{run_id}/analysis-report`, `/api/runs/{run_id}/report-markdown`, `/api/runs/{run_id}/findings`, `/api/runs/{run_id}/apply`, `/api/open-findings`) exist on the backend but currently have no frontend caller — not wrapped in `src/lib/api.ts` to avoid dead code.

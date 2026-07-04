@@ -81,7 +81,7 @@ export default function Navbar({ onRunAudit, onLogoClick, onRedTeam, onDefenses,
             onClick={onRunAudit}
             className="px-5 py-2.5 bg-red-600 text-white text-xs uppercase tracking-[0.15em] font-medium hover:bg-red-500 transition-all duration-200"
           >
-            Run Audit
+            Launch Console
           </button>
         </div>
 
@@ -155,7 +155,7 @@ export default function Navbar({ onRunAudit, onLogoClick, onRedTeam, onDefenses,
               onClick={() => { setMenuOpen(false); onRunAudit?.() }}
               className="w-full py-4 bg-red-600 text-white text-xs uppercase tracking-[0.15em] font-medium hover:bg-red-500 transition-all duration-200"
             >
-              Run Audit
+              Launch Console
             </button>
           </div>
         </div>

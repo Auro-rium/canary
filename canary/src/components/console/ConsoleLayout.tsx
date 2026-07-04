@@ -9,10 +9,9 @@ interface ConsoleLayoutProps {
   onFindings?: () => void
   onRedTeam?: () => void
   onDefenses?: () => void
-  onRunAudit?: () => void
 }
 
-export default function ConsoleLayout({ onBack, onFindings, onRedTeam, onDefenses, onRunAudit }: ConsoleLayoutProps) {
+export default function ConsoleLayout({ onBack, onFindings, onRedTeam, onDefenses }: ConsoleLayoutProps) {
   const phase = useConsoleStore((s) => s.phase)
   const agentStatuses = useConsoleStore((s) => s.agentStatuses)
   const activeEdge = useConsoleStore((s) => s.activeEdge)
@@ -21,9 +20,9 @@ export default function ConsoleLayout({ onBack, onFindings, onRedTeam, onDefense
 
   return (
     <div className="h-screen bg-black text-white font-mono flex flex-col overflow-hidden">
-      <Navbar onLogoClick={onBack} onRunAudit={onRunAudit} onFindings={onFindings} onRedTeam={onRedTeam} onDefenses={onDefenses} />
+      <Navbar onLogoClick={onBack} onFindings={onFindings} onRedTeam={onRedTeam} onDefenses={onDefenses} />
       <div className="pt-16 md:pt-20 flex-1 flex overflow-hidden">
-        <Sidebar onFindings={onFindings} onRedTeam={onRedTeam} onDefenses={onDefenses} onRunAudit={onRunAudit} />
+        <Sidebar onFindings={onFindings} onRedTeam={onRedTeam} onDefenses={onDefenses} />
 
         <div className="flex-1 min-w-0">
           <ChatPanel />
