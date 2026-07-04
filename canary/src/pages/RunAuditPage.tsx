@@ -5,43 +5,6 @@ import { API_TOKEN, getRunReportMarkdown, runCampaignSSE } from '../lib/api'
 import { TECHNIQUES } from '../lib/techniques'
 import type { Phase, AgentStatus, LogEntry, FindingPayload, CompletePayload } from '../lib/types'
 
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface AgentDef {
-  id: string
-  label: string
-  role: 'control' | 'attacker' | 'evaluator' | 'defender' | 'target' | 'store'
-  x: number
-  y: number
-}
-
-// Exported (not just const) so the canonical topology data stays defined here even though
-// the SVG view (AgentGraphPanel, in components/console) uses its own independent layout constants.
-export const AGENTS: AgentDef[] = [
-  { id: 'orchestrator', label: 'Orchestrator',  role: 'control',   x: 0.5,  y: 0.12 },
-  { id: 'strategist',   label: 'Strategist',    role: 'control',   x: 0.2,  y: 0.12 },
-  { id: 'attacker',     label: 'Attk. Agent',   role: 'attacker',  x: 0.2,  y: 0.38 },
-  { id: 'evaluator',    label: 'Eval. Agent',   role: 'evaluator', x: 0.5,  y: 0.38 },
-  { id: 'defender',     label: 'Def. Agent',    role: 'defender',  x: 0.8,  y: 0.38 },
-  { id: 'target',       label: 'Target',         role: 'target',    x: 0.5,  y: 0.68 },
-  { id: 'reporter',     label: 'Reporter',       role: 'store',     x: 0.8,  y: 0.68 },
-  { id: 'findings',     label: 'Findings Store', role: 'store',     x: 0.5,  y: 0.88 },
-]
-
-export const EDGES = [
-  { from: 'orchestrator', to: 'attacker' },
-  { from: 'orchestrator', to: 'evaluator' },
-  { from: 'orchestrator', to: 'defender' },
-  { from: 'orchestrator', to: 'strategist' },
-  { from: 'strategist',   to: 'attacker' },
-  { from: 'attacker',     to: 'target' },
-  { from: 'evaluator',    to: 'target' },
-  { from: 'evaluator',    to: 'findings' },
-  { from: 'defender',     to: 'findings' },
-  { from: 'defender',     to: 'reporter' },
-  { from: 'reporter',     to: 'findings' },
-]
-
 // ─── Mock simulation data ─────────────────────────────────────────────────────
 
 function makeMockFindings(techniques: string[], campaignId: string): FindingPayload[] {
