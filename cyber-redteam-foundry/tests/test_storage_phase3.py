@@ -96,7 +96,9 @@ def test_upsert_does_not_change_status(store):
         "atlas_technique": "",
         "severity": "high",
     })
-    store.transition_finding_status("abc123", "patch_proposed", {"patch_ref": "patch_001"})
+    store.transition_finding_status("abc123", "wont_fix", {
+        "reviewer_id": "alice", "rationale": "accepted risk"
+    })
     # Second upsert must not reset status back to "open"
     store.upsert_finding({
         "finding_id": "abc123",
@@ -109,20 +111,22 @@ def test_upsert_does_not_change_status(store):
         "severity": "high",
     })
     f = store.get_finding("abc123")
-    assert f["status"] == "patch_proposed"
+    assert f["status"] == "wont_fix"
 
 
 # ─── transition_finding_status ─────────────────────────────────────────────
 
-def test_legal_transition_open_to_patch_proposed(store):
+def test_legal_transition_open_to_wont_fix(store):
     store.upsert_finding({
         "finding_id": "abc123", "run_id": "r1", "target_id": "t",
         "component": "c", "strategy": "s", "asi_class": "ASI01",
         "atlas_technique": "", "severity": "high",
     })
-    store.transition_finding_status("abc123", "patch_proposed", {"patch_ref": "p001"})
+    store.transition_finding_status("abc123", "wont_fix", {
+        "reviewer_id": "alice", "rationale": "accepted risk"
+    })
     f = store.get_finding("abc123")
-    assert f["status"] == "patch_proposed"
+    assert f["status"] == "wont_fix"
 
 
 def test_illegal_transition_raises(store):
@@ -131,37 +135,12 @@ def test_illegal_transition_raises(store):
         "component": "c", "strategy": "s", "asi_class": "ASI01",
         "atlas_technique": "", "severity": "high",
     })
+    store.transition_finding_status("abc123", "wont_fix", {
+        "reviewer_id": "alice", "rationale": "accepted risk"
+    })
     with pytest.raises(ValueError, match="Illegal transition"):
-        # Cannot skip directly to verified_fixed
-        store.transition_finding_status("abc123", "verified_fixed", {})
-
-
-def test_verified_fixed_requires_guardrail_metadata(store):
-    store.upsert_finding({
-        "finding_id": "abc123", "run_id": "r1", "target_id": "t",
-        "component": "c", "strategy": "s", "asi_class": "ASI01",
-        "atlas_technique": "", "severity": "high",
-    })
-    store.transition_finding_status("abc123", "patch_proposed", {"patch_ref": "p001"})
-    store.transition_finding_status("abc123", "pending_retest", {})
-    with pytest.raises(ValueError, match="guardrail_intervened"):
-        store.transition_finding_status("abc123", "verified_fixed", {"replay_run_id": "r2"})
-
-
-def test_verified_fixed_succeeds_with_full_metadata(store):
-    store.upsert_finding({
-        "finding_id": "abc123", "run_id": "r1", "target_id": "t",
-        "component": "c", "strategy": "s", "asi_class": "ASI01",
-        "atlas_technique": "", "severity": "high",
-    })
-    store.transition_finding_status("abc123", "patch_proposed", {"patch_ref": "p001"})
-    store.transition_finding_status("abc123", "pending_retest", {})
-    store.transition_finding_status("abc123", "verified_fixed", {
-        "replay_run_id": "r2",
-        "guardrail_intervened": True,
-    })
-    f = store.get_finding("abc123")
-    assert f["status"] == "verified_fixed"
+        # wont_fix is a terminal state — no transitions out of it
+        store.transition_finding_status("abc123", "open", {})
 
 
 def test_wont_fix_requires_reviewer_and_rationale(store):
@@ -183,7 +162,7 @@ def test_wont_fix_requires_reviewer_and_rationale(store):
 
 def test_finding_not_found_raises(store):
     with pytest.raises(ValueError, match="not found"):
-        store.transition_finding_status("nonexistent", "patch_proposed", {})
+        store.transition_finding_status("nonexistent", "wont_fix", {})
 
 
 # ─── get_findings pagination and filtering ────────────────────────────────

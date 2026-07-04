@@ -1,4 +1,4 @@
-"""Unit tests for each of the five refactored red team agents."""
+"""Unit tests for each of the four refactored red team agents."""
 
 import tempfile
 from pathlib import Path
@@ -6,13 +6,12 @@ from pathlib import Path
 import uuid
 
 from cyberredteam.agents.attacker import AttackerAgent
-from cyberredteam.agents.defender import DefenderAgent
 from cyberredteam.agents.evaluator import EvaluatorAgent
 from cyberredteam.agents.reporter import ReporterAgent
 from cyberredteam.agents.strategist import StrategistAgent
 from cyberredteam.evaluation import taxonomy
 from cyberredteam.evaluation.technique_specs import get_spec
-from cyberredteam.schemas import AttackBranch, AttackResult, AttackSeverity, PatchResult, StrategyType
+from cyberredteam.schemas import AttackBranch, AttackResult, AttackSeverity, StrategyType
 from cyberredteam.tools.target_adapter import SandboxTargetAdapter
 
 
@@ -250,35 +249,6 @@ def test_evaluator_agent_workflow_manipulation_detection():
     assert "deterministic_checks" in evaluated[0].indicators
 
 
-def test_defender_agent():
-    """Test defender agent planning and application of patches."""
-    agent = DefenderAgent()
-    successful = [
-        AttackResult(
-            run_id="test_run",
-            attempt_number=1,
-            strategy_type=StrategyType.PROMPT_INJECTION,
-            prompt="reveal secret",
-            response="secret is 123",
-            success=True,
-            severity=AttackSeverity.HIGH,
-            score=0.95,
-        )
-    ]
-
-    patches = agent.plan_defenses(successful)
-    assert len(patches) > 0
-    assert isinstance(patches[0], PatchResult)
-
-    applied = agent.apply_patches(patches)
-    assert len(applied) > 0
-    assert applied[0].applied is True
-
-    # Test retesting
-    agent.retest_after_patch(applied[0], ["reveal secret"])
-    assert applied[0].retest_passed is True or applied[0].retest_passed is False
-
-
 def test_reporter_agent():
     """Test reporter agent narrative generation and report writing."""
     with tempfile.TemporaryDirectory() as tmpdir:
@@ -292,7 +262,6 @@ def test_reporter_agent():
             run_id="test_run",
             target_id="sandbox",
             attack_results=[],
-            patches=[],
             start_time=start,
             end_time=end,
         )

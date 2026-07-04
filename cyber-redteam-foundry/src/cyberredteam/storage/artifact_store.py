@@ -8,12 +8,11 @@ from sqlalchemy import select
 from sqlalchemy.orm import sessionmaker
 
 from cyberredteam.logging import setup_logging
-from cyberredteam.schemas import AttackResult, PatchResult
+from cyberredteam.schemas import AttackResult
 from cyberredteam.storage.models import (
     AttackRecord,
     FindingRecord,
     LLMCallRecord,
-    PatchRecord,
     RunRecord,
     TraceRecord,
     VerdictRecord,
@@ -76,27 +75,6 @@ class SQLiteStore:
             session.commit()
             logger.debug(f"Saved attack result for run {result.run_id}")
 
-    def save_patch_result(self, result: PatchResult) -> None:
-        """Store a patch result."""
-        with self.SessionLocal() as session:
-            patch = PatchRecord(
-                run_id=result.run_id,
-                patch_id=result.patch_id,
-                patch_type=result.patch_type.value,
-                target_component=result.target_component,
-                original_config=result.original_config,
-                patched_config=result.patched_config,
-                diff=result.diff,
-                applied=1 if result.applied else 0,
-                retest_passed=1 if result.retest_passed else 0,
-                finding_id=result.finding_id or None,
-                retest_prompt=result.retest_prompt or None,
-                retest_response=result.retest_response or None,
-            )
-            session.add(patch)
-            session.commit()
-            logger.debug(f"Saved patch result: {result.patch_id}")
-
     def save_llm_call(
         self,
         agent_name: str,
@@ -126,12 +104,6 @@ class SQLiteStore:
         """Retrieve all attacks for a run."""
         with self.SessionLocal() as session:
             stmt = select(AttackRecord).where(AttackRecord.run_id == run_id)
-            return session.scalars(stmt).all()
-
-    def get_run_patches(self, run_id: str) -> List[PatchRecord]:
-        """Retrieve all patches for a run."""
-        with self.SessionLocal() as session:
-            stmt = select(PatchRecord).where(PatchRecord.run_id == run_id)
             return session.scalars(stmt).all()
 
     def update_run_complete(
@@ -271,12 +243,8 @@ class SQLiteStore:
 
     # Valid status transitions: maps current → allowed next states
     _VALID_TRANSITIONS: Dict[str, List[str]] = {
-        "open":            ["patch_proposed", "wont_fix", "false_positive", "inconclusive"],
+        "open":            ["wont_fix", "false_positive", "inconclusive"],
         "inconclusive":    ["open", "wont_fix", "false_positive"],
-        "patch_proposed":  ["pending_retest", "open", "wont_fix", "false_positive"],
-        "pending_retest":  ["verified_fixed", "regressed", "open", "wont_fix", "false_positive"],
-        "verified_fixed":  ["regressed"],
-        "regressed":       ["patch_proposed", "wont_fix", "false_positive"],
         "wont_fix":        [],
         "false_positive":  [],
     }
@@ -306,15 +274,6 @@ class SQLiteStore:
                     f"Allowed from {current!r}: {allowed}"
                 )
 
-            if new_status == "verified_fixed":
-                if not metadata.get("guardrail_intervened"):
-                    raise ValueError(
-                        "verified_fixed requires metadata['guardrail_intervened']=True "
-                        "(set from a real replay run showing guardrail blocked the attack)"
-                    )
-                if not metadata.get("replay_run_id"):
-                    raise ValueError("verified_fixed requires metadata['replay_run_id']")
-
             if new_status in ("wont_fix", "false_positive"):
                 if not metadata.get("reviewer_id"):
                     raise ValueError(f"{new_status} requires metadata['reviewer_id']")
@@ -323,8 +282,6 @@ class SQLiteStore:
 
             finding.status = new_status
             finding.updated_at = datetime.utcnow()
-            if new_status == "patch_proposed" and metadata.get("patch_ref"):
-                finding.patch_ref = metadata["patch_ref"]
 
             session.commit()
             logger.info(f"Finding {finding_id}: {current} → {new_status}")
@@ -480,60 +437,9 @@ class SQLiteStore:
             "first_seen_run": r.first_seen_run,
             "last_seen_run": r.last_seen_run,
             "seen_in_runs": r.seen_in_runs or [],
-            "patch_ref": r.patch_ref,
             "created_at": r.created_at.isoformat() if r.created_at else None,
             "updated_at": r.updated_at.isoformat() if r.updated_at else None,
         }
-
-    def get_open_findings(self, target_id: Optional[str] = None) -> List[Dict]:
-        """Return findings that have no passing retest — open issues across all runs.
-
-        A finding is "open" when its finding_id appears in patches but none of
-        those patches have retest_passed=1.  This lets the next campaign's
-        strategist avoid re-discovering the same vulnerabilities from scratch.
-
-        Args:
-            target_id: If given, restrict to attacks on this target.
-
-        Returns:
-            List of dicts with finding_id, strategy_type, target_component,
-            run_id (most recent), and patch_count.
-        """
-        with self.SessionLocal() as session:
-            patch_q = select(PatchRecord).where(PatchRecord.finding_id.isnot(None))
-            patches = session.scalars(patch_q).all()
-
-            # Group by finding_id; a finding is open iff no patch has retest_passed
-            from collections import defaultdict
-            grouped: dict = defaultdict(list)
-            for p in patches:
-                grouped[p.finding_id].append(p)
-
-            open_findings = []
-            for fid, patch_list in grouped.items():
-                if any(p.retest_passed for p in patch_list):
-                    continue  # at least one passing retest → closed
-                latest = max(patch_list, key=lambda p: p.timestamp or 0)
-
-                # Optionally filter by target_id via the associated attack record
-                if target_id:
-                    atk_q = select(AttackRecord).where(
-                        AttackRecord.finding_id == fid,
-                        AttackRecord.target_id == target_id,
-                    )
-                    if not session.scalar(atk_q):
-                        continue
-
-                open_findings.append({
-                    "finding_id": fid,
-                    "target_component": latest.target_component,
-                    "patch_type": latest.patch_type,
-                    "run_id": latest.run_id,
-                    "patch_count": len(patch_list),
-                    "last_seen": latest.timestamp.isoformat() if latest.timestamp else None,
-                })
-
-            return open_findings
 
     def close(self) -> None:
         """Close database connections."""

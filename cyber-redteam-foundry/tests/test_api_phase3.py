@@ -108,16 +108,17 @@ def test_get_finding_attempts_empty(client):
 
 def test_update_status_legal_transition(client):
     resp = client.put("/api/findings/f001/status", json={
-        "status": "patch_proposed",
-        "patch_ref": "patch_001",
+        "status": "wont_fix",
+        "reviewer_id": "alice",
+        "rationale": "accepted risk",
     })
     assert resp.status_code == 200
-    assert resp.json()["new_status"] == "patch_proposed"
+    assert resp.json()["new_status"] == "wont_fix"
 
 
 def test_update_status_illegal_transition_returns_409(client):
     resp = client.put("/api/findings/f001/status", json={
-        "status": "verified_fixed",
+        "status": "not_a_real_status",
     })
     assert resp.status_code == 409
 

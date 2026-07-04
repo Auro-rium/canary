@@ -65,7 +65,7 @@ def run(
     ),
     max_attempts: int = typer.Option(5, help="Max attacks per strategy"),
     max_iterations: int = typer.Option(
-        3, help="Max defender→attacker→evaluator cycles",
+        3, help="Max strategist→attacker→evaluator cycles",
     ),
     seed: int = typer.Option(None, help="Random seed for deterministic attacks"),
 ) -> None:
@@ -229,7 +229,7 @@ def doctor() -> None:
 
     # Show per-agent model assignment
     console.print("\n[bold]Model assignment per agent:[/bold]")
-    for agent in ("strategist", "attacker", "evaluator", "defender", "reporter"):
+    for agent in ("strategist", "attacker", "evaluator", "reporter"):
         console.print(f"✓ {agent}: {get_model_for_agent(agent)}")
 
     # Check API auth configuration

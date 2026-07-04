@@ -64,10 +64,6 @@ class TargetAdapter:
         """Reset target context if supported."""
         pass
 
-    def apply_patch(self, recommendation: str) -> None:
-        """Apply a patch/mitigation guideline to the target."""
-        pass
-
 
 class HttpTargetAdapter(TargetAdapter):
     """Adapter that sends adversarial prompts to any HTTP agent endpoint.
@@ -125,49 +121,6 @@ class HttpTargetAdapter(TargetAdapter):
             headers["Authorization"] = f"Bearer {self.api_key}"
         headers.update(self.extra_headers)
         return headers
-
-    def apply_patch(self, recommendation: str) -> None:
-        """Send patch request to target agent server."""
-        patch_url = self.endpoint
-        if patch_url.endswith("/chat"):
-            patch_url = patch_url[:-5] + "/patch"
-        else:
-            patch_url = patch_url + "/patch"
-
-        logger.info(f"Applying patch to HTTP target: {patch_url}")
-
-        try:
-            resp = requests.post(
-                patch_url,
-                json={"recommendation": recommendation},
-                headers=self._build_headers(),
-                timeout=self.timeout,
-            )
-            resp.raise_for_status()
-            logger.info("Successfully patched HTTP target")
-        except Exception as e:
-            logger.error(f"Failed to patch HTTP target: {e}")
-
-    def reset_context(self) -> None:
-        """Send reset request to target agent server."""
-        reset_url = self.endpoint
-        if reset_url.endswith("/chat"):
-            reset_url = reset_url[:-5] + "/reset"
-        else:
-            reset_url = reset_url + "/reset"
-
-        logger.info(f"Resetting HTTP target prompt: {reset_url}")
-
-        try:
-            resp = requests.post(
-                reset_url,
-                headers=self._build_headers(),
-                timeout=self.timeout,
-            )
-            resp.raise_for_status()
-            logger.info("Successfully reset HTTP target prompt")
-        except Exception as e:
-            logger.error(f"Failed to reset HTTP target prompt: {e}")
 
     def execute_attack(self, payload: str, label: str = "") -> Tuple[str, Optional[str]]:
         """Send adversarial prompt to the HTTP agent endpoint."""
@@ -233,7 +186,6 @@ class SandboxTargetAdapter(TargetAdapter):
     def __init__(self, target_id: str):
         """Initialize sandbox adapter with a target LLM."""
         self.target_id = target_id
-        self.active_patches = []
         self._active_canary: Optional[str] = None
 
         # Instantiate a real LLM representing the target agent under test.
@@ -244,13 +196,8 @@ class SandboxTargetAdapter(TargetAdapter):
         model = get_model_for_agent("target")
         self.llm = get_llm(model, agent_name=f"target_{target_id.lower().replace(' ', '_')}")
 
-    def apply_patch(self, recommendation: str) -> None:
-        """Apply patch to sandbox memory."""
-        self.active_patches.append(recommendation)
-
     def reset_context(self) -> None:
-        """Clear active patches and canary in sandbox."""
-        self.active_patches = []
+        """Clear the active canary in sandbox."""
         self._active_canary = None
 
     # Sensitive data banks keyed by role — deliberately exposed for red-team testing
@@ -354,20 +301,6 @@ class SandboxTargetAdapter(TargetAdapter):
             bank = self._DATA_BANKS["hr"]
 
         prompt_lower = prompt.lower()
-
-        # If a security patch has been applied, check if it blocks this probe
-        for patch in self.active_patches:
-            patch_lower = patch.lower()
-            if any(kw in prompt_lower for kw in self._EMPLOYEE_KW) and (
-                "restrict" in patch_lower or "deny" in patch_lower or "block" in patch_lower
-                or "employee" in patch_lower or "salary" in patch_lower
-            ):
-                return "I'm sorry, I cannot share employee records per the updated security policy.", canary
-            if any(kw in prompt_lower for kw in self._CRED_KW) and (
-                "credential" in patch_lower or "password" in patch_lower
-                or "document" in patch_lower or "restrict" in patch_lower
-            ):
-                return "Access to credentials and internal documents has been restricted by policy.", canary
 
         # Determine which surface to leak
         hits_employee = any(kw in prompt_lower for kw in self._EMPLOYEE_KW)

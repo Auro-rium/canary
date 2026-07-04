@@ -5,17 +5,17 @@
 [![LangGraph](https://img.shields.io/badge/LangGraph-state%20machine-7c3aed.svg)](https://github.com/langchain-ai/langgraph)
 [![AWS Bedrock](https://img.shields.io/badge/AWS-Bedrock-FF9900.svg?logo=amazon-aws)](https://aws.amazon.com/bedrock/)
 [![sentence-transformers](https://img.shields.io/badge/sentence--transformers-MiniLM--L6--v2-blue.svg)](https://www.sbert.net/)
-[![pytest](https://img.shields.io/badge/tests-121%20passed-brightgreen.svg?logo=pytest)](https://pytest.org/)
+[![pytest](https://img.shields.io/badge/tests-111%20passed-brightgreen.svg?logo=pytest)](https://pytest.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Red-team orchestration engine for AI agents. FastAPI + LangGraph on AWS Bedrock. Attacks any HTTP-based AI agent via a fully generic request/response contract, runs up to 3 attack techniques as parallel LangGraph branches per iteration, evaluates findings against an ASI/ATLAS taxonomy, proposes and retests defenses, and generates structured audit reports.
+Red-team orchestration engine for AI agents. FastAPI + LangGraph on AWS Bedrock. Attacks any HTTP-based AI agent via a fully generic request/response contract, runs up to 3 attack techniques as parallel LangGraph branches per iteration, evaluates findings against an ASI/ATLAS taxonomy, and generates structured audit reports. Findings are triaged manually (`wont_fix`/`false_positive`) — the system does not auto-remediate.
 
 ---
 
 ## Contents
 
 - [Source Layout](#source-layout)
-- [5-Agent Pipeline](#5-agent-pipeline)
+- [4-Agent Pipeline](#4-agent-pipeline)
 - [Attacker Contract & Parallel Fan-Out](#attacker-contract--parallel-fan-out)
 - [Targeting Any HTTP Agent](#targeting-any-http-agent)
 - [Attack Strategies](#attack-strategies)
@@ -49,7 +49,6 @@ cyber-redteam-foundry/
 │   ├── strategist.md
 │   ├── attacker.md
 │   ├── evaluator.md
-│   ├── defender.md
 │   ├── reporter.md
 │   └── orchestrator.md
 ├── target_agent/            # Demo victim agent — see target_agent/README.md
@@ -65,7 +64,6 @@ cyber-redteam-foundry/
     │   ├── strategist.py
     │   ├── attacker.py
     │   ├── evaluator.py
-    │   ├── defender.py
     │   └── reporter.py
     ├── attack_strategies/
     │   ├── registry.py
@@ -87,9 +85,9 @@ cyber-redteam-foundry/
     ├── llm/
     │   ├── bedrock.py       # ChatBedrockConverse wrapper
     │   ├── factory.py       # get_llm_for_agent()
-    │   └── schemas.py       # AttackerOutput, EvaluationResult, DefensePatch, SecurityReport
+    │   └── schemas.py       # AttackerOutput, EvaluationResult, SecurityReport
     ├── storage/
-    │   ├── models.py        # SQLAlchemy ORM: runs, attacks, patches, findings,
+    │   ├── models.py        # SQLAlchemy ORM: runs, attacks, findings,
     │   │                    #   evaluator_verdicts, attack_traces
     │   ├── artifact_store.py # SQLiteStore — all persistence methods
     │   └── embedder.py      # sentence-transformers all-MiniLM-L6-v2 semantic dedup
@@ -113,7 +111,7 @@ a circular import (`langgraph/__init__.py` eagerly imports `graph.py` → `nodes
 
 ---
 
-## 5-Agent Pipeline
+## 4-Agent Pipeline
 
 ### Agents and models
 
@@ -121,9 +119,8 @@ a circular import (`langgraph/__init__.py` eagerly imports `graph.py` → `nodes
 |---|-------|---------------------|------|
 | 1 | Strategist | — (no LLM call) | Randomly dispatches up to 3 techniques per iteration as parallel branches |
 | 2 | Attacker | `deepseek.v3-v1:0` | One technique, one payload per branch — see [Attacker Contract](#attacker-contract--parallel-fan-out) |
-| 3 | Evaluator | `qwen.qwen3-coder-480b-a35b-v1:0` | Deterministic detectors + LLM judge, 4-case consensus |
-| 4 | Defender | `qwen.qwen3-coder-480b-a35b-v1:0` | Generates guardrail patches, applies via `/patch` |
-| 5 | Reporter | `qwen.qwen3-coder-480b-a35b-v1:0` | Markdown + JSON audit reports |
+| 3 | Evaluator | `qwen.qwen3-coder-480b-a35b-v1:0` | Deterministic detectors + LLM judge, 4-case consensus; also owns the iterate-vs-report routing decision |
+| 4 | Reporter | `qwen.qwen3-coder-480b-a35b-v1:0` | Markdown + JSON audit reports |
 
 Models are configured in `configs/models.yaml`. Credentials resolve via the standard `boto3` chain (env vars → shared credentials file → instance/role profile).
 
@@ -145,18 +142,14 @@ flowchart TD
     A2 --> T
     A3 --> T
     T --> E[3 · Evaluator\nDetectors + LLM judge]
-    E --> R{Finding?}
-    R -->|None| REP[5 · Reporter\nCompile audit report]
-    R -->|Confirmed / Unconfirmed| D[4 · Defender\nPropose guardrail patch]
-    D --> I{Retest passed\nor max iterations?}
-    I -->|Retest — re-dispatch| S
-    I -->|Done| REP
+    E --> I{Vulnerability found\nand iterations remain?}
+    I -->|Yes — re-dispatch| S
+    I -->|No| REP[4 · Reporter\nCompile audit report]
     REP --> END([Reports persisted\nruns/ + reports/])
 
     style START fill:#10b981,color:#fff,stroke:none
     style END   fill:#6366f1,color:#fff,stroke:none
     style T     fill:#f59e0b,color:#fff,stroke:none
-    style R     fill:#3b82f6,color:#fff,stroke:none
     style I     fill:#3b82f6,color:#fff,stroke:none
 ```
 
@@ -164,8 +157,9 @@ Each `Send()`-spawned branch is an independent invocation of `node_attacker_bran
 waits for all of them to complete (a superstep boundary) before `evaluator` runs; no manual
 join/barrier logic is needed. Their single-item `attack_results` deltas concatenate via the
 existing `Annotated[List[AttackResult], operator.add]` reducer regardless of completion order.
-The retest loop routes back to `strategist` (not directly to an "attacker" node — there isn't one
-anymore) to re-dispatch a fresh set of parallel branches each iteration.
+The iterate loop routes back to `strategist` (not directly to an "attacker" node — there isn't one
+anymore) to re-dispatch a fresh set of parallel branches each iteration. The decision to loop or
+proceed to `reporter` is made by `evaluator` itself — there is no separate node in between.
 
 ### `RedTeamState` fields
 
@@ -175,11 +169,10 @@ anymore) to re-dispatch a fresh set of parallel branches each iteration.
 | `target_id` | `str` | Target identifier (HTTP URL or sandbox key) |
 | `target_headers` / `target_request_template` / `target_response_path` | `Dict`/`Optional[str]` | Generic HTTP target config — see [Targeting Any HTTP Agent](#targeting-any-http-agent) |
 | `strategies` | `List[str]` | Candidate attack strategies for this campaign (sampled from, not all run every iteration) |
-| `iteration` | `int` | Current defender → strategist → evaluator cycle count |
+| `iteration` | `int` | Current strategist → attacker_branch → evaluator cycle count |
 | `attack_results` | `List[AttackResult]` | Cumulative history of all attack attempts, tagged with `branch_id`/`technique_id`/`capability_type`/`depth`/`iteration` |
-| `patch_results` | `List[PatchResult]` | Defensive patches and retest outcomes |
 | `vulnerability_found` | `bool` | Whether any threshold was exceeded |
-| `should_continue_iterating` | `bool` | Routing flag for the retest loop |
+| `should_continue_iterating` | `bool` | Routing flag for the iterate loop |
 
 Per-branch bookkeeping (`AttackBranch`: `branch_id`, `depth`, `attempt_budget_remaining`,
 `parent_evidence`) deliberately does **not** live in `RedTeamState` — it travels through each
@@ -224,7 +217,7 @@ LLM's structured output is `AttackerOutput` (`llm/schemas.py`):
   a later iteration, the branch's `depth` increments and `parent_evidence` (the target's prior
   response + why it wasn't a clean miss) is passed in, so the mutated payload is a genuinely
   different angle — not a verbatim repeat. There is no evaluator-triggered mid-iteration
-  auto-respawn; retries only happen via the normal defender → strategist → attacker_branch loop.
+  auto-respawn; retries only happen via the normal evaluator → strategist → attacker_branch loop.
 - **`technique_spec`** (what the technique tests) and the evaluator-facing `expected_failure`/
   `expected_safe_behavior` strings are static, sourced from `configs/technique_specs.yaml` via
   `evaluation/technique_specs.py::get_spec(asi_class)` — not authored by the attacker itself, so
@@ -354,7 +347,7 @@ per_asi_class:
 
 ```
 runs/checkpoints.db   — LangGraph checkpoint state (resume interrupted runs)
-runs/redteam.db       — Audit artifacts (6 tables)
+runs/redteam.db       — Audit artifacts (5 tables)
 ```
 
 ### `redteam.db` tables
@@ -363,7 +356,6 @@ runs/redteam.db       — Audit artifacts (6 tables)
 |---|---|
 | `runs` | Campaign metadata: start/end times, success rates |
 | `attacks` | Every attack attempt: prompt, response, score, severity, strategy |
-| `patches` | Defender recommendations and retest outcomes |
 | `findings` | Deduplicated by `sha256(target:component:strategy:asi_class)[:16]`; lifecycle state machine |
 | `evaluator_verdicts` | Verdict, confidence, threshold used, rationale per attempt |
 | `attack_traces` | Raw pre-sanitisation prompt, tool calls observed, full response |
@@ -371,11 +363,12 @@ runs/redteam.db       — Audit artifacts (6 tables)
 ### Finding lifecycle
 
 ```
-open → patch_proposed → pending_retest → verified_fixed
-                                       → regressed
-any  → wont_fix        (manual; requires reviewer_id + rationale)
-any  → false_positive  (manual)
+open → wont_fix        (manual; requires reviewer_id + rationale)
+open → false_positive  (manual; requires reviewer_id + rationale)
+open → inconclusive    (manual)
 ```
+
+Findings are reported and triaged manually — there is no automated remediation or retest step.
 
 ### Semantic deduplication
 
@@ -395,7 +388,6 @@ All endpoints require `Authorization: Bearer <API_SECRET_KEY>`.
 | `GET` | `/api/runs/{run_id}/analysis-report` | Full analysis details |
 | `GET` | `/api/runs/{run_id}/report-markdown` | Raw LLM-generated markdown report |
 | `GET` | `/api/runs/{run_id}/findings` | Findings from this run |
-| `POST` | `/api/runs/{run_id}/apply` | Mark patches as applied |
 | `GET` | `/api/open-findings` | All open findings |
 | `GET` | `/api/incidents` | Live incident feed |
 | `GET` | `/api/findings` | Paginated; filter by `severity`, `status`, `asi_class` |
@@ -526,6 +518,6 @@ containers by construction — it's the thing being attacked, not part of the to
 pytest tests/ -v --cov=src/cyberredteam --cov-report=term-missing
 ```
 
-121 tests, including a real parallel-fan-out integration test (`TestParallelFanOut` in
+111 tests, including a real parallel-fan-out integration test (`TestParallelFanOut` in
 `test_langgraph.py`) that exercises the strategist's random dispatch end-to-end against the fake
 LLM fixture — no AWS credentials required. Coverage report printed to terminal.

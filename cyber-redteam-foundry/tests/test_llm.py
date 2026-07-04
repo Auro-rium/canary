@@ -15,7 +15,6 @@ from cyberredteam.llm.factory import get_llm_for_agent, get_model_for_agent, loa
 from cyberredteam.llm.schemas import (
     AttackerOutput,
     AttackPlan,
-    DefensePatch,
     EvaluationResult,
     SecurityReport,
 )
@@ -59,12 +58,6 @@ def test_structured_output_generation():
     assert isinstance(evaluation, EvaluationResult)
     assert evaluation.boundary_failure is False or evaluation.boundary_failure is True
     assert evaluation.finding != ""
-
-    # Test DefensePatch structured invoke
-    patch = llm.invoke_structured("system", "user", DefensePatch)
-    assert isinstance(patch, DefensePatch)
-    assert patch.patch_type != ""
-    assert patch.confidence > 0.0
 
     # Test SecurityReport structured invoke
     report = llm.invoke_structured("system", "user", SecurityReport)

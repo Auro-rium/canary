@@ -19,7 +19,7 @@ Campaign launch and live monitoring.
 
 - Configure target URL, attack strategy, and intensity level.
 - Submits `POST /api/campaigns/run` and opens an SSE stream to receive live events.
-- Renders a 6-node agent topology diagram (orchestrator, attacker, evaluator, defender, target, findings store) with animated edges during an active run.
+- Renders a 5-node agent topology diagram (strategist, attacker, evaluator, target, findings store) with animated edges during an active run.
 - Three sequential phases: **CONFIG → RUNNING → FINDINGS REPORT**.
 - Final report surfaces `campaign_id`, `run_id`, critical/high/total finding counts, duration, and target.
 - Falls back to a client-side mock simulation when `VITE_API_TOKEN` is not set.
@@ -51,13 +51,6 @@ Live incident feed and run detail panel.
 - Attacks table shows humanized strategy labels and 8-character `finding_id` values.
 - Finding IDs link back to FindingsPage for cross-reference.
 
-### DefensesPage — `/defenses`
-
-ASI coverage and attack trend visualization.
-
-- 10-cell ASI coverage grid sourced from `GET /api/targets/{id}/coverage`.
-- Attack trend bar charts sourced from `GET /api/targets/{id}/trends`.
-
 ---
 
 ## Source Layout
@@ -72,15 +65,14 @@ canary/
 ├── package.json
 └── src/
     ├── main.tsx
-    ├── App.tsx              # Router: /, /audit, /findings, /redteam, /defenses
+    ├── App.tsx              # Router: /, /audit, /findings, /redteam
     ├── components/
     │   ├── Navbar.tsx
     │   └── Hero.tsx
     └── pages/
         ├── RunAuditPage.tsx
         ├── FindingsPage.tsx
-        ├── RedTeamPage.tsx
-        └── DefensesPage.tsx
+        └── RedTeamPage.tsx
 ```
 
 ---
@@ -195,5 +187,3 @@ All requests are authenticated with `Authorization: Bearer <VITE_API_TOKEN>`.
 | `PUT` | `/api/findings/{id}/status` | FindingsPage |
 | `GET` | `/api/incidents` | RedTeamPage |
 | `GET` | `/api/runs/{run_id}` | RedTeamPage |
-| `GET` | `/api/targets/{id}/coverage` | DefensesPage |
-| `GET` | `/api/targets/{id}/trends` | DefensesPage |

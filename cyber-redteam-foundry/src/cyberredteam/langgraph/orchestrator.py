@@ -7,8 +7,8 @@ resuming red-team workflows.  It:
 *  Compiles the state graph with SQLite checkpointing.
 *  Invokes the graph with a ``thread_id`` (= ``run_id``) so each run
    gets its own checkpoint timeline.
-*  Persists all artifacts (attacks, patches) to the separate SQLite
-   artifact store after the graph completes.
+*  Persists all artifacts (attacks, traces, verdicts, findings) to the
+   separate SQLite artifact store after the graph completes.
 *  Generates and saves a Mermaid visualisation.
 """
 
@@ -45,7 +45,7 @@ class GraphOrchestrator:
             config: ``RunConfig`` with attack parameters.
             db_path: Path to the SQLite *artifact* database.
             report_dir: Directory for report output.
-            max_iterations: Max defender→attacker→evaluator cycles.
+            max_iterations: Max strategist→attacker_branch→evaluator cycles.
             checkpoint_db_path: Path to the SQLite *checkpoint*
                 database.  Defaults to ``runs/checkpoints.db``.
         """
@@ -107,8 +107,6 @@ class GraphOrchestrator:
                 "iteration": 0,
                 "current_strategy": "",
                 "attack_results": [],
-                "patch_results": [],
-                "should_patch": False,
                 "should_continue_iterating": False,
                 "vulnerability_found": False,
                 "scores": {},
@@ -141,13 +139,11 @@ class GraphOrchestrator:
             execution_time = end_time - start_time
 
             attack_results = final_state.get("attack_results", [])
-            patch_results = final_state.get("patch_results", [])
             successful = sum(1 for r in attack_results if r.success)
 
             logger.info(
                 f"Completed run {self.config.run_id}: "
                 f"{successful} successful attacks, "
-                f"{len(patch_results)} patches, "
                 f"{execution_time:.1f}s"
             )
 
@@ -157,7 +153,6 @@ class GraphOrchestrator:
                 "target_id": self.config.target_id,
                 "total_attacks": len(attack_results),
                 "successful_attacks": successful,
-                "patches_applied": len(patch_results),
                 "success_rate": (
                     successful / len(attack_results) if attack_results else 0
                 ),
@@ -208,12 +203,10 @@ class GraphOrchestrator:
     # -----------------------------------------------------------------
 
     def _persist_artifacts(self, final_state: Dict[str, Any]) -> None:
-        """Save all attack results, patches, traces, verdicts, and findings."""
+        """Save all attack results, traces, verdicts, and findings."""
         import uuid as _uuid
-        from cyberredteam.evaluation.taxonomy import lookup as taxonomy_lookup
 
         attack_results = final_state.get("attack_results", [])
-        patch_results = final_state.get("patch_results", [])
 
         for result in attack_results:
             self.store.save_attack_result(result)
@@ -242,40 +235,17 @@ class GraphOrchestrator:
             if verdict in ("confirmed", "unconfirmed") and result.finding_id:
                 asi_class = result.indicators.get("asi_class", "")
                 atlas_technique = result.indicators.get("atlas_technique", "")
-                # Best-effort component from finding_id components or empty
                 self.store.upsert_finding({
                     "finding_id": result.finding_id,
                     "run_id": result.run_id,
                     "target_id": result.target_id,
-                    "component": "",  # set by defender; empty at evaluator time
+                    "component": "",
                     "strategy": result.strategy_type.value if hasattr(result.strategy_type, "value") else str(result.strategy_type),
                     "asi_class": asi_class,
                     "atlas_technique": atlas_technique,
                     "severity": result.severity.value if hasattr(result.severity, "value") else str(result.severity),
                     "adversarial_input": result.indicators.get("_trace", {}).get("adversarial_input", result.prompt),
                 })
-
-        for patch in patch_results:
-            try:
-                self.store.save_patch_result(patch)
-                # Transition finding to patch_proposed when a patch is created
-                if patch.finding_id:
-                    try:
-                        self.store.transition_finding_status(
-                            patch.finding_id,
-                            "patch_proposed",
-                            {"patch_ref": patch.patch_id},
-                        )
-                    except ValueError:
-                        # Finding may not exist yet or transition not legal — log and continue
-                        logger.debug(
-                            f"Could not transition finding {patch.finding_id} to patch_proposed"
-                        )
-            except Exception:
-                # Duplicate patch_id across iterations — skip gracefully
-                logger.debug(
-                    f"Skipping duplicate patch {patch.patch_id}"
-                )
 
         successful = sum(1 for r in attack_results if r.success)
         self.store.update_run_complete(
@@ -284,7 +254,4 @@ class GraphOrchestrator:
             successful_attacks=successful,
         )
 
-        logger.info(
-            f"Persisted {len(attack_results)} attacks and "
-            f"{len(patch_results)} patches to artifact store"
-        )
+        logger.info(f"Persisted {len(attack_results)} attacks to artifact store")

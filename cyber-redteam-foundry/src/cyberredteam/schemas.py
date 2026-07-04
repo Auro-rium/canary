@@ -37,16 +37,6 @@ class AttackSeverity(str, Enum):
     INFO = "info"
 
 
-class PatchType(str, Enum):
-    """Defense patch types."""
-
-    PROMPT_HARDENING = "prompt_hardening"
-    TOOL_POLICY = "tool_policy"
-    RETRIEVAL_FILTER = "retrieval_filter"
-    MEMORY_ISOLATION = "memory_isolation"
-    REGRESSION_RULE = "regression_rule"
-
-
 class RunConfig(BaseModel):
     """Configuration for a red team run."""
 
@@ -90,7 +80,7 @@ class AttackResult(BaseModel):
     # verdict is reproducible: auditor sees score, confidence, and the cutoff.
     score_threshold: float = Field(default=0.5, ge=0.0, le=1.0)
     # Content-addressed ID stable across runs: sha256(strategy+target+component)[:12].
-    # Minted by the defender once affected_component is known; empty until then.
+    # Minted by the evaluator once affected_component is known; empty until then.
     finding_id: str = Field(default="")
     indicators: Dict[str, Any] = Field(default_factory=dict)
     timestamp: datetime = Field(default_factory=datetime.utcnow)
@@ -104,28 +94,6 @@ class AttackResult(BaseModel):
     mutation_of_parent: Optional[str] = Field(default=None)
     branch_id: str = Field(default="", description="uuid4 hex tagging this branch's attempts")
     iteration: int = Field(default=0, description="Graph iteration this result was produced in")
-
-
-class PatchResult(BaseModel):
-    """Result of a defensive patch."""
-
-    run_id: str
-    patch_id: str
-    patch_type: PatchType
-    target_component: str
-    original_config: Dict[str, Any]
-    patched_config: Dict[str, Any]
-    diff: str
-    applied: bool
-    retest_passed: bool
-    # Links this patch back to the finding it addresses — same ID as the source
-    # AttackResult.finding_id so open issues are queryable across campaigns.
-    finding_id: str = Field(default="")
-    # Verbatim replay evidence from the retest: the exact prompt and response
-    # that determined retest_passed. Required for verified_fixed to be earnable.
-    retest_prompt: str = Field(default="")
-    retest_response: str = Field(default="")
-    timestamp: datetime = Field(default_factory=datetime.utcnow)
 
 
 @dataclass
@@ -161,7 +129,6 @@ class RedTeamReport(BaseModel):
     total_attacks: int
     successful_attacks: int
     attack_results: List[AttackResult]
-    patches_applied: List[PatchResult]
     severity_distribution: Dict[AttackSeverity, int]
     success_rate: float = Field(ge=0.0, le=1.0)
     recommendations: List[str]

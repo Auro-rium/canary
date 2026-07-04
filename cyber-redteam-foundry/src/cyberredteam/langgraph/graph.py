@@ -2,11 +2,11 @@
 
 Builds a ``StateGraph[RedTeamState]`` with:
 
-*  5 nodes: strategist → attacker_branch (parallel fan-out) → evaluator → (defender | reporter)
+*  4 nodes: strategist → attacker_branch (parallel fan-out) → evaluator → reporter
 *  strategist dispatches up to 3 parallel attacker_branch invocations via Send(),
    one randomly-chosen technique each — LangGraph waits for all of them before evaluator runs
-*  Conditional edge from evaluator (vulnerability_found → defender, else reporter)
-*  Iterative loop: defender → (strategist, to re-dispatch a fresh branch set, if iterations remain, else reporter)
+*  Iterative loop, owned entirely by evaluator: evaluator → (strategist, to re-dispatch a
+   fresh branch set, if vulnerability_found and iterations remain, else reporter)
 *  SQLite-backed checkpointing for persistence and resumability
 *  Auto-generated Mermaid diagram
 """
@@ -18,7 +18,6 @@ from langgraph.graph import END, StateGraph
 from cyberredteam.langgraph.nodes import (
     dispatch_attacker_branches,
     node_attacker_branch,
-    node_defender,
     node_evaluator,
     node_reporter,
     node_strategist,
@@ -33,25 +32,9 @@ logger = setup_logging()
 # Conditional routing functions
 # ---------------------------------------------------------------------------
 
-def should_patch(state: RedTeamState) -> Literal["defender", "reporter"]:
-    """Route to defender if vulnerabilities found, else to reporter.
-
-    Args:
-        state: Current RedTeamState
-
-    Returns:
-        Next node: ``"defender"`` or ``"reporter"``
-    """
-    logger.info(
-        f"[Graph] Routing after evaluator: "
-        f"vulnerability_found={state['vulnerability_found']}"
-    )
-    return "defender" if state["vulnerability_found"] else "reporter"
-
-
 def should_iterate(state: RedTeamState) -> Literal["strategist", "reporter"]:
     """Route back to strategist (to re-dispatch a fresh branch set) if
-    iterations remain, else to reporter.
+    a vulnerability was found and iterations remain, else to reporter.
 
     Args:
         state: Current RedTeamState
@@ -60,7 +43,7 @@ def should_iterate(state: RedTeamState) -> Literal["strategist", "reporter"]:
         Next node: ``"strategist"`` or ``"reporter"``
     """
     logger.info(
-        f"[Graph] Routing after defender: "
+        f"[Graph] Routing after evaluator: "
         f"should_continue={state['should_continue_iterating']}, "
         f"iteration={state['iteration']}/{state['max_iterations']}"
     )
@@ -83,7 +66,6 @@ def build_redteam_graph() -> StateGraph:
     graph.add_node("strategist", node_strategist)
     graph.add_node("attacker_branch", node_attacker_branch)
     graph.add_node("evaluator", node_evaluator)
-    graph.add_node("defender", node_defender)
     graph.add_node("reporter", node_reporter)
 
     # Entry point
@@ -96,20 +78,11 @@ def build_redteam_graph() -> StateGraph:
     graph.add_conditional_edges("strategist", dispatch_attacker_branches)
     graph.add_edge("attacker_branch", "evaluator")
 
-    # Conditional: evaluator → defender (vuln found) | reporter (clean)
+    # Iterative loop, owned entirely by evaluator: strategist (re-dispatch a
+    # fresh parallel branch set) if a vulnerability was found and iterations
+    # remain, else reporter.
     graph.add_conditional_edges(
         "evaluator",
-        should_patch,
-        {
-            "defender": "defender",
-            "reporter": "reporter",
-        },
-    )
-
-    # Iterative loop: defender → strategist, to re-dispatch a fresh parallel
-    # branch set (if iterations remain) | reporter
-    graph.add_conditional_edges(
-        "defender",
         should_iterate,
         {
             "strategist": "strategist",
@@ -190,7 +163,6 @@ graph TD
     strategist["<b>Strategist</b><br/>Randomly dispatch ≤3 techniques"]
     attacker_branch["<b>Attacker Branch</b><br/>Execute one attack (parallel ×≤3)"]
     evaluator["<b>Evaluator</b><br/>Score & assess"]
-    defender["<b>Defender</b><br/>Plan & apply patches"]
     reporter["<b>Reporter</b><br/>Generate report"]
     END_NODE([END])
 
@@ -198,11 +170,8 @@ graph TD
     strategist -.->|Send x≤3, random| attacker_branch
     attacker_branch --> evaluator
 
-    evaluator -->|vulnerability_found| defender
-    evaluator -->|no vulnerabilities| reporter
-
-    defender -->|should_continue_iterating| strategist
-    defender -->|max_iterations reached| reporter
+    evaluator -->|vulnerability_found & iterations remain| strategist
+    evaluator -->|done| reporter
 
     reporter --> END_NODE
 
@@ -211,6 +180,5 @@ graph TD
     style strategist fill:#87CEEB
     style attacker_branch fill:#87CEEB
     style evaluator fill:#87CEEB
-    style defender fill:#FFD700
     style reporter fill:#DDA0DD
 """

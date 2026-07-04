@@ -4,7 +4,6 @@
 from cyberredteam.langgraph.graph import (
     build_redteam_graph,
     should_iterate,
-    should_patch,
 )
 from cyberredteam.langgraph.state import RedTeamState
 
@@ -27,8 +26,6 @@ def _make_state(**overrides) -> RedTeamState:
         "iteration": 0,
         "current_strategy": "",
         "attack_results": [],
-        "patch_results": [],
-        "should_patch": False,
         "should_continue_iterating": False,
         "vulnerability_found": False,
         "scores": {},
@@ -55,12 +52,12 @@ class TestGraphBuild:
         graph = build_redteam_graph()
         assert graph is not None
 
-    def test_graph_has_five_nodes(self):
-        """Graph contains exactly 5 agent nodes."""
+    def test_graph_has_four_nodes(self):
+        """Graph contains exactly 4 agent nodes."""
         graph = build_redteam_graph()
         # StateGraph exposes nodes dict
         node_names = set(graph.nodes.keys())
-        expected = {"strategist", "attacker_branch", "evaluator", "defender", "reporter"}
+        expected = {"strategist", "attacker_branch", "evaluator", "reporter"}
         assert expected.issubset(node_names)
 
     def test_graph_compiles(self):
@@ -77,14 +74,6 @@ class TestGraphBuild:
 
 class TestRouting:
     """Verify conditional routing functions."""
-
-    def test_should_patch_routes_to_defender(self):
-        state = _make_state(vulnerability_found=True)
-        assert should_patch(state) == "defender"
-
-    def test_should_patch_routes_to_reporter(self):
-        state = _make_state(vulnerability_found=False)
-        assert should_patch(state) == "reporter"
 
     def test_should_iterate_routes_to_strategist(self):
         state = _make_state(
@@ -124,7 +113,6 @@ class TestStateConstruction:
         assert state["status"] == "running"
         assert state["iteration"] == 0
         assert state["attack_results"] == []
-        assert state["patch_results"] == []
         assert state["log_messages"] == []
 
     def test_max_iterations_respected(self):
@@ -149,5 +137,5 @@ class TestMermaid:
         from cyberredteam.langgraph.graph import get_mermaid_graph
 
         mermaid = get_mermaid_graph()
-        for node in ["strategist", "attacker_branch", "evaluator", "defender", "reporter"]:
+        for node in ["strategist", "attacker_branch", "evaluator", "reporter"]:
             assert node.lower() in mermaid.lower()

@@ -18,7 +18,7 @@ from cyberredteam.langgraph.orchestrator import GraphOrchestrator
 from cyberredteam.schemas import RunConfig, StrategyType
 from cyberredteam.settings import get_settings
 from cyberredteam.storage.artifact_store import SQLiteStore
-from cyberredteam.storage.models import AttackRecord, PatchRecord, RunRecord
+from cyberredteam.storage.models import AttackRecord, RunRecord
 
 logger = logging.getLogger("cyberredteam.api")
 logging.basicConfig(level=logging.INFO)
@@ -237,10 +237,6 @@ def get_run(run_id: str):
         stmt_attacks = select(AttackRecord).where(AttackRecord.run_id == run_id)
         attacks = session.scalars(stmt_attacks).all()
 
-        # Get patches
-        stmt_patches = select(PatchRecord).where(PatchRecord.run_id == run_id)
-        patches = session.scalars(stmt_patches).all()
-
         # Build response
         result = {
             "run_id": run.run_id,
@@ -269,23 +265,6 @@ def get_run(run_id: str):
                 }
                 for a in attacks
             ],
-            "patches": [
-                {
-                    "id": p.id,
-                    "patch_id": p.patch_id,
-                    "patch_type": p.patch_type,
-                    "target_component": p.target_component,
-                    "original_config": p.original_config,
-                    "patched_config": p.patched_config,
-                    "diff": p.diff,
-                    "applied": bool(p.applied),
-                    "retest_passed": bool(p.retest_passed),
-                    "finding_id": p.finding_id,
-                    "retest_prompt": p.retest_prompt,
-                    "retest_response": p.retest_response,
-                }
-                for p in patches
-            ],
         }
 
     store.close()
@@ -307,10 +286,6 @@ def get_analysis_report(run_id: str):
         # Get attacks
         stmt_attacks = select(AttackRecord).where(AttackRecord.run_id == run_id)
         attacks = session.scalars(stmt_attacks).all()
-
-        # Get patches
-        stmt_patches = select(PatchRecord).where(PatchRecord.run_id == run_id)
-        patches = session.scalars(stmt_patches).all()
 
     store.close()
 
@@ -343,7 +318,6 @@ def get_analysis_report(run_id: str):
     vulnerabilities_found = narratives.get("vulnerabilities_found", "")
     remaining_risks = narratives.get("remaining_risks", "")
     attack_campaign = narratives.get("attack_campaign", "")
-    fixes_applied = narratives.get("fixes_applied", "")
 
     # Calculate average confidence based on scores
     avg_score = sum(a.score for a in attacks) / len(attacks) if attacks else 0.5
@@ -388,36 +362,6 @@ def get_analysis_report(run_id: str):
             "status": status,
         })
 
-    # 3. Defender patching step
-    if patches:
-        all_passed = all(p.retest_passed for p in patches)
-        trace.append({
-            "time": "Final Step",
-            "action": "Guardrail Integration",
-            "details": f"Defender synthesized {len(patches)} patches. Retests: {'Passed' if all_passed else 'Failed'}",
-            "status": "passed" if all_passed else "warning",
-        })
-
-    # Build YAML policy string from patches
-    yaml_lines = [
-        "version: '2.1'",
-        f"policy_id: guard-{run.target_id.lower().replace(' ', '-')}-{run_id}",
-        "governance:",
-        f"  agent: {run.target_id}",
-        "  scope: Tool Invocation",
-        "rules:"
-    ]
-    for idx, p in enumerate(patches):
-        yaml_lines.extend([
-            f"  - id: patch-{idx}",
-            f"    type: {p.patch_type}",
-            f"    component: {p.target_component}",
-            "    action: MASK",
-            "    retest_status: PASSED" if p.retest_passed else "    retest_status: FAILED"
-        ])
-
-    suggested_yaml = "\n".join(yaml_lines)
-
     return {
         "id": run_id,
         "agent": run.target_id,
@@ -428,13 +372,11 @@ def get_analysis_report(run_id: str):
         "rootCause": vulnerabilities_found,
         "businessImpact": remaining_risks,
         "policyGap": attack_campaign,
-        "mitigation": fixes_applied,
         "confidence": confidence_percentage,
         "severity": max_severity,
         "trace": trace,
         "attackPayload": attack_payload,
         "rawOutput": raw_output,
-        "suggestedYaml": suggested_yaml,
         "recommendations": recommendations,
     }
 
@@ -463,9 +405,6 @@ class FindingStatusUpdate(BaseModel):
     status: str
     reviewer_id: Optional[str] = None
     rationale: Optional[str] = None
-    replay_run_id: Optional[str] = None
-    guardrail_intervened: Optional[bool] = None
-    patch_ref: Optional[str] = None
 
 
 @app.get("/api/findings")
@@ -526,9 +465,6 @@ def update_finding_status(finding_id: str, body: FindingStatusUpdate):
             {
                 "reviewer_id": body.reviewer_id,
                 "rationale": body.rationale,
-                "replay_run_id": body.replay_run_id,
-                "guardrail_intervened": body.guardrail_intervened,
-                "patch_ref": body.patch_ref,
             },
         )
     except ValueError as e:
@@ -563,20 +499,6 @@ def get_run_findings(run_id: str):
     result = store.get_run_findings(run_id)
     store.close()
     return result
-
-
-@app.post("/api/runs/{run_id}/apply")
-def apply_policy(run_id: str):
-    """Mark all patches for a run as applied in the database."""
-    store = SQLiteStore(Path(settings.db_path))
-    with store.SessionLocal() as session:
-        stmt = select(PatchRecord).where(PatchRecord.run_id == run_id)
-        patches = session.scalars(stmt).all()
-        for p in patches:
-            p.applied = 1
-        session.commit()
-    store.close()
-    return {"status": "success", "message": "Patches successfully applied to control plane"}
 
 
 @app.get("/api/incidents")
@@ -909,19 +831,9 @@ async def campaign_run_sse(req: CampaignRunRequest):
                 "message": f"Display timeout reached ({max_wait}s) — the campaign is still running in the background and results may be incomplete. Check the full report later.",
             }})
 
-        # ── Phase: defender + completion ──────────────────────────────────────
+        # ── Phase: completion ───────────────────────────────────────────────
         yield sse({"type": "agent_state", "payload": {
-            "agent_id": "defender", "status": "active", "active_edge": "orchestrator->defender",
-        }})
-        yield sse({"type": "log", "payload": {"level": "DEFEND", "message": "Defender agent generating remediations."}})
-
-        await asyncio.sleep(1.5)
-
-        yield sse({"type": "agent_state", "payload": {
-            "agent_id": "defender", "status": "done", "active_edge": "defender->findings",
-        }})
-        yield sse({"type": "agent_state", "payload": {
-            "agent_id": "reporter", "status": "active", "active_edge": "defender->reporter",
+            "agent_id": "reporter", "status": "active", "active_edge": "evaluator->reporter",
         }})
         await asyncio.sleep(0.8)
         yield sse({"type": "agent_state", "payload": {

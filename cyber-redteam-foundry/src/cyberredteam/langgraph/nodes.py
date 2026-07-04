@@ -3,7 +3,7 @@
 Each node function receives the full ``RedTeamState`` and returns
 **only the keys it wants to update** (a delta dict).  For fields
 annotated with ``Annotated[list, operator.add]`` (e.g.
-``attack_results``, ``patch_results``, ``log_messages``), the returned
+``attack_results``, ``log_messages``), the returned
 list is *appended* to the existing state rather than replacing it.
 
 Agent instances are created via a factory so they can be injected in
@@ -19,7 +19,6 @@ from typing import Callable, Dict, List, Optional
 from langgraph.types import Send
 
 from cyberredteam.agents.attacker import AttackerAgent
-from cyberredteam.agents.defender import DefenderAgent
 from cyberredteam.agents.evaluator import EvaluatorAgent
 from cyberredteam.agents.reporter import ReporterAgent
 from cyberredteam.evaluation import taxonomy
@@ -53,8 +52,6 @@ def _attacker_factory(**kwargs) -> AttackerAgent:
     return AttackerAgent(**kwargs)
 def _evaluator_factory(**kwargs) -> EvaluatorAgent:
     return EvaluatorAgent(**kwargs)
-def _defender_factory(**kwargs) -> DefenderAgent:
-    return DefenderAgent(**kwargs)
 _reporter_factory: Optional[Callable[..., ReporterAgent]] = None
 
 
@@ -66,11 +63,6 @@ def set_attacker_factory(factory: Callable[[], AttackerAgent]) -> None:
 def set_evaluator_factory(factory: Callable[[], EvaluatorAgent]) -> None:
     global _evaluator_factory
     _evaluator_factory = factory
-
-
-def set_defender_factory(factory: Callable[[], DefenderAgent]) -> None:
-    global _defender_factory
-    _defender_factory = factory
 
 
 def set_reporter_factory(factory: Callable[..., ReporterAgent]) -> None:
@@ -213,8 +205,9 @@ def node_attacker_branch(payload: dict) -> dict:
 def node_evaluator(state: RedTeamState) -> dict:
     """Evaluate the most recent batch of attack results.
 
-    Sets routing flags: ``vulnerability_found``, ``should_patch``,
-    ``should_continue_iterating``.
+    Owns the retest-loop decision directly (no defender in between anymore):
+    increments ``iteration`` and sets ``should_continue_iterating``/
+    ``vulnerability_found``.
     """
     logger.info(f"[Graph] Evaluator node — Run {state['run_id']}")
 
@@ -244,8 +237,10 @@ def node_evaluator(state: RedTeamState) -> dict:
     successful = [r for r in state["attack_results"] if r.success]
     vuln_found = len(successful) > 0
 
-    # Should we keep iterating?
-    can_iterate = state["iteration"] < state["max_iterations"] and vuln_found
+    # Should we keep iterating? Re-dispatch another round of parallel branches
+    # (via strategist) while there's a confirmed vulnerability and budget left.
+    new_iteration = state["iteration"] + 1
+    can_iterate = new_iteration < state["max_iterations"] and vuln_found
 
     logger.info(
         f"[Graph] Evaluator: {len(successful)} successful attacks, "
@@ -254,82 +249,12 @@ def node_evaluator(state: RedTeamState) -> dict:
 
     return {
         "vulnerability_found": vuln_found,
-        "should_patch": vuln_found,
         "should_continue_iterating": can_iterate,
+        "iteration": new_iteration,
         "scores": scores,
         "log_messages": [
             f"Evaluator: {len(successful)} successful attacks found, "
             f"vulnerability_found={vuln_found}"
-        ],
-    }
-
-
-# ---------------------------------------------------------------------------
-# Node: defender
-# ---------------------------------------------------------------------------
-
-def node_defender(state: RedTeamState) -> dict:
-    """Plan, apply, and retest patches for successful attacks.
-
-    Increments ``iteration`` and recalculates
-    ``should_continue_iterating``.
-    """
-    logger.info(f"[Graph] Defender node — Run {state['run_id']}")
-
-    defender = _defender_factory(store=get_node_store())
-
-    successful = [r for r in state["attack_results"] if r.success]
-    if not successful:
-        logger.info("[Graph] Defender: nothing to patch")
-        return {
-            "log_messages": ["Defender: no successful attacks to patch"],
-        }
-
-    # Plan → apply → retest
-    patches = defender.plan_defenses(successful)
-    applied = defender.apply_patches(patches)
-
-    target_id = state["target_id"]
-    target_adapter = None
-    if target_id.startswith("http://") or target_id.startswith("https://"):
-        from cyberredteam.tools.target_adapter import HttpTargetAdapter
-        target_adapter = HttpTargetAdapter(
-            endpoint=target_id,
-            headers=state.get("target_headers"),
-            request_template=state.get("target_request_template"),
-            response_path=state.get("target_response_path"),
-        )
-    else:
-        from cyberredteam.tools.target_adapter import SandboxTargetAdapter
-        target_adapter = SandboxTargetAdapter(target_id=target_id)
-
-    evaluator = _evaluator_factory(store=get_node_store())
-
-    for patch in applied:
-        defender.retest_after_patch(
-            patch=patch,
-            successful_attacks=successful,
-            target_adapter=target_adapter,
-            evaluator=evaluator,
-        )
-
-    new_iteration = state["iteration"] + 1
-    can_continue = (
-        new_iteration < state["max_iterations"]
-        and any(p.retest_passed for p in applied)
-    )
-
-    logger.info(
-        f"[Graph] Defender applied {len(applied)} patches, "
-        f"iteration={new_iteration}, continue={can_continue}"
-    )
-
-    return {
-        "patch_results": applied,  # appended via Annotated
-        "iteration": new_iteration,
-        "should_continue_iterating": can_continue,
-        "log_messages": [
-            f"Defender applied {len(applied)} patches (iteration {new_iteration})"
         ],
     }
 
@@ -369,7 +294,6 @@ def node_reporter(state: RedTeamState) -> dict:
         run_id=state["run_id"],
         target_id=state["target_id"],
         attack_results=state["attack_results"],
-        patches=state["patch_results"],
         start_time=start_dt,
         end_time=end_dt,
     )

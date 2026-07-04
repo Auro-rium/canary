@@ -15,14 +15,14 @@ type AgentStatus = 'idle' | 'active' | 'processing' | 'done' | 'error'
 interface AgentDef {
   id: string
   label: string
-  role: 'control' | 'attacker' | 'evaluator' | 'defender' | 'target' | 'store'
+  role: 'control' | 'attacker' | 'evaluator' | 'target' | 'store'
   x: number
   y: number
 }
 
 interface LogEntry {
   timestamp: string
-  level: 'SYSTEM' | 'ATTACK' | 'EVAL' | 'DEFEND' | 'FINDING' | 'ERROR'
+  level: 'SYSTEM' | 'ATTACK' | 'EVAL' | 'FINDING' | 'ERROR'
   message: string
 }
 
@@ -127,7 +127,6 @@ export const AGENTS: AgentDef[] = [
   { id: 'strategist',   label: 'Strategist',    role: 'control',   x: 0.2,  y: 0.12 },
   { id: 'attacker',     label: 'Attk. Agent',   role: 'attacker',  x: 0.2,  y: 0.38 },
   { id: 'evaluator',    label: 'Eval. Agent',   role: 'evaluator', x: 0.5,  y: 0.38 },
-  { id: 'defender',     label: 'Def. Agent',    role: 'defender',  x: 0.8,  y: 0.38 },
   { id: 'target',       label: 'Target',         role: 'target',    x: 0.5,  y: 0.68 },
   { id: 'reporter',     label: 'Reporter',       role: 'store',     x: 0.8,  y: 0.68 },
   { id: 'findings',     label: 'Findings Store', role: 'store',     x: 0.5,  y: 0.88 },
@@ -136,14 +135,12 @@ export const AGENTS: AgentDef[] = [
 export const EDGES = [
   { from: 'orchestrator', to: 'attacker' },
   { from: 'orchestrator', to: 'evaluator' },
-  { from: 'orchestrator', to: 'defender' },
   { from: 'orchestrator', to: 'strategist' },
   { from: 'strategist',   to: 'attacker' },
   { from: 'attacker',     to: 'target' },
   { from: 'evaluator',    to: 'target' },
   { from: 'evaluator',    to: 'findings' },
-  { from: 'defender',     to: 'findings' },
-  { from: 'defender',     to: 'reporter' },
+  { from: 'evaluator',    to: 'reporter' },
   { from: 'reporter',     to: 'findings' },
 ]
 
@@ -279,7 +276,6 @@ const TOPO_NODES: Record<string, TopoNode> = {
   orchestrator: { cx: 400, cy: 55,  label: 'ORCHESTRATOR',   color: '#ffffff', abbrev: 'ORC' },
   strategist:   { cx: 150, cy: 165, label: 'STRATEGIST',     color: '#a78bfa', abbrev: 'STR' },
   evaluator:    { cx: 400, cy: 165, label: 'EVALUATOR',      color: '#60a5fa', abbrev: 'EVL' },
-  defender:     { cx: 650, cy: 165, label: 'DEFENDER',       color: '#34d399', abbrev: 'DEF' },
   attacker:     { cx: 150, cy: 310, label: 'ATTACKER',       color: '#ef4444', abbrev: 'ATK' },
   target:       { cx: 400, cy: 310, label: 'TARGET',         color: '#f59e0b', rect: { w: 90, h: 36 } },
   reporter:     { cx: 650, cy: 310, label: 'REPORTER',       color: '#c084fc', abbrev: 'RPT' },
@@ -289,12 +285,11 @@ const TOPO_NODES: Record<string, TopoNode> = {
 const TOPO_EDGES: { from: string; to: string }[] = [
   { from: 'orchestrator', to: 'strategist' },
   { from: 'orchestrator', to: 'evaluator' },
-  { from: 'orchestrator', to: 'defender' },
   { from: 'strategist',   to: 'attacker' },
   { from: 'attacker',     to: 'target' },
   { from: 'evaluator',    to: 'target' },
   { from: 'evaluator',    to: 'findings' },
-  { from: 'defender',     to: 'reporter' },
+  { from: 'evaluator',    to: 'reporter' },
   { from: 'reporter',     to: 'findings' },
 ]
 
@@ -310,7 +305,6 @@ const ARROW_IDS: Record<string, string> = {
   '#ffffff': 'arr-ffffff',
   '#a78bfa': 'arr-a78bfa',
   '#60a5fa': 'arr-60a5fa',
-  '#34d399': 'arr-34d399',
   '#ef4444': 'arr-ef4444',
   '#f59e0b': 'arr-f59e0b',
   '#c084fc': 'arr-c084fc',
@@ -388,7 +382,6 @@ function AgentTopology({ phase, statuses, activeEdge }: TopoProps) {
           ['arr-ffffff', '#ffffff'],
           ['arr-a78bfa', '#a78bfa'],
           ['arr-60a5fa', '#60a5fa'],
-          ['arr-34d399', '#34d399'],
           ['arr-ef4444', '#ef4444'],
           ['arr-f59e0b', '#f59e0b'],
           ['arr-c084fc', '#c084fc'],
@@ -744,19 +737,10 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
       scheduleMs(() => {
         updateAgent('evaluator', 'done')
         if (finding) fireEdge('evaluator->findings')
-        updateAgent('defender', 'active')
-        fireEdge('orchestrator->defender')
-        appendLog('DEFEND', `Generating remediation for ${tech.name}.`)
-      }, base + 3200)
-      scheduleMs(() => updateAgent('defender', 'processing'), base + 3500)
-      scheduleMs(() => {
-        updateAgent('defender', 'done')
-        if (finding) fireEdge('defender->findings')
         appendLog('SYSTEM', `Technique complete. Verdict: ${finding?.verdict ?? 'RESILIENT'}. Score: ${((finding?.score ?? 0.1) * 100).toFixed(0)}%`)
         if (idx < techniques.length - 1) {
           updateAgent('attacker', 'idle')
           updateAgent('evaluator', 'idle')
-          updateAgent('defender', 'idle')
         }
       }, base + 4000)
     })
@@ -835,7 +819,6 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
   const levelBadgeClass = (level: LogEntry['level']) => {
     if (level === 'ATTACK')  return 'bg-red-600/80 text-white'
     if (level === 'EVAL')    return 'bg-blue-600/70 text-white'
-    if (level === 'DEFEND')  return 'bg-green-700/70 text-white'
     if (level === 'FINDING') return 'border border-red-500/60 text-red-400'
     if (level === 'ERROR')   return 'bg-red-900 text-red-300'
     return 'text-white/25'

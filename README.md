@@ -8,7 +8,7 @@
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ed?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Autonomous AI red-team platform. Point it at any HTTP-based AI agent, and a 5-agent LangGraph pipeline attacks it, evaluates what it finds, proposes and applies defenses, then streams everything live to a React dashboard.
+Autonomous AI red-team platform. Point it at any HTTP-based AI agent, and a 4-agent LangGraph pipeline attacks it, evaluates what it finds, and streams everything live to a React dashboard. Findings are triaged manually — the platform reports vulnerabilities, it does not auto-remediate them.
 
 ---
 
@@ -28,22 +28,18 @@ canary/
 
 ## Architecture
 
-Five specialized agents run as a stateful LangGraph pipeline on AWS Bedrock.
+Four specialized agents run as a stateful LangGraph pipeline on AWS Bedrock.
 
 ```mermaid
 graph TD
-    START([Start Campaign]) --> strategist["1 · Strategist<br/>Qwen3 480b<br/>Picks strategies from target profile"]
-    strategist --> attacker["2 · Attacker<br/>DeepSeek V3<br/>Builds &amp; fires adversarial prompts"]
+    START([Start Campaign]) --> strategist["1 · Strategist<br/>Picks strategies, dispatches ≤3 parallel branches"]
+    strategist -.->|Send| attacker["2 · Attacker branch<br/>DeepSeek V3<br/>Builds &amp; fires adversarial prompts"]
     attacker --> target["Target Agent<br/>HTTP endpoint under test"]
     target --> evaluator["3 · Evaluator<br/>Qwen3 480b<br/>Det. detectors + LLM judge"]
-    evaluator --> branch{Vulnerability<br/>found?}
+    evaluator --> branch{Vulnerability found<br/>and iterations remain?}
 
-    branch -->|Yes| defender["4 · Defender<br/>Qwen3 480b<br/>Generates guardrail patches"]
-    branch -->|No| reporter["5 · Reporter<br/>Qwen3 480b<br/>Markdown + JSON audit report"]
-
-    defender --> retest{Retest passed<br/>or max iter?}
-    retest -->|Re-attack| attacker
-    retest -->|Done| reporter
+    branch -->|Yes — re-dispatch| strategist
+    branch -->|No| reporter["4 · Reporter<br/>Qwen3 480b<br/>Markdown + JSON audit report"]
 
     reporter --> END([Persist findings])
 
@@ -51,17 +47,15 @@ graph TD
     style END    fill:#6366f1,stroke:#4f46e5,color:#fff
     style target fill:#f59e0b,stroke:#d97706,color:#fff
     style branch fill:#3b82f6,stroke:#2563eb,color:#fff
-    style retest fill:#3b82f6,stroke:#2563eb,color:#fff
 ```
 
 ### Agent roles
 
 | Agent | Model | Responsibility |
 |---|---|---|
-| Strategist | Qwen3 480b | Selects attack strategies based on the target's tool list and capabilities |
+| Strategist | — (no LLM call) | Randomly dispatches up to 3 attack strategies per iteration as parallel branches |
 | Attacker | DeepSeek V3 | Constructs adversarial prompts, executes them against the target |
-| Evaluator | Qwen3 480b | Deterministic detectors + LLM judge; produces 4-case consensus verdict |
-| Defender | Qwen3 480b | Generates guardrail patches, applies them via `/patch`, triggers retest (up to 3×) |
+| Evaluator | Qwen3 480b | Deterministic detectors + LLM judge; produces 4-case consensus verdict; owns the iterate-vs-report routing decision |
 | Reporter | Qwen3 480b | Structured Markdown and JSON audit reports with per-finding evidence |
 
 ---
@@ -131,7 +125,7 @@ SQLite database at `runs/redteam.db`, three tables:
 
 | Table | Purpose |
 |---|---|
-| `findings` | Deduplicated by `sha256(target:component:strategy:asi_class)[:16]`. Lifecycle: `open → patch_proposed → pending_retest → verified_fixed` |
+| `findings` | Deduplicated by `sha256(target:component:strategy:asi_class)[:16]`. Lifecycle: `open → wont_fix \| false_positive` (manual triage, requires reviewer_id + rationale) |
 | `evaluator_verdicts` | Full audit trail — every attempt, score, confidence, verdict |
 | `attack_traces` | Raw adversarial inputs (pre-sanitization), tool calls, full responses |
 
@@ -150,7 +144,6 @@ Backend runs on port **8001**. All endpoints require `Authorization: Bearer <API
 | `GET` | `/api/runs/{run_id}` | Campaign state and telemetry |
 | `GET` | `/api/runs/{run_id}/analysis-report` | Frontend-shaped analysis with traces |
 | `GET` | `/api/runs/{run_id}/findings` | Findings for a specific run |
-| `POST` | `/api/runs/{run_id}/apply` | Mark patches as applied |
 | `GET` | `/api/open-findings` | All unresolved findings across runs |
 | `GET` | `/api/incidents` | Live incident feed |
 | `GET` | `/api/findings` | Paginated findings (filters: `severity`, `status`, `asi_class`) |
@@ -167,14 +160,13 @@ Swagger UI: `http://localhost:8001/docs` (or via nginx proxy at `http://localhos
 
 ## Dashboard
 
-React 19 SPA served on port **8000**, four pages:
+React 19 SPA served on port **8000**, three pages:
 
 | Page | Description |
 |---|---|
 | Run Audit | Configure and launch campaigns. Live SSE stream with agent topology diagram. |
 | Findings | Paginated findings table with verdict badges, severity, status lifecycle controls. |
 | Red Team | Live incident feed, run detail panel, strategy labels. |
-| Defenses | ASI coverage map, attack trend charts per target. |
 
 ---
 

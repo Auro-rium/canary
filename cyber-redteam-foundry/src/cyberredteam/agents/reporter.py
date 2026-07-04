@@ -8,7 +8,7 @@ from typing import List
 from cyberredteam.llm.factory import get_llm_for_agent, load_prompt
 from cyberredteam.llm.schemas import SecurityReport
 from cyberredteam.logging import setup_logging
-from cyberredteam.schemas import AttackResult, PatchResult, RedTeamReport
+from cyberredteam.schemas import AttackResult, RedTeamReport
 
 logger = setup_logging()
 
@@ -36,7 +36,6 @@ class ReporterAgent:
         run_id: str,
         target_id: str,
         attack_results: List[AttackResult],
-        patches: List[PatchResult],
         start_time: datetime,
         end_time: datetime,
     ) -> RedTeamReport:
@@ -79,26 +78,12 @@ class ReporterAgent:
             )
         attacks_fact_str = "\n".join(attacks_fact) if attacks_fact else "None"
 
-        patches_fact = []
-        for p in patches:
-            retest_vp = "not_retested"
-            if p.applied:
-                retest_vp = "consensus" if p.retest_passed else None
-            patches_fact.append(
-                f"- Patch {p.patch_id}: finding_id={p.finding_id or '—'}, "
-                f"type={p.patch_type.value}, applied={p.applied}, "
-                f"retest_passed={p.retest_passed}, component={p.target_component}, "
-                f"retest_verdict_path={retest_vp}"
-            )
-        patches_fact_str = "\n".join(patches_fact) if patches_fact else "None"
-
         user_message = (
             f"Run ID: {run_id}\n"
             f"Target ID: {target_id}\n"
             f"Start: {start_time.isoformat()}\n"
             f"End: {end_time.isoformat()}\n"
-            f"Factual Attack Log:\n{attacks_fact_str}\n\n"
-            f"Factual Patches Log:\n{patches_fact_str}\n"
+            f"Factual Attack Log:\n{attacks_fact_str}\n"
         )
 
         try:
@@ -110,8 +95,6 @@ class ReporterAgent:
                 "attack_campaign": sec_report.attack_campaign,
                 "vulnerabilities_found": sec_report.vulnerabilities_found,
                 "evidence_summary": sec_report.evidence_summary,
-                "fixes_applied": sec_report.fixes_applied,
-                "regression_results": sec_report.regression_results,
                 "remaining_risks": sec_report.remaining_risks,
             }
         except Exception as e:
@@ -121,12 +104,10 @@ class ReporterAgent:
                 "attack_campaign": "Assessment of targeted strategies against the system.",
                 "vulnerabilities_found": "Vulnerabilities discovered and logged during testing.",
                 "evidence_summary": "Evidence gathered from agent outputs.",
-                "fixes_applied": "Remediation patches applied by the defender.",
-                "regression_results": "Retesting performed on applied patches.",
-                "remaining_risks": "Residual risks based on remaining unmitigated findings.",
+                "remaining_risks": "Residual risks based on remaining open findings.",
             }
 
-        recommendations = self._generate_recommendations(attack_results, patches)
+        recommendations = self._generate_recommendations(attack_results)
 
         report = RedTeamReport(
             run_id=run_id,
@@ -136,7 +117,6 @@ class ReporterAgent:
             total_attacks=total_attacks,
             successful_attacks=successful_attacks,
             attack_results=attack_results,
-            patches_applied=patches,
             severity_distribution=severity_dist,
             success_rate=success_rate,
             recommendations=recommendations,
@@ -196,21 +176,6 @@ class ReporterAgent:
                     "threshold_used": r.score_threshold,
                 })
 
-        # Patches with finding_ids
-        patches_with_fid = [
-            {
-                "patch_id": p.patch_id,
-                "finding_id": p.finding_id or "—",
-                "type": p.patch_type.value,
-                "applied": p.applied,
-                "retest_passed": p.retest_passed,
-                "retest_verdict_path": (
-                    "consensus" if p.applied and p.retest_passed else None
-                ),
-            }
-            for p in report.patches_applied
-        ]
-
         confirmed_ids = {fid for fid, f in findings_by_id.items() if f["verdict"] == "confirmed"}
         unconfirmed_ids = {fid for fid, f in findings_by_id.items() if f["verdict"] == "unconfirmed"}
 
@@ -228,8 +193,6 @@ class ReporterAgent:
             f.write(f"| Confirmed Findings | {len(confirmed_ids)} |\n")
             f.write(f"| Unconfirmed Findings | {len(unconfirmed_ids)} |\n")
             f.write(f"| Success Rate | {report.success_rate:.1%} |\n")
-            f.write(f"| Patches Applied | {sum(1 for p in report.patches_applied if p.applied)} |\n")
-            f.write(f"| Patches Passing Retest | {sum(1 for p in report.patches_applied if p.applied and p.retest_passed)} |\n")
             f.write("\n")
 
             # Per-attack evidence table
@@ -263,8 +226,6 @@ class ReporterAgent:
                 f.write("No confirmed or unconfirmed findings.\n\n")
             else:
                 for fid, fi in findings_by_id.items():
-                    patch_ids = [p["patch_id"] for p in patches_with_fid if p["finding_id"] == fid]
-                    patch_status = ", ".join(patch_ids) if patch_ids else "no patch"
                     f.write(f"### Finding `{fid}`\n\n")
                     f.write(f"| Field | Value |\n|---|---|\n")
                     f.write(f"| Verdict | {fi['verdict']} |\n")
@@ -277,7 +238,6 @@ class ReporterAgent:
                     f.write(f"| Attempts | {fi['attempt_numbers']} |\n")
                     f.write(f"| Deterministic Hits | {fi['deterministic_hits'] or '—'} |\n")
                     f.write(f"| Input Hash | {fi['adversarial_input_hash'] or '—'} |\n")
-                    f.write(f"| Patch | {patch_status} |\n")
                     if fi["evidence_summary"]:
                         f.write(f"\n**Evidence:** {fi['evidence_summary']}\n")
                     f.write("\n")
@@ -292,23 +252,6 @@ class ReporterAgent:
                         f"- Attempt {ia['attempt_number']}: {ia['strategy']} / {ia['component']} — "
                         f"score={ia['score']:.2f}, threshold={ia['threshold_used']}, "
                         f"reason={ia['inconclusive_reason']!r}\n"
-                    )
-                f.write("\n")
-
-            # Patch results
-            f.write("## Patch Results\n\n")
-            if not patches_with_fid:
-                f.write("No patches.\n\n")
-            else:
-                f.write("| Patch ID | Finding ID | Type | Retest Passed | Retest Path |\n")
-                f.write("|---|---|---|---|---|\n")
-                for p in patches_with_fid:
-                    f.write(
-                        f"| {p['patch_id'][:20]} "
-                        f"| {p['finding_id']} "
-                        f"| {p['type']} "
-                        f"| {p['retest_passed']} "
-                        f"| {p['retest_verdict_path'] or '—'} |\n"
                     )
                 f.write("\n")
 
@@ -387,16 +330,6 @@ class ReporterAgent:
             if r.indicators.get("verdict") == "failed"
         )
 
-        # Patch summary
-        applied_count = sum(1 for p in report.patches_applied if p.applied)
-        retest_passed_count = sum(
-            1 for p in report.patches_applied if p.applied and p.retest_passed
-        )
-        retest_failed_count = sum(
-            1 for p in report.patches_applied if p.applied and not p.retest_passed
-        )
-        not_retested_count = len(report.patches_applied) - applied_count
-
         data = {
             "run_id": report.run_id,
             "target_id": report.target_id,
@@ -418,27 +351,6 @@ class ReporterAgent:
             "successful_attacks": len(confirmed_ids),
             "success_rate": len(confirmed_ids) / report.total_attacks if report.total_attacks > 0 else 0.0,
 
-            "patches": [
-                {
-                    "patch_id": p.patch_id,
-                    "finding_id": p.finding_id or None,
-                    "type": p.patch_type.value,
-                    "applied": p.applied,
-                    "retest_passed": p.retest_passed,
-                    "retest_verdict_path": (
-                        "consensus" if p.applied and p.retest_passed else None
-                    ),
-                }
-                for p in report.patches_applied
-            ],
-
-            "patch_summary": {
-                "applied": applied_count,
-                "retest_passed": retest_passed_count,
-                "retest_failed": retest_failed_count,
-                "not_retested": not_retested_count,
-            },
-
             "assumptions": _ASSUMPTIONS,
             "recommendations": report.recommendations,
             "narratives": {k: v for k, v in report.narratives.items() if k != "assumptions"},
@@ -453,7 +365,6 @@ class ReporterAgent:
     def _generate_recommendations(
         self,
         attack_results: List[AttackResult],
-        patches: List[PatchResult],
     ) -> List[str]:
         """Generate finding_id-anchored security recommendations."""
         recommendations = []
@@ -472,18 +383,9 @@ class ReporterAgent:
             asi = r.indicators.get("asi_class", "")
             component = r.indicators.get("component", r.strategy_type.value)
             strategy = r.strategy_type.value
-            failed_patches = [
-                p for p in patches
-                if p.finding_id == fid and p.applied and not p.retest_passed
-            ]
-            patch_ref = (
-                f", patch {failed_patches[0].patch_id[:8]} failed retest"
-                if failed_patches
-                else ""
-            )
             recommendations.append(
                 f"Remediate {component} against {strategy} "
-                f"(finding {fid}, {asi}{patch_ref})."
+                f"(finding {fid}, {asi})."
             )
             seen_findings[fid] = True
 

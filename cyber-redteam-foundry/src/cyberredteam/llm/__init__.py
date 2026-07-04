@@ -7,7 +7,6 @@ from cyberredteam.llm.factory import get_llm, get_llm_for_agent
 from cyberredteam.llm.schemas import (
     AttackerOutput,
     AttackPlan,
-    DefensePatch,
     EvaluationResult,
     SecurityReport,
 )
@@ -18,6 +17,5 @@ __all__ = [
     "AttackPlan",
     "AttackerOutput",
     "EvaluationResult",
-    "DefensePatch",
     "SecurityReport",
 ]

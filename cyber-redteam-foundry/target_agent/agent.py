@@ -61,14 +61,6 @@ class TargetAgentRunner:
         self.tool_map = {tool.name: tool for tool in ALL_TOOLS}
         self.system_prompt = SYSTEM_PROMPT
 
-    def apply_patch(self, recommendation: str) -> None:
-        """Apply a defense patch rule to the system prompt."""
-        self.system_prompt += f"\n\n## Applied Security Policy\n- {recommendation}"
-
-    def reset_prompt(self) -> None:
-        """Reset the system prompt to the baseline."""
-        self.system_prompt = SYSTEM_PROMPT
-
     def invoke(self, user_message: str) -> str:
         """Run the full agent loop: LLM → tool calls → LLM → final answer."""
         messages = [

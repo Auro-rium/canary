@@ -37,7 +37,6 @@ _DEFAULT_MODELS = {
     "strategist": {"model": "qwen.qwen3-coder-480b-a35b-v1:0"},
     "attacker": {"model": "deepseek.v3-v1:0"},
     "evaluator": {"model": "qwen.qwen3-coder-480b-a35b-v1:0"},
-    "defender": {"model": "qwen.qwen3-coder-480b-a35b-v1:0"},
     "reporter": {"model": "qwen.qwen3-coder-480b-a35b-v1:0"},
 }
 
@@ -66,7 +65,7 @@ def get_model_for_agent(agent_name: str) -> str:
     """Get the Bedrock model ID for a given agent.
 
     Args:
-        agent_name: One of strategist, attacker, evaluator, defender, reporter.
+        agent_name: One of strategist, attacker, evaluator, reporter.
 
     Returns:
         Bedrock model / inference-profile ID string.
@@ -152,7 +151,7 @@ def get_llm_for_agent(
     """Create an ObservableLLM using the configured model for an agent.
 
     Args:
-        agent_name: One of strategist, attacker, evaluator, defender, reporter.
+        agent_name: One of strategist, attacker, evaluator, reporter.
         store: Optional SQLiteStore for call logging.
 
     Returns:

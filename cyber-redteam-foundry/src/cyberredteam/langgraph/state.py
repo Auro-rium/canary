@@ -9,7 +9,7 @@ from typing import Dict, List, Optional
 
 from typing_extensions import Annotated, TypedDict
 
-from cyberredteam.schemas import AttackResult, PatchResult
+from cyberredteam.schemas import AttackResult
 
 
 class RedTeamState(TypedDict):
@@ -42,10 +42,8 @@ class RedTeamState(TypedDict):
     iteration: int
     current_strategy: str
     attack_results: Annotated[List[AttackResult], operator.add]
-    patch_results: Annotated[List[PatchResult], operator.add]
 
     # ── Routing flags ────────────────────────────────────────────
-    should_patch: bool
     should_continue_iterating: bool
     vulnerability_found: bool
 

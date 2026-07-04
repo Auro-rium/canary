@@ -198,35 +198,6 @@ class EvaluationResult(BaseModel):
         return str(v)
 
 
-# ─── Defender ────────────────────────────────────────────────────────
-
-class DefensePatch(BaseModel):
-    """LLM-proposed remediation for a vulnerability."""
-
-    patch_type: str = Field(
-        ...,
-        description="Patch category/type",
-    )
-    affected_component: str = Field(
-        ...,
-        description="Which component this patch targets",
-    )
-    recommendation: str = Field(
-        ...,
-        description="The mitigation recommendation (e.g. system prompt guidelines)",
-    )
-    expected_risk_reduction: str = Field(
-        ...,
-        description="Expected reduction in risk/improvement",
-    )
-    confidence: float = Field(
-        default=0.5,
-        ge=0.0,
-        le=1.0,
-        description="Confidence that this patch will be effective (0.0-1.0)",
-    )
-
-
 # ─── Reporter ────────────────────────────────────────────────────────
 
 class SecurityReport(BaseModel):
@@ -248,17 +219,9 @@ class SecurityReport(BaseModel):
         ...,
         description="Evidence supporting each confirmed finding; deterministic_hits first",
     )
-    fixes_applied: str = Field(
-        ...,
-        description="Which patches were applied, which passed retest, which failed",
-    )
-    regression_results: str = Field(
-        ...,
-        description="Retest outcomes per patch — reference finding_id and retest_verdict_path",
-    )
     remaining_risks: str = Field(
         ...,
-        description="Open confirmed findings and failed-retest patches only",
+        description="Open confirmed findings requiring manual triage",
     )
     assumptions: str = Field(
         default="",

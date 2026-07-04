@@ -36,15 +36,6 @@ interface Attack {
   target_id: string | null
 }
 
-interface Patch {
-  id: number
-  patch_type: string
-  target_component: string
-  diff: string
-  applied: boolean
-  retest_passed: boolean
-}
-
 interface RunDetail {
   run_id: string
   target_id: string
@@ -55,7 +46,6 @@ interface RunDetail {
   successful_attacks: number
   success_rate: number
   attacks: Attack[]
-  patches: Patch[]
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -206,39 +196,6 @@ function RunDetailPanel({ detail }: { detail: RunDetail }) {
           </div>
         </div>
       )}
-
-      {/* Patches list */}
-      {detail.patches.length > 0 && (
-        <div>
-          <div className="text-white/20 text-[9px] uppercase tracking-[0.2em] mb-3">Patches</div>
-          <div className="border border-white/[0.06]">
-            {detail.patches.map(patch => (
-              <div
-                key={patch.id}
-                className="flex items-center justify-between gap-4 px-3 py-2.5 border-b border-white/[0.04] last:border-b-0 hover:bg-white/[0.01]"
-              >
-                <div className="flex items-center gap-3 min-w-0">
-                  <span className="text-white/60 text-[10px] uppercase tracking-wider shrink-0">{patch.patch_type}</span>
-                  <span className="text-white/20 text-[9px]">·</span>
-                  <span className="text-white/40 text-[9px] font-mono truncate">{patch.target_component}</span>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  <span className={`text-[9px] uppercase tracking-wider ${patch.applied ? 'text-white/50' : 'text-white/20'}`}>
-                    {patch.applied ? 'Applied' : 'Pending'}
-                  </span>
-                  <span className={`text-[9px] uppercase tracking-wider px-1.5 py-0.5 border ${
-                    patch.retest_passed
-                      ? 'text-white/50 border-white/10'
-                      : 'text-red-400/60 border-red-600/10'
-                  }`}>
-                    {patch.retest_passed ? 'Pass' : 'Fail'}
-                  </span>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
     </div>
   )
 }
@@ -249,10 +206,9 @@ interface RedTeamPageProps {
   onBack: () => void
   onRunAudit: () => void
   onFindings?: () => void
-  onDefenses?: () => void
 }
 
-export default function RedTeamPage({ onBack, onRunAudit, onFindings, onDefenses }: RedTeamPageProps) {
+export default function RedTeamPage({ onBack, onRunAudit, onFindings }: RedTeamPageProps) {
   const [incidents,        setIncidents]        = useState<Incident[]>([])
   const [loading,          setLoading]          = useState(true)
   const [error,            setError]            = useState<string | null>(null)
@@ -333,7 +289,7 @@ export default function RedTeamPage({ onBack, onRunAudit, onFindings, onDefenses
   // ─── RENDER ─────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-black text-white font-mono">
-      <Navbar onRunAudit={onRunAudit} onLogoClick={onBack} onFindings={onFindings} onDefenses={onDefenses} />
+      <Navbar onRunAudit={onRunAudit} onLogoClick={onBack} onFindings={onFindings} />
 
       {/* ── SECTION 01: LIVE INCIDENT FEED ── */}
       <section className="px-6 sm:px-10 md:px-16 lg:px-20 py-16 border-b border-white/10 pt-36">

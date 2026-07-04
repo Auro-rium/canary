@@ -45,27 +45,6 @@ class AttackRecord(Base):
     error = Column(String, nullable=True)
 
 
-class PatchRecord(Base):
-    """Stores defensive patches applied."""
-
-    __tablename__ = "patches"
-
-    id = Column(Integer, primary_key=True)
-    run_id = Column(String, index=True)
-    patch_id = Column(String, unique=True)
-    patch_type = Column(String)
-    target_component = Column(String)
-    original_config = Column(JSON)
-    patched_config = Column(JSON)
-    diff = Column(String)
-    applied = Column(Integer)  # 0 or 1
-    retest_passed = Column(Integer)  # 0 or 1
-    finding_id = Column(String, nullable=True, index=True)
-    retest_prompt = Column(String, nullable=True)
-    retest_response = Column(String, nullable=True)
-    timestamp = Column(DateTime, default=datetime.utcnow)
-
-
 class LLMCallRecord(Base):
     """Stores observability details about LLM calls."""
 
@@ -98,7 +77,6 @@ class FindingRecord(Base):
     first_seen_run = Column(String, nullable=True)
     last_seen_run = Column(String, nullable=True)
     seen_in_runs = Column(JSON, default=list)
-    patch_ref = Column(String, nullable=True)
     embedding = Column(JSON, nullable=True)
     trace_s3_uri = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -161,13 +139,7 @@ def _migrate_columns(engine) -> None:
             ("finding_id",     "VARCHAR"),
             ("score_threshold","REAL DEFAULT 0.5"),
         ],
-        "patches": [
-            ("finding_id",      "VARCHAR"),
-            ("retest_prompt",   "TEXT"),
-            ("retest_response", "TEXT"),
-        ],
         "findings": [
-            ("patch_ref",      "VARCHAR"),
             ("embedding",      "TEXT"),
             ("trace_s3_uri",   "VARCHAR"),
         ],

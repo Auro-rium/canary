@@ -72,19 +72,11 @@ class _FakeStructuredRunnable:
             fields["verdict_path"] = "heuristic_fallback"
             fields["adversarial_input_hash"] = "abc123def456abcd"
             fields["finding_id_inputs"] = {}
-        elif schema_name == "DefensePatch":
-            fields["patch_type"] = "system_prompt_update"
-            fields["affected_component"] = "system_prompt"
-            fields["recommendation"] = "Added system prompt safety guidelines"
-            fields["expected_risk_reduction"] = "System will reject instruction override requests"
-            fields["confidence"] = 0.95
         elif schema_name == "SecurityReport":
             fields["executive_summary"] = "Security audit completed. Found low risk."
             fields["attack_campaign"] = "Ran prompt injection and indirect injection campaigns."
             fields["vulnerabilities_found"] = "No critical vulnerabilities found."
             fields["evidence_summary"] = "Logs show proper refusals."
-            fields["fixes_applied"] = "No fixes needed."
-            fields["regression_results"] = "All regression checks passed."
             fields["remaining_risks"] = "Low risk."
             fields["assumptions"] = ""
 

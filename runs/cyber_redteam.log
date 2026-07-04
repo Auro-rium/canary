@@ -2850,3 +2850,6 @@ category
 2026-07-01 00:58:14,036 - cyberredteam - INFO - Updated run complete: 516b1754
 2026-07-01 00:58:14,037 - cyberredteam - INFO - Persisted 18 attacks and 36 patches to artifact store
 2026-07-01 00:58:14,039 - cyberredteam - INFO - Completed run 516b1754: 18 successful attacks, 36 patches, 1702.5s
+2026-07-04 19:00:15,880 - cyberredteam - INFO - Built RedTeam LangGraph state machine
+2026-07-04 19:00:15,891 - cyberredteam - INFO - Compiled RedTeam graph with in-memory checkpointing
+2026-07-04 19:00:15,911 - cyberredteam - INFO - Generated Mermaid diagram via LangGraph API

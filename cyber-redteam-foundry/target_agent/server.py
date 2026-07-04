@@ -71,10 +71,6 @@ class AgentInfo(BaseModel):
     system_prompt_hash: str = ""  # We expose the hash, not the prompt itself
 
 
-class PatchRequest(BaseModel):
-    recommendation: str
-
-
 # ---------------------------------------------------------------------------
 # State
 # ---------------------------------------------------------------------------
@@ -104,24 +100,6 @@ def info() -> AgentInfo:
     import hashlib
     prompt_hash = hashlib.sha256(SYSTEM_PROMPT.encode()).hexdigest()[:16]
     return AgentInfo(system_prompt_hash=prompt_hash)
-
-
-@app.post("/patch")
-def patch(req: PatchRequest):
-    """Apply a defense patch/guideline to the agent's system prompt."""
-    logger.info(f"Applying patch recommendation: {req.recommendation}")
-    agent = get_agent()
-    agent.apply_patch(req.recommendation)
-    return {"status": "patched"}
-
-
-@app.post("/reset")
-def reset():
-    """Reset the agent's system prompt back to baseline."""
-    logger.info("Resetting agent system prompt to baseline")
-    agent = get_agent()
-    agent.reset_prompt()
-    return {"status": "reset"}
 
 
 @app.post("/chat", response_model=ChatResponse)

@@ -13,8 +13,6 @@ from cyberredteam.langgraph.state import RedTeamState
 from cyberredteam.schemas import (
     AttackResult,
     AttackSeverity,
-    PatchResult,
-    PatchType,
     StrategyType,
 )
 
@@ -39,20 +37,6 @@ def _mock_attack_result(run_id: str, attempt: int, success: bool, iteration: int
     )
 
 
-def _mock_patch_result(run_id: str, idx: int) -> PatchResult:
-    return PatchResult(
-        run_id=run_id,
-        patch_id=f"{run_id}_patch_{idx}",
-        patch_type=PatchType.PROMPT_HARDENING,
-        target_component="system_prompt",
-        original_config={"instruction": "Be helpful"},
-        patched_config={"instruction": "Be helpful but safe"},
-        diff="+ safety_check: true",
-        applied=True,
-        retest_passed=True,
-    )
-
-
 # -------------------------------------------------------------------
 # Graph structure tests
 # -------------------------------------------------------------------
@@ -63,7 +47,7 @@ class TestGraphStructure:
     def test_node_count(self):
         graph = build_redteam_graph()
         node_names = set(graph.nodes.keys())
-        assert len(node_names) >= 5
+        assert len(node_names) >= 4
 
     def test_entry_point_is_strategist(self):
         build_redteam_graph()
@@ -89,11 +73,9 @@ class TestGraphInvocation:
 
     @patch("cyberredteam.langgraph.nodes._attacker_factory")
     @patch("cyberredteam.langgraph.nodes._evaluator_factory")
-    @patch("cyberredteam.langgraph.nodes._defender_factory")
     @patch("cyberredteam.langgraph.nodes._reporter_factory", new=None)
     def test_full_run_no_vulns(
         self,
-        mock_defender_f,
         mock_evaluator_f,
         mock_attacker_f,
     ):
@@ -132,8 +114,6 @@ class TestGraphInvocation:
             "iteration": 0,
             "current_strategy": "",
             "attack_results": [],
-            "patch_results": [],
-            "should_patch": False,
             "should_continue_iterating": False,
             "vulnerability_found": False,
             "scores": {},
@@ -160,7 +140,6 @@ class TestGraphInvocation:
         assert final["status"] == "completed"
         assert final["vulnerability_found"] is False
         # Should go strategist → attacker_branch → evaluator → reporter (no defender)
-        assert len(final["patch_results"]) == 0
 
 
 # -------------------------------------------------------------------
@@ -187,8 +166,6 @@ class TestMaxIterations:
             "iteration": 2,
             "current_strategy": "",
             "attack_results": [],
-            "patch_results": [],
-            "should_patch": False,
             "should_continue_iterating": False,  # already at max
             "vulnerability_found": True,
             "scores": {},
@@ -234,8 +211,6 @@ class TestParallelFanOut:
             "iteration": 0,
             "current_strategy": "",
             "attack_results": [],
-            "patch_results": [],
-            "should_patch": False,
             "should_continue_iterating": False,
             "vulnerability_found": False,
             "scores": {},

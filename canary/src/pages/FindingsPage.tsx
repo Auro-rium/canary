@@ -18,11 +18,10 @@ interface Finding {
   asi_class: string
   atlas_technique: string
   severity: string   // critical | high | medium | low | info
-  status: string     // open | patch_proposed | pending_retest | verified_fixed | regressed | wont_fix | false_positive | inconclusive
+  status: string     // open | wont_fix | false_positive | inconclusive
   first_seen_run: string
   last_seen_run: string
   seen_in_runs: string[]
-  patch_ref: string | null
   created_at: string | null
   updated_at: string | null
 }
@@ -51,21 +50,16 @@ interface Attempt {
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const STATUS_TRANSITIONS: Record<string, string[]> = {
-  open:           ['patch_proposed', 'wont_fix', 'false_positive', 'inconclusive'],
+  open:           ['wont_fix', 'false_positive', 'inconclusive'],
   inconclusive:   ['open', 'wont_fix', 'false_positive'],
-  patch_proposed: ['pending_retest', 'open', 'wont_fix', 'false_positive'],
-  pending_retest: ['verified_fixed', 'regressed', 'open', 'wont_fix', 'false_positive'],
-  verified_fixed: ['regressed'],
-  regressed:      ['patch_proposed', 'wont_fix', 'false_positive'],
   wont_fix:       [],
   false_positive: [],
 }
 
 const RATIONALE_REQUIRED = new Set(['wont_fix', 'false_positive'])
-const REPLAY_REQUIRED = new Set(['verified_fixed'])
 
 const ALL_SEVERITIES  = ['critical', 'high', 'medium', 'low']
-const ALL_STATUSES    = ['open', 'patch_proposed', 'pending_retest', 'verified_fixed', 'regressed', 'wont_fix', 'false_positive', 'inconclusive']
+const ALL_STATUSES    = ['open', 'wont_fix', 'false_positive', 'inconclusive']
 const ALL_ASI_CLASSES = ['ASI01', 'ASI02', 'ASI03', 'ASI04', 'ASI05', 'ASI06', 'ASI07', 'ASI08', 'ASI09', 'ASI10']
 
 const PAGE_SIZE = 50
@@ -84,10 +78,6 @@ function severityBadgeClass(sev: string): string {
 function statusPillClass(status: string): string {
   switch (status) {
     case 'open':           return 'text-red-400 bg-red-950/30 border border-red-600/30'
-    case 'patch_proposed': return 'text-orange-400 bg-orange-950/20 border border-orange-600/20'
-    case 'pending_retest': return 'text-yellow-400/80 bg-yellow-950/15 border border-yellow-600/20'
-    case 'verified_fixed': return 'text-white/60 bg-white/[0.05] border border-white/20'
-    case 'regressed':      return 'text-red-400 bg-red-950/30 border border-red-600/30'
     case 'wont_fix':       return 'text-white/30 bg-white/[0.02] border border-white/10'
     case 'false_positive': return 'text-white/20 bg-white/[0.02] border border-white/10'
     case 'inconclusive':   return 'text-white/50 bg-white/[0.04] border border-white/10'
@@ -186,16 +176,13 @@ function TransitionPanel({ finding, onRefresh }: { finding: Finding; onRefresh: 
   const [selected,   setSelected]   = useState('')
   const [reviewerId, setReviewerId] = useState('')
   const [rationale,  setRationale]  = useState('')
-  const [replayRunId, setReplayRunId] = useState('')
-  const [guardrailIntervened, setGuardrailIntervened] = useState(false)
   const [loading,    setLoading]    = useState(false)
   const [err,        setErr]        = useState<string | null>(null)
 
   const needsRationale = RATIONALE_REQUIRED.has(selected)
-  const needsReplay = REPLAY_REQUIRED.has(selected)
-  const canSubmit = selected !== '' && (!needsRationale || (reviewerId.trim() !== '' && rationale.trim() !== '')) && (!needsReplay || (replayRunId.trim() !== '' && guardrailIntervened))
+  const canSubmit = selected !== '' && (!needsRationale || (reviewerId.trim() !== '' && rationale.trim() !== ''))
 
-  const handleCancel = () => { setSelected(''); setReviewerId(''); setRationale(''); setReplayRunId(''); setGuardrailIntervened(false); setErr(null) }
+  const handleCancel = () => { setSelected(''); setReviewerId(''); setRationale(''); setErr(null) }
 
   const handleSubmit = async () => {
     if (!canSubmit || loading) return
@@ -204,7 +191,6 @@ function TransitionPanel({ finding, onRefresh }: { finding: Finding; onRefresh: 
     try {
       const body: Record<string, string | boolean> = { status: selected }
       if (needsRationale) { body.reviewer_id = reviewerId; body.rationale = rationale }
-      if (needsReplay) { body.replay_run_id = replayRunId; body.guardrail_intervened = guardrailIntervened }
       const res = await fetch(`${API_BASE}/api/findings/${finding.finding_id}/status`, {
         method: 'PUT',
         headers: authHeader(),
@@ -266,22 +252,6 @@ function TransitionPanel({ finding, onRefresh }: { finding: Finding; onRefresh: 
             rows={2}
             className="bg-white/[0.03] border border-white/15 text-white text-[10px] px-3 py-2 placeholder:text-white/20 outline-none focus:border-white/30 transition-colors font-mono resize-none"
           />
-        </div>
-      )}
-
-      {/* Replay form — required for verified_fixed */}
-      {selected && needsReplay && (
-        <div className="flex flex-col gap-2 mt-2">
-          <input
-            type="text"
-            value={replayRunId}
-            onChange={e => setReplayRunId(e.target.value)}
-            placeholder="Replay Run ID"
-            className="bg-white/[0.03] border border-white/15 text-white text-[10px] px-3 py-2 placeholder:text-white/20 outline-none focus:border-white/30 transition-colors font-mono"
-          />
-          <label className="flex items-center gap-2 text-[10px] text-white/40 font-mono">
-            <input type="checkbox" checked={guardrailIntervened} onChange={e => setGuardrailIntervened(e.target.checked)} /> Guardrail intervened (confirmed via replay)
-          </label>
         </div>
       )}
 
@@ -390,11 +360,6 @@ function FindingCard({ finding, index, onRefresh }: { finding: Finding; index: n
         <span className="text-white/25 text-[9px] font-mono border border-white/[0.06] px-2 py-0.5">
           {runsCount} run{runsCount !== 1 ? 's' : ''}
         </span>
-        {finding.patch_ref && (
-          <span className="text-white/25 text-[9px] font-mono border border-white/[0.06] px-2 py-0.5 max-w-[130px] truncate">
-            {finding.patch_ref}
-          </span>
-        )}
       </div>
 
       {/* Latest evaluator verdict */}
@@ -451,10 +416,9 @@ interface FindingsPageProps {
   onBack: () => void
   onRunAudit?: () => void
   onRedTeam?: () => void
-  onDefenses?: () => void
 }
 
-export default function FindingsPage({ onBack, onRunAudit, onRedTeam, onDefenses }: FindingsPageProps) {
+export default function FindingsPage({ onBack, onRunAudit, onRedTeam }: FindingsPageProps) {
   const [findings,     setFindings]     = useState<Finding[]>([])
   const [loading,      setLoading]      = useState(true)
   const [error,        setError]        = useState<string | null>(null)
@@ -470,7 +434,6 @@ export default function FindingsPage({ onBack, onRunAudit, onRedTeam, onDefenses
   const total             = findings.length
   const openCount         = findings.filter(f => f.status === 'open').length
   const criticalCount     = findings.filter(f => f.severity.toLowerCase() === 'critical').length
-  const verifiedFixedCount = findings.filter(f => f.status === 'verified_fixed').length
 
   // ── Fetch helpers ───────────────────────────────────────────────────────────
 
@@ -525,7 +488,7 @@ export default function FindingsPage({ onBack, onRunAudit, onRedTeam, onDefenses
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-black text-white font-mono">
-      <Navbar onLogoClick={onBack} onRunAudit={onRunAudit} onRedTeam={onRedTeam} onDefenses={onDefenses} />
+      <Navbar onLogoClick={onBack} onRunAudit={onRunAudit} onRedTeam={onRedTeam} />
 
       {/* ── HEADER ── */}
       <section className="px-6 sm:px-10 md:px-16 lg:px-20 pt-36 pb-8 border-b border-white/10">
@@ -556,7 +519,6 @@ export default function FindingsPage({ onBack, onRunAudit, onRedTeam, onDefenses
             { label: 'Total',          value: total,              color: 'text-white' },
             { label: 'Open',           value: openCount,          color: 'text-red-400' },
             { label: 'Critical',       value: criticalCount,      color: 'text-red-400' },
-            { label: 'Verified Fixed', value: verifiedFixedCount, color: 'text-white/60' },
           ].map(({ label, value, color }) => (
             <div key={label} className="border border-white/10 bg-white/[0.02] px-5 py-3 flex flex-col gap-1 min-w-[96px]">
               <span className={`text-xl font-light ${loading ? 'text-white/20' : color}`}>

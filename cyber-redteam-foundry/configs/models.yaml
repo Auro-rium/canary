@@ -9,9 +9,6 @@ attacker:
 evaluator:
   model: qwen.qwen3-coder-480b-a35b-v1:0
 
-defender:
-  model: qwen.qwen3-coder-480b-a35b-v1:0
-
 reporter:
   model: qwen.qwen3-coder-480b-a35b-v1:0
 

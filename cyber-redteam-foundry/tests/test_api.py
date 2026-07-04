@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from cyberredteam.api import app, settings, CampaignRunRequest, run_orchestrator_thread
 from cyberredteam.schemas import StrategyType
 from cyberredteam.storage.artifact_store import SQLiteStore
-from cyberredteam.storage.models import RunRecord, AttackRecord, PatchRecord
+from cyberredteam.storage.models import RunRecord, AttackRecord
 from pathlib import Path
 from datetime import datetime
 
@@ -51,20 +51,6 @@ def mock_db(tmp_path):
             indicators={"test": True},
         )
         session.add(attack)
-
-        # Patch
-        patch = PatchRecord(
-            run_id="testrun123",
-            patch_id="patch-0",
-            patch_type="prompt_hardening",
-            target_component="finance_agent",
-            original_config={},
-            patched_config={},
-            diff="diff config",
-            applied=0,
-            retest_passed=1,
-        )
-        session.add(patch)
         session.commit()
     
     yield store
@@ -103,7 +89,6 @@ def test_get_run_details(mock_db):
     assert data["target_id"] == "Finance Agent"
     assert data["status"] == "completed"
     assert len(data["attacks"]) == 1
-    assert len(data["patches"]) == 1
 
     # Test invalid run
     response_invalid = client.get("/api/runs/nonexistent")
@@ -120,20 +105,6 @@ def test_get_analysis_report(mock_db):
     assert data["severity"] == "High"
     assert data["confidence"] == 90
     assert len(data["trace"]) >= 2
-    assert "suggestedYaml" in data
-
-
-def test_apply_policy(mock_db):
-    """Test applying generated policy patches."""
-    response = client.get("/api/runs/testrun123")
-    assert response.json()["patches"][0]["applied"] is False
-
-    response_apply = client.post("/api/runs/testrun123/apply")
-    assert response_apply.status_code == 200
-    assert response_apply.json()["status"] == "success"
-
-    response_after = client.get("/api/runs/testrun123")
-    assert response_after.json()["patches"][0]["applied"] is True
 
 
 def test_create_run_endpoint(mock_db):

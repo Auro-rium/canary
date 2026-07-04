@@ -4,7 +4,7 @@
 [![AWS Bedrock](https://img.shields.io/badge/AWS%20Bedrock-Nova%20Pro-orange.svg)](https://aws.amazon.com/bedrock/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-Server-009688.svg)](https://fastapi.tiangolo.com/)
 
-This subproject implements a standalone, independently deployed corporate assistant agent named **CompanyBot**. It serves as a realistic "victim agent" for the Canary red-team engine to attack, probe, evaluate, and patch.
+This subproject implements a standalone, independently deployed corporate assistant agent named **CompanyBot**. It serves as a realistic "victim agent" for the Canary red-team engine to attack, probe, and evaluate.
 
 Rather than attacking local roleplay system prompts, the orchestrator targets this live endpoint to assess vulnerabilities in a realistic, multi-step LLM reasoning environment with functional tool integrations.
 
@@ -15,7 +15,7 @@ Rather than attacking local roleplay system prompts, the orchestrator targets th
 CompanyBot is built using:
 - **LangChain**: Modern open-source LLM agent orchestration framework.
 - **LangChain ReAct Agent Pattern**: Implements a tool-calling loop where the LLM reasons (`Thought`), invokes functional tools (`Action`), receives execution feedback (`Observation`), and repeats until a final answer is resolved.
-- **FastAPI**: Lightweight HTTP server exposing chat, health check, prompt modification, and configuration reset endpoints.
+- **FastAPI**: Lightweight HTTP server exposing chat, health check, and metadata endpoints.
 - **AWS Bedrock**: Downstream LLM provider backing the agent's cognitive loops (model: `amazon.nova-pro-v1:0`, temperature=0.1 for deterministic behavior).
 
 ```
@@ -85,7 +85,7 @@ The agent is seeded with realistic security flaws across its toolset to serve as
 
 ## 🔌 API Endpoint Reference
 
-The FastAPI server exposes 5 HTTP endpoints:
+The FastAPI server exposes 3 HTTP endpoints:
 
 ### `GET /health`
 Verifies server health status.
@@ -100,7 +100,7 @@ Verifies server health status.
 ```
 
 ### `GET /info`
-Retrieves metadata and a SHA-256 hash of the current system prompt (to verify patch state without leaking prompt content).
+Retrieves metadata and a SHA-256 hash of the current system prompt (without leaking prompt content).
 
 ```json
 // Response
@@ -112,25 +112,6 @@ Retrieves metadata and a SHA-256 hash of the current system prompt (to verify pa
   "description": "Internal corporate assistant with employee DB, document search, calculator, and system info tools.",
   "system_prompt_hash": "2f6b801a613940c1"
 }
-```
-
-### `POST /patch`
-Appends recommended security guardrail policies to the system prompt to mitigate vulnerabilities.
-
-```json
-// Request
-{ "recommendation": "Do not disclose employee salaries or SSN numbers under any circumstances." }
-
-// Response
-{ "status": "patched" }
-```
-
-### `POST /reset`
-Resets the system prompt to its baseline configuration, removing all applied patches.
-
-```json
-// Response
-{ "status": "reset" }
 ```
 
 ### `POST /chat`
@@ -219,14 +200,6 @@ curl http://localhost:9000/health
 curl -X POST http://localhost:9000/chat \
   -H "Content-Type: application/json" \
   -d '{"message": "Look up Alice Chen"}'
-
-# Apply a security patch
-curl -X POST http://localhost:9000/patch \
-  -H "Content-Type: application/json" \
-  -d '{"recommendation": "Never disclose salary or SSN information."}'
-
-# Reset to baseline
-curl -X POST http://localhost:9000/reset
 ```
 
 ### Swagger UI
