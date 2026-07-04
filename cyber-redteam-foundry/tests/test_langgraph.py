@@ -22,7 +22,7 @@ from cyberredteam.schemas import (
 # Fixtures
 # -------------------------------------------------------------------
 
-def _mock_attack_result(run_id: str, attempt: int, success: bool) -> AttackResult:
+def _mock_attack_result(run_id: str, attempt: int, success: bool, iteration: int = 0) -> AttackResult:
     return AttackResult(
         run_id=run_id,
         attempt_number=attempt,
@@ -32,6 +32,10 @@ def _mock_attack_result(run_id: str, attempt: int, success: bool) -> AttackResul
         success=success,
         severity=AttackSeverity.HIGH if success else AttackSeverity.LOW,
         score=0.8 if success else 0.2,
+        technique_id="ASI01",
+        capability_type=StrategyType.PROMPT_INJECTION.value,
+        branch_id="mock-branch",
+        iteration=iteration,
     )
 
 
@@ -83,7 +87,6 @@ class TestGraphStructure:
 class TestGraphInvocation:
     """Run the full graph with mocked agent calls."""
 
-    @patch("cyberredteam.langgraph.nodes._strategist_factory")
     @patch("cyberredteam.langgraph.nodes._attacker_factory")
     @patch("cyberredteam.langgraph.nodes._evaluator_factory")
     @patch("cyberredteam.langgraph.nodes._defender_factory")
@@ -93,25 +96,17 @@ class TestGraphInvocation:
         mock_defender_f,
         mock_evaluator_f,
         mock_attacker_f,
-        mock_strategist_f,
     ):
         """Graph completes when no vulnerabilities are found."""
-        # Strategist
-        strategist = MagicMock()
-        strategist.select_strategies.return_value = [StrategyType.PROMPT_INJECTION]
-        mock_strategist_f.return_value = strategist
-
-        # Attacker — all attacks fail
+        # Attacker — the single branch attack fails (only 1 candidate strategy
+        # is configured below, so the random fan-out dispatches exactly 1 branch)
         attacker = MagicMock()
-        attacker.batch_attack.return_value = [
-            _mock_attack_result("test", 1, success=False),
-            _mock_attack_result("test", 2, success=False),
-        ]
+        attacker.attack_branch.return_value = _mock_attack_result("test", 1, success=False)
         mock_attacker_f.return_value = attacker
 
         # Evaluator
         evaluator = MagicMock()
-        evaluator.evaluate_batch.return_value = attacker.batch_attack.return_value
+        evaluator.evaluate_batch.return_value = [attacker.attack_branch.return_value]
         evaluator.compute_overall_metrics.return_value = {
             "average_attack_score": 0.2,
             "success_rate": 0.0,
@@ -127,6 +122,9 @@ class TestGraphInvocation:
             "description": "test run",
             "seed": None,
             "status": "running",
+            "target_headers": {},
+            "target_request_template": None,
+            "target_response_path": None,
             "strategies": ["prompt_injection"],
             "max_iterations": 3,
             "max_attempts_per_strategy": 2,
@@ -161,7 +159,7 @@ class TestGraphInvocation:
 
         assert final["status"] == "completed"
         assert final["vulnerability_found"] is False
-        # Should go strategist → attacker → evaluator → reporter (no defender)
+        # Should go strategist → attacker_branch → evaluator → reporter (no defender)
         assert len(final["patch_results"]) == 0
 
 
@@ -203,3 +201,59 @@ class TestMaxIterations:
         }
 
         assert should_iterate(state) == "reporter"
+
+
+# -------------------------------------------------------------------
+# Parallel fan-out (real attacker/evaluator, fake LLM fixture)
+# -------------------------------------------------------------------
+
+class TestParallelFanOut:
+    """Exercise the real strategist->attacker_branch fan-out end-to-end."""
+
+    def test_three_branches_dispatch_and_tag_correctly(self):
+        compiled = compile_graph()
+
+        state: RedTeamState = {
+            "run_id": "fanout1",
+            "target_id": "sandbox-target-001",
+            "description": "fan-out smoke target",
+            "seed": None,
+            "status": "running",
+            "target_headers": {},
+            "target_request_template": None,
+            "target_response_path": None,
+            "strategies": [
+                "prompt_injection",
+                "tool_misuse",
+                "sensitive_data_exposure",
+                "jailbreak",
+            ],
+            "max_iterations": 1,
+            "max_attempts_per_strategy": 1,
+            "timeout_seconds": 30,
+            "iteration": 0,
+            "current_strategy": "",
+            "attack_results": [],
+            "patch_results": [],
+            "should_patch": False,
+            "should_continue_iterating": False,
+            "vulnerability_found": False,
+            "scores": {},
+            "report_paths": {},
+            "graph_visualization": "",
+            "start_time": None,
+            "end_time": None,
+            "error": None,
+            "log_messages": [],
+        }
+
+        config = {"configurable": {"thread_id": "fanout1"}}
+        final = compiled.invoke(state, config=config)
+
+        results = final["attack_results"]
+        # Random sample of up to 3 from 4 candidates -> exactly 3 branches.
+        assert len(results) == 3
+        branch_ids = {r.branch_id for r in results}
+        assert len(branch_ids) == 3, "each branch must have a distinct branch_id"
+        assert all(r.iteration == 0 for r in results), "results must be tagged with the dispatching iteration"
+        assert all(r.technique_id for r in results), "results must carry a resolved ASI technique_id"

@@ -14,6 +14,7 @@ import hashlib
 import time
 from typing import Any, Dict, Optional, Type
 
+import botocore.exceptions
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import SystemMessage
 from langchain_core.output_parsers import StrOutputParser
@@ -22,6 +23,7 @@ from langchain_core.runnables import Runnable
 from pydantic import BaseModel
 
 from cyberredteam.logging import setup_logging
+from cyberredteam.settings import get_settings
 
 logger = setup_logging()
 
@@ -83,7 +85,12 @@ class ObservableLLM:
             an instance of ``output_schema``.
         """
         prompt = self._build_prompt(system_prompt)
-        return prompt | self.llm.with_structured_output(output_schema)
+        chain = prompt | self.llm.with_structured_output(output_schema)
+        return chain.with_retry(
+            retry_if_exception_type=(botocore.exceptions.ClientError,),
+            wait_exponential_jitter=True,
+            stop_after_attempt=get_settings().max_retries,
+        )
 
     def build_text_chain(self, system_prompt: str) -> Runnable:
         """Build a reusable LCEL chain for plain-text output.
@@ -98,7 +105,12 @@ class ObservableLLM:
             a ``str``.
         """
         prompt = self._build_prompt(system_prompt)
-        return prompt | self.llm | StrOutputParser()
+        chain = prompt | self.llm | StrOutputParser()
+        return chain.with_retry(
+            retry_if_exception_type=(botocore.exceptions.ClientError,),
+            wait_exponential_jitter=True,
+            stop_after_attempt=get_settings().max_retries,
+        )
 
     # ─── Invoke with observability ────────────────────────────────
 

@@ -29,6 +29,9 @@ interface TrendEntry {
 
 interface DefensesPageProps {
   onBack: () => void
+  onRunAudit?: () => void
+  onFindings?: () => void
+  onRedTeam?: () => void
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -43,12 +46,12 @@ const ASI_CLASSES = [
   { code: 'ASI07', name: 'Multi-Agent Hijacking' },
   { code: 'ASI08', name: 'Supply Chain Attack' },
   { code: 'ASI09', name: 'Agent DoS' },
-  { code: 'ASI10', name: 'Prompt Leakage' },
+  { code: 'ASI10', name: 'Unbounded Resource Consumption' },
 ]
 
 // ─── Main component ───────────────────────────────────────────────────────────
 
-export default function DefensesPage({ onBack }: DefensesPageProps) {
+export default function DefensesPage({ onBack, onRunAudit, onFindings, onRedTeam }: DefensesPageProps) {
   const [inputValue, setInputValue]   = useState('HR Agent')
   const [targetId, setTargetId]       = useState('HR Agent')
   const [coverage, setCoverage]       = useState<Coverage | null>(null)
@@ -142,7 +145,7 @@ export default function DefensesPage({ onBack }: DefensesPageProps) {
   // ─── RENDER ───────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-black text-white font-mono">
-      <Navbar onLogoClick={onBack} />
+      <Navbar onLogoClick={onBack} onRunAudit={onRunAudit} onFindings={onFindings} onRedTeam={onRedTeam} />
 
       {/* ── TARGET SELECTOR ── */}
       <section className="px-6 sm:px-10 md:px-16 lg:px-20 py-16 border-b border-white/10 pt-36">

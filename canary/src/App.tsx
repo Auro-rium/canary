@@ -3,20 +3,31 @@ import './index.css'
 import Navbar from './components/Navbar'
 import Hero from './components/Hero'
 import RunAuditPage from './pages/RunAuditPage'
+import FindingsPage from './pages/FindingsPage'
+import RedTeamPage from './pages/RedTeamPage'
+import DefensesPage from './pages/DefensesPage'
 
-type Page = 'home' | 'audit'
+type Page = 'home' | 'audit' | 'findings' | 'redteam' | 'defenses'
 
 export default function App() {
   const [page, setPage] = useState<Page>('home')
 
-  if (page === 'audit') {
-    return <RunAuditPage onBack={() => setPage('home')} />
-  }
+  const nav = (p: Page) => () => setPage(p)
+
+  if (page === 'audit')    return <RunAuditPage onBack={nav('home')} />
+  if (page === 'findings') return <FindingsPage onBack={nav('home')} onRunAudit={nav('audit')} onRedTeam={nav('redteam')} onDefenses={nav('defenses')} />
+  if (page === 'redteam')  return <RedTeamPage  onBack={nav('home')} onRunAudit={nav('audit')} onFindings={nav('findings')} onDefenses={nav('defenses')} />
+  if (page === 'defenses') return <DefensesPage onBack={nav('home')} onRunAudit={nav('audit')} onFindings={nav('findings')} onRedTeam={nav('redteam')} />
 
   return (
     <main className="bg-black min-h-screen font-mono">
-      <Navbar onRunAudit={() => setPage('audit')} />
-      <Hero />
+      <Navbar
+        onRunAudit={nav('audit')}
+        onFindings={nav('findings')}
+        onRedTeam={nav('redteam')}
+        onDefenses={nav('defenses')}
+      />
+      <Hero onRunAudit={nav('audit')} />
     </main>
   )
 }

@@ -62,6 +62,7 @@ const STATUS_TRANSITIONS: Record<string, string[]> = {
 }
 
 const RATIONALE_REQUIRED = new Set(['wont_fix', 'false_positive'])
+const REPLAY_REQUIRED = new Set(['verified_fixed'])
 
 const ALL_SEVERITIES  = ['critical', 'high', 'medium', 'low']
 const ALL_STATUSES    = ['open', 'patch_proposed', 'pending_retest', 'verified_fixed', 'regressed', 'wont_fix', 'false_positive', 'inconclusive']
@@ -185,21 +186,25 @@ function TransitionPanel({ finding, onRefresh }: { finding: Finding; onRefresh: 
   const [selected,   setSelected]   = useState('')
   const [reviewerId, setReviewerId] = useState('')
   const [rationale,  setRationale]  = useState('')
+  const [replayRunId, setReplayRunId] = useState('')
+  const [guardrailIntervened, setGuardrailIntervened] = useState(false)
   const [loading,    setLoading]    = useState(false)
   const [err,        setErr]        = useState<string | null>(null)
 
   const needsRationale = RATIONALE_REQUIRED.has(selected)
-  const canSubmit = selected !== '' && (!needsRationale || (reviewerId.trim() !== '' && rationale.trim() !== ''))
+  const needsReplay = REPLAY_REQUIRED.has(selected)
+  const canSubmit = selected !== '' && (!needsRationale || (reviewerId.trim() !== '' && rationale.trim() !== '')) && (!needsReplay || (replayRunId.trim() !== '' && guardrailIntervened))
 
-  const handleCancel = () => { setSelected(''); setReviewerId(''); setRationale(''); setErr(null) }
+  const handleCancel = () => { setSelected(''); setReviewerId(''); setRationale(''); setReplayRunId(''); setGuardrailIntervened(false); setErr(null) }
 
   const handleSubmit = async () => {
     if (!canSubmit || loading) return
     setLoading(true)
     setErr(null)
     try {
-      const body: Record<string, string> = { status: selected }
+      const body: Record<string, string | boolean> = { status: selected }
       if (needsRationale) { body.reviewer_id = reviewerId; body.rationale = rationale }
+      if (needsReplay) { body.replay_run_id = replayRunId; body.guardrail_intervened = guardrailIntervened }
       const res = await fetch(`${API_BASE}/api/findings/${finding.finding_id}/status`, {
         method: 'PUT',
         headers: authHeader(),
@@ -261,6 +266,22 @@ function TransitionPanel({ finding, onRefresh }: { finding: Finding; onRefresh: 
             rows={2}
             className="bg-white/[0.03] border border-white/15 text-white text-[10px] px-3 py-2 placeholder:text-white/20 outline-none focus:border-white/30 transition-colors font-mono resize-none"
           />
+        </div>
+      )}
+
+      {/* Replay form — required for verified_fixed */}
+      {selected && needsReplay && (
+        <div className="flex flex-col gap-2 mt-2">
+          <input
+            type="text"
+            value={replayRunId}
+            onChange={e => setReplayRunId(e.target.value)}
+            placeholder="Replay Run ID"
+            className="bg-white/[0.03] border border-white/15 text-white text-[10px] px-3 py-2 placeholder:text-white/20 outline-none focus:border-white/30 transition-colors font-mono"
+          />
+          <label className="flex items-center gap-2 text-[10px] text-white/40 font-mono">
+            <input type="checkbox" checked={guardrailIntervened} onChange={e => setGuardrailIntervened(e.target.checked)} /> Guardrail intervened (confirmed via replay)
+          </label>
         </div>
       )}
 
@@ -428,9 +449,12 @@ function FindingCard({ finding, index, onRefresh }: { finding: Finding; index: n
 
 interface FindingsPageProps {
   onBack: () => void
+  onRunAudit?: () => void
+  onRedTeam?: () => void
+  onDefenses?: () => void
 }
 
-export default function FindingsPage({ onBack }: FindingsPageProps) {
+export default function FindingsPage({ onBack, onRunAudit, onRedTeam, onDefenses }: FindingsPageProps) {
   const [findings,     setFindings]     = useState<Finding[]>([])
   const [loading,      setLoading]      = useState(true)
   const [error,        setError]        = useState<string | null>(null)
@@ -501,7 +525,7 @@ export default function FindingsPage({ onBack }: FindingsPageProps) {
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-black text-white font-mono">
-      <Navbar onLogoClick={onBack} />
+      <Navbar onLogoClick={onBack} onRunAudit={onRunAudit} onRedTeam={onRedTeam} onDefenses={onDefenses} />
 
       {/* ── HEADER ── */}
       <section className="px-6 sm:px-10 md:px-16 lg:px-20 pt-36 pb-8 border-b border-white/10">

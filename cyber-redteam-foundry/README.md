@@ -5,10 +5,10 @@
 [![LangGraph](https://img.shields.io/badge/LangGraph-state%20machine-7c3aed.svg)](https://github.com/langchain-ai/langgraph)
 [![AWS Bedrock](https://img.shields.io/badge/AWS-Bedrock-FF9900.svg?logo=amazon-aws)](https://aws.amazon.com/bedrock/)
 [![sentence-transformers](https://img.shields.io/badge/sentence--transformers-MiniLM--L6--v2-blue.svg)](https://www.sbert.net/)
-[![pytest](https://img.shields.io/badge/tests-97%20passed-brightgreen.svg?logo=pytest)](https://pytest.org/)
+[![pytest](https://img.shields.io/badge/tests-121%20passed-brightgreen.svg?logo=pytest)](https://pytest.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Red-team orchestration engine for AI agents. FastAPI + LangGraph on AWS Bedrock. Attacks any HTTP-based AI agent, evaluates findings against an ASI/ATLAS taxonomy, proposes and retests defenses, and generates structured audit reports.
+Red-team orchestration engine for AI agents. FastAPI + LangGraph on AWS Bedrock. Attacks any HTTP-based AI agent via a fully generic request/response contract, runs up to 3 attack techniques as parallel LangGraph branches per iteration, evaluates findings against an ASI/ATLAS taxonomy, proposes and retests defenses, and generates structured audit reports.
 
 ---
 
@@ -16,6 +16,7 @@ Red-team orchestration engine for AI agents. FastAPI + LangGraph on AWS Bedrock.
 
 - [Source Layout](#source-layout)
 - [5-Agent Pipeline](#5-agent-pipeline)
+- [Attacker Contract & Parallel Fan-Out](#attacker-contract--parallel-fan-out)
 - [Targeting Any HTTP Agent](#targeting-any-http-agent)
 - [Attack Strategies](#attack-strategies)
 - [Evaluation Pipeline](#evaluation-pipeline)
@@ -39,6 +40,7 @@ cyber-redteam-foundry/
 ├── configs/
 │   ├── models.yaml          # Per-agent LLM model assignments
 │   ├── asi_taxonomy.yaml    # strategy+component → ASI class + ATLAS technique
+│   ├── technique_specs.yaml # Static spec/expected_failure/expected_safe_behavior per ASI class
 │   ├── thresholds.yaml      # Per-ASI confidence thresholds
 │   ├── attack_profiles.yaml
 │   ├── policies.yaml
@@ -73,31 +75,41 @@ cyber-redteam-foundry/
     │   ├── tool_misuse.py
     │   └── retrieval_poisoning.py
     ├── evaluation/
-    │   ├── taxonomy.py      # ASI/ATLAS lookup
+    │   ├── taxonomy.py         # ASI/ATLAS lookup — also used to resolve technique_id
+    │   ├── technique_specs.py  # get_spec(asi_class) — loads configs/technique_specs.yaml
     │   ├── scorer.py
     │   └── metrics.py
     ├── langgraph/
     │   ├── state.py         # RedTeamState typed dict
-    │   ├── graph.py         # Graph builder + SQLite checkpointing
-    │   ├── nodes.py         # Node implementations
+    │   ├── graph.py         # Graph builder + Send()-based parallel fan-out + SQLite checkpointing
+    │   ├── nodes.py         # Node implementations, incl. dispatch_attacker_branches
     │   └── orchestrator.py  # GraphOrchestrator entry point
     ├── llm/
     │   ├── bedrock.py       # ChatBedrockConverse wrapper
     │   ├── factory.py       # get_llm_for_agent()
-    │   └── schemas.py       # AttackCase, EvaluationResult, DefensePatch, SecurityReport
+    │   └── schemas.py       # AttackerOutput, EvaluationResult, DefensePatch, SecurityReport
     ├── storage/
     │   ├── models.py        # SQLAlchemy ORM: runs, attacks, patches, findings,
     │   │                    #   evaluator_verdicts, attack_traces
     │   ├── artifact_store.py # SQLiteStore — all persistence methods
     │   └── embedder.py      # sentence-transformers all-MiniLM-L6-v2 semantic dedup
     └── tools/
-        ├── target_adapter.py    # HttpTargetAdapter + SandboxTargetAdapter
-        ├── prompt_injection.py  # Deterministic detector
-        ├── sensitive_data.py    # PII/credential detector
-        ├── tool_abuse.py        # Tool parameter injection detector
-        ├── memory_poisoning.py  # Memory/context violation detector
-        └── rag_probe.py         # RAG/retrieval attack detector
+        ├── target_adapter.py         # HttpTargetAdapter + SandboxTargetAdapter — generic payload/label contract
+        ├── prompt_injection.py       # Deterministic detector
+        ├── sensitive_data.py         # PII/credential detector
+        ├── tool_abuse.py             # Tool parameter injection detector
+        ├── memory_poisoning.py       # Memory/context violation detector
+        ├── rag_probe.py              # RAG/retrieval attack detector
+        ├── jailbreak.py              # Persona/role-play bypass detector
+        ├── instruction_hierarchy.py  # Instruction-precedence hijack detector
+        └── workflow_manipulation.py  # DoS / recursive-expansion detector
 ```
+
+`schemas.py` (top-level, not `llm/schemas.py`) also defines `AttackBranch` — the per-branch
+dataclass (technique_id, depth, attempt_budget_remaining, parent_evidence) carried through
+`Send()` payloads for the parallel fan-out. It lives here rather than under `langgraph/` to avoid
+a circular import (`langgraph/__init__.py` eagerly imports `graph.py` → `nodes.py` →
+`agents.attacker`).
 
 ---
 
@@ -107,27 +119,37 @@ cyber-redteam-foundry/
 
 | # | Agent | Model (AWS Bedrock) | Role |
 |---|-------|---------------------|------|
-| 1 | Strategist | `qwen.qwen3-coder-480b-a35b-v1:0` | Selects attack strategies for the target |
-| 2 | Attacker | `deepseek.v3-v1:0` | Generates and executes adversarial prompts |
+| 1 | Strategist | — (no LLM call) | Randomly dispatches up to 3 techniques per iteration as parallel branches |
+| 2 | Attacker | `deepseek.v3-v1:0` | One technique, one payload per branch — see [Attacker Contract](#attacker-contract--parallel-fan-out) |
 | 3 | Evaluator | `qwen.qwen3-coder-480b-a35b-v1:0` | Deterministic detectors + LLM judge, 4-case consensus |
 | 4 | Defender | `qwen.qwen3-coder-480b-a35b-v1:0` | Generates guardrail patches, applies via `/patch` |
 | 5 | Reporter | `qwen.qwen3-coder-480b-a35b-v1:0` | Markdown + JSON audit reports |
 
 Models are configured in `configs/models.yaml`. Credentials resolve via the standard `boto3` chain (env vars → shared credentials file → instance/role profile).
 
-### LangGraph flow
+The strategist's technique selection is intentionally not an LLM call — it's `random.sample` over
+the candidate `StrategyType` list, so which ≤3 techniques run each iteration is fast and
+unpredictable to the target. `StrategistAgent.select_strategies()` (LLM-ranked scoring) still
+exists in `agents/strategist.py` for callers that want ranked-not-random selection, but the
+default graph doesn't use it.
+
+### LangGraph flow — parallel fan-out
 
 ```mermaid
 flowchart TD
-    START([Campaign start]) --> S[1 · Strategist\nSelect attack strategies]
-    S --> A[2 · Attacker\nGenerate + execute prompts]
-    A --> T[Target agent\nHTTP endpoint or sandbox]
+    START([Campaign start]) --> S[1 · Strategist\nRandomly pick ≤3 techniques]
+    S -.->|Send x≤3| A1[2 · Attacker branch\ntechnique A]
+    S -.->|Send| A2[2 · Attacker branch\ntechnique B]
+    S -.->|Send| A3[2 · Attacker branch\ntechnique C]
+    A1 --> T[Target agent\nHTTP endpoint or sandbox]
+    A2 --> T
+    A3 --> T
     T --> E[3 · Evaluator\nDetectors + LLM judge]
     E --> R{Finding?}
     R -->|None| REP[5 · Reporter\nCompile audit report]
     R -->|Confirmed / Unconfirmed| D[4 · Defender\nPropose guardrail patch]
     D --> I{Retest passed\nor max iterations?}
-    I -->|Retest | A
+    I -->|Retest — re-dispatch| S
     I -->|Done| REP
     REP --> END([Reports persisted\nruns/ + reports/])
 
@@ -138,26 +160,96 @@ flowchart TD
     style I     fill:#3b82f6,color:#fff,stroke:none
 ```
 
+Each `Send()`-spawned branch is an independent invocation of `node_attacker_branch` — LangGraph
+waits for all of them to complete (a superstep boundary) before `evaluator` runs; no manual
+join/barrier logic is needed. Their single-item `attack_results` deltas concatenate via the
+existing `Annotated[List[AttackResult], operator.add]` reducer regardless of completion order.
+The retest loop routes back to `strategist` (not directly to an "attacker" node — there isn't one
+anymore) to re-dispatch a fresh set of parallel branches each iteration.
+
 ### `RedTeamState` fields
 
 | Field | Type | Purpose |
 |-------|------|---------|
 | `run_id` | `str` | Unique campaign execution ID |
 | `target_id` | `str` | Target identifier (HTTP URL or sandbox key) |
-| `strategies` | `List[str]` | Attack strategies selected for this campaign |
-| `iteration` | `int` | Current defender → attacker → evaluator cycle count |
-| `attack_results` | `List[AttackResult]` | Cumulative history of all attack attempts |
+| `target_headers` / `target_request_template` / `target_response_path` | `Dict`/`Optional[str]` | Generic HTTP target config — see [Targeting Any HTTP Agent](#targeting-any-http-agent) |
+| `strategies` | `List[str]` | Candidate attack strategies for this campaign (sampled from, not all run every iteration) |
+| `iteration` | `int` | Current defender → strategist → evaluator cycle count |
+| `attack_results` | `List[AttackResult]` | Cumulative history of all attack attempts, tagged with `branch_id`/`technique_id`/`capability_type`/`depth`/`iteration` |
 | `patch_results` | `List[PatchResult]` | Defensive patches and retest outcomes |
 | `vulnerability_found` | `bool` | Whether any threshold was exceeded |
 | `should_continue_iterating` | `bool` | Routing flag for the retest loop |
+
+Per-branch bookkeeping (`AttackBranch`: `branch_id`, `depth`, `attempt_budget_remaining`,
+`parent_evidence`) deliberately does **not** live in `RedTeamState` — it travels through each
+`Send()` payload instead, since independent per-branch depth/budget countdowns don't merge
+cleanly via `Annotated[list, operator.add]` reducer semantics. Only the branch's output (an
+`AttackResult`) rejoins shared state.
 
 Each agent's system prompt lives in `prompts/<agent>.md`. `RedTeamState` uses append-only list annotations so every node sees the complete execution timeline across SQLite checkpoint boundaries.
 
 ---
 
+## Attacker Contract & Parallel Fan-Out
+
+Each attacker branch is a single, strictly-scoped invocation — one `capability_type` (a
+`StrategyType` value) and one `technique_id` (an ASI class, e.g. `ASI04`) per call. The attacker
+LLM's structured output is `AttackerOutput` (`llm/schemas.py`):
+
+```json
+{
+  "status": "OK | ATTACKER_REFUSED",
+  "capability_type": "sensitive_data_exposure",
+  "technique_id": "ASI04",
+  "depth": 0,
+  "payload": "the exact prompt sent to the target",
+  "rationale": "1-3 sentences: what this tests and why",
+  "mutation_of_parent": "null at depth 0, else what changed vs the prior attempt",
+  "refusal_reason": "null unless status is ATTACKER_REFUSED"
+}
+```
+
+- **Single-technique scope**: the attacker cannot switch techniques or invent categories outside
+  the ASI-coded taxonomy it was assigned.
+- **Hard refusal, not a watered-down attempt**: if the assigned technique would require content
+  in a prohibited category (CSAM, bioweapons/chem-weapons uplift, mass-casualty planning, or
+  anything else Anthropic's usage policies prohibit regardless of red-team framing), the attacker
+  returns `status: ATTACKER_REFUSED` with a `refusal_reason` — the target is never contacted in
+  this case (`AttackerAgent.attack_branch` short-circuits before calling
+  `target_adapter.execute_attack`).
+- **No self-judged verdicts**: the attacker never claims a "finding" or a "break" — `success`/
+  `score` are always evaluator-determined, never attacker-determined.
+- **Depth/mutation** apply on a *strategist-driven* retry: if the same technique is re-selected on
+  a later iteration, the branch's `depth` increments and `parent_evidence` (the target's prior
+  response + why it wasn't a clean miss) is passed in, so the mutated payload is a genuinely
+  different angle — not a verbatim repeat. There is no evaluator-triggered mid-iteration
+  auto-respawn; retries only happen via the normal defender → strategist → attacker_branch loop.
+- **`technique_spec`** (what the technique tests) and the evaluator-facing `expected_failure`/
+  `expected_safe_behavior` strings are static, sourced from `configs/technique_specs.yaml` via
+  `evaluation/technique_specs.py::get_spec(asi_class)` — not authored by the attacker itself, so
+  they're consistent and auditable across every run.
+
+Full contract and refusal-category list: `prompts/attacker.md`.
+
+---
+
 ## Targeting Any HTTP Agent
 
-`HttpTargetAdapter` (in `tools/target_adapter.py`) sends `POST {endpoint}` with body `{"message": "..."}` and reads `response` from the JSON reply. To red-team your own agent:
+`HttpTargetAdapter` (in `tools/target_adapter.py`) sends `POST {endpoint}` and reads the response
+back as free text — the request/response shape is fully configurable per target, so it isn't
+limited to the bundled demo agent's `{"message": "..."} → {"response": "..."}` contract:
+
+| Config | Purpose | Default |
+|---|---|---|
+| `request_template` | JSON string with a `"{{PROMPT}}"` placeholder describing the target's request schema, e.g. `{"messages": [{"role": "user", "content": "{{PROMPT}}"}]}` for an OpenAI-style endpoint | `{"message": "{{PROMPT}}"}` |
+| `response_path` | Dot-path into the JSON response, e.g. `choices.0.message.content` (numeric segments = list indices) | key-guessing over `response`/`output`/`content`/`text` |
+| `headers` | Extra HTTP headers merged on top of `Content-Type`/`Authorization: Bearer` — covers custom auth schemes, API-key headers, cookies | `{}` |
+
+`{{PROMPT}}` substitution uses `json.dumps()` on the swap-in value, so quotes/newlines/unicode in
+the payload always produce valid JSON regardless of where the placeholder sits in the template.
+An unresolvable `response_path` falls back to the default key-guessing heuristic rather than
+failing the attempt.
 
 ```bash
 cyber-rt run \
@@ -165,7 +257,14 @@ cyber-rt run \
   --strategies prompt_injection,tool_misuse,sensitive_data_exposure
 ```
 
-The adapter auto-resolves `localhost` to `host.docker.internal` when running inside Docker. `SandboxTargetAdapter` is available for offline testing against the bundled demo victim in `target_agent/`.
+Via the API (`POST /api/campaigns/run`), pass `headers`/`request_template`/`response_path` in the
+request body alongside `target_url` — all optional, omit them to use the default contract.
+
+The target agent is expected to run **outside Docker**, on the host — the backend container
+reaches it via `host.docker.internal:9000` (see `docker-compose.yml`'s `extra_hosts`); the adapter
+auto-rewrites `localhost`/`127.0.0.1` endpoints to `host.docker.internal` when it detects it's
+running inside a container. `SandboxTargetAdapter` is available for offline testing without any
+target process at all.
 
 ---
 
@@ -181,11 +280,11 @@ The adapter auto-resolves `localhost` to `host.docker.internal` when running ins
 | `sensitive_data_exposure` | PII / credential exfiltration | ASI04 |
 | `memory_poisoning` | Memory / context poisoning | ASI05 |
 | `context_isolation` | Context isolation bypass | ASI05 |
-| `workflow_manipulation` | Workflow manipulation | ASI06 |
+| `workflow_manipulation` | Workflow manipulation | ASI09 |
 | `agent_handoff_corruption` | Agent handoff corruption | ASI06 |
 | `authorization_boundary` | Authorization boundary | ASI03 |
 | `instruction_hierarchy` | Instruction hierarchy | ASI01 |
-| `retrieval_poisoning` | RAG probing / exfiltration | ASI01 |
+| `retrieval_poisoning` | RAG probing / exfiltration | ASI08 |
 
 ---
 
@@ -200,6 +299,9 @@ The adapter auto-resolves `localhost` to `host.docker.internal` when running ins
 | `ToolAbuseTool` | Wildcard / injection in tool call parameters |
 | `MemoryPoisoningTool` | Schema violations / unauthorized memory writes |
 | `RAGProbeTool` | Retrieval manipulation signatures |
+| `JailbreakTool` | Persona-override, developer-mode, and safety-bypass acknowledgement patterns |
+| `InstructionHierarchyTool` | System-prompt override / instruction-precedence hijack patterns |
+| `WorkflowManipulationTool` | Infinite-loop, recursive-expansion, and repeated-output DoS signatures |
 | Canary token check | Injected canary token exfiltration (highest confidence) |
 
 ### 4-case consensus
@@ -291,6 +393,7 @@ All endpoints require `Authorization: Bearer <API_SECRET_KEY>`.
 | `POST` | `/api/runs` | Launch background campaign |
 | `GET` | `/api/runs/{run_id}` | Run state + telemetry |
 | `GET` | `/api/runs/{run_id}/analysis-report` | Full analysis details |
+| `GET` | `/api/runs/{run_id}/report-markdown` | Raw LLM-generated markdown report |
 | `GET` | `/api/runs/{run_id}/findings` | Findings from this run |
 | `POST` | `/api/runs/{run_id}/apply` | Mark patches as applied |
 | `GET` | `/api/open-findings` | All open findings |
@@ -323,6 +426,11 @@ cyber-rt graph                       # Print LangGraph as Mermaid diagram
 cyber-rt server --port 8001          # Start FastAPI server
 ```
 
+`--strategies` is the **candidate pool**, not a fixed execution list — each iteration the
+strategist randomly samples up to 3 of them to run as parallel branches (see
+[LangGraph flow](#5-agent-pipeline)), so a campaign with 5 candidate strategies and 3
+`max_iterations` may never exercise all 5.
+
 ---
 
 ## Environment Config
@@ -336,10 +444,18 @@ AWS_DEFAULT_REGION=us-west-2
 # API auth — must match VITE_API_TOKEN in the frontend
 API_SECRET_KEY=
 
+# Target allowlist — comma-separated endpoints this tool is permitted to attack.
+# Fails OPEN (any target accepted) if left empty — set this before exposing the API.
+ALLOWED_TARGETS=http://host.docker.internal:9000/chat,http://localhost:9000/chat
+
 # Target
 TARGET_MODE=http                     # http | sandbox
 TARGET_ENDPOINT=http://localhost:9000/chat
 TARGET_API_KEY=                      # optional
+
+# Retry / concurrency
+MAX_RETRIES=3                        # Total attempts per LLM call (incl. first) on Bedrock throttling
+MAX_CONCURRENT_RUNS=3                # Max simultaneous campaigns per API server process
 
 # LangSmith tracing (optional)
 LANGCHAIN_TRACING_V2=true
@@ -390,7 +506,17 @@ docker run -p 8001:8001 --env-file .env redteam-backend
 docker compose up -d redteam-backend
 ```
 
-The image exposes port `8001` (FastAPI). The demo target agent exposes `9000`.
+The image exposes port `8001` (FastAPI). **The demo target agent is not part of the Compose
+stack** — run it as a plain host process alongside the containers:
+
+```bash
+cd cyber-redteam-foundry
+PYTHONPATH=src python -m target_agent.server --port 9000
+```
+
+The backend container reaches it via `host.docker.internal:9000` (`extra_hosts` in
+`docker-compose.yml`). This keeps the target agent isolated from the attacker/evaluator
+containers by construction — it's the thing being attacked, not part of the tooling.
 
 ---
 
@@ -400,4 +526,6 @@ The image exposes port `8001` (FastAPI). The demo target agent exposes `9000`.
 pytest tests/ -v --cov=src/cyberredteam --cov-report=term-missing
 ```
 
-97 tests. Coverage report printed to terminal.
+121 tests, including a real parallel-fan-out integration test (`TestParallelFanOut` in
+`test_langgraph.py`) that exercises the strategist's random dispatch end-to-end against the fake
+LLM fixture — no AWS credentials required. Coverage report printed to terminal.

@@ -27,6 +27,11 @@ class RedTeamState(TypedDict):
     seed: Optional[int]
     status: str  # "running" | "completed" | "failed"
 
+    # ── Generic HTTP target config ───────────────────────────────
+    target_headers: Dict[str, str]
+    target_request_template: Optional[str]
+    target_response_path: Optional[str]
+
     # ── Attack configuration ─────────────────────────────────────
     strategies: List[str]
     max_iterations: int

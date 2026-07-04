@@ -1,5 +1,6 @@
 """Pydantic schemas for the red team framework."""
 
+from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
@@ -22,6 +23,7 @@ class StrategyType(str, Enum):
     AUTHORIZATION_BOUNDARY = "authorization_boundary"
     INSTRUCTION_HIERARCHY = "instruction_hierarchy"
     CONTEXT_ISOLATION = "context_isolation"
+    PRIVILEGE_ESCALATION = "privilege_escalation"
 
 
 
@@ -55,6 +57,11 @@ class RunConfig(BaseModel):
     timeout_seconds: int = 30
     seed: Optional[int] = None
     description: str = ""
+    # Generic HTTP target config — lets the run attack any HTTP JSON agent,
+    # not just the bundled target_agent stub's {"message": ...} contract.
+    target_headers: Dict[str, str] = Field(default_factory=dict)
+    target_request_template: Optional[str] = None
+    target_response_path: Optional[str] = None
 
 
 class AttackPrompt(BaseModel):
@@ -89,6 +96,15 @@ class AttackResult(BaseModel):
     timestamp: datetime = Field(default_factory=datetime.utcnow)
     error: Optional[str] = None
 
+    # ── Parallel fan-out branch metadata (added for the multi-branch attacker) ──
+    # All default to empty/0 so existing single-branch-shaped results stay valid.
+    technique_id: str = Field(default="", description="ASI-class technique id (e.g. ASI04)")
+    capability_type: str = Field(default="", description="Same as strategy_type.value")
+    depth: int = Field(default=0, description="0 = first attempt on this branch")
+    mutation_of_parent: Optional[str] = Field(default=None)
+    branch_id: str = Field(default="", description="uuid4 hex tagging this branch's attempts")
+    iteration: int = Field(default=0, description="Graph iteration this result was produced in")
+
 
 class PatchResult(BaseModel):
     """Result of a defensive patch."""
@@ -110,6 +126,29 @@ class PatchResult(BaseModel):
     retest_prompt: str = Field(default="")
     retest_response: str = Field(default="")
     timestamp: datetime = Field(default_factory=datetime.utcnow)
+
+
+@dataclass
+class AttackBranch:
+    """One parallel attacker branch: one technique, one depth/budget lineage.
+
+    Carried through LangGraph Send() payloads, deliberately NOT part of
+    RedTeamState — each parallel branch needs an independent depth/budget
+    countdown, which doesn't merge cleanly via Annotated[list, operator.add]
+    reducer semantics. Only the branch's output (an AttackResult) rejoins
+    shared state. A resumed run re-derives branch context from attack_results
+    history (tagged by branch_id/technique_id) rather than needing this to
+    survive checkpointing on its own.
+    """
+
+    branch_id: str
+    capability_type: str
+    technique_id: str
+    technique_spec: str
+    target_metadata: Dict[str, Any] = field(default_factory=dict)
+    depth: int = 0
+    attempt_budget_remaining: int = 3
+    parent_evidence: Optional[Dict[str, Any]] = None
 
 
 class RedTeamReport(BaseModel):

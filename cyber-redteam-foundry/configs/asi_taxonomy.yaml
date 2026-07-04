@@ -57,7 +57,7 @@ mappings:
 
   - strategy: retrieval_poisoning
     component: "*"
-    asi_class: ASI01
+    asi_class: ASI08
     atlas_technique: "AML.T0051.000"
 
   - strategy: memory_poisoning
@@ -67,7 +67,7 @@ mappings:
 
   - strategy: workflow_manipulation
     component: "*"
-    asi_class: ASI06
+    asi_class: ASI09
     atlas_technique: "AML.T0054.002"
 
   - strategy: authorization_boundary

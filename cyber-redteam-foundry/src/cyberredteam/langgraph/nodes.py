@@ -10,20 +10,28 @@ Agent instances are created via a factory so they can be injected in
 tests.
 """
 
+import random
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, List, Optional
+
+from langgraph.types import Send
 
 from cyberredteam.agents.attacker import AttackerAgent
 from cyberredteam.agents.defender import DefenderAgent
 from cyberredteam.agents.evaluator import EvaluatorAgent
 from cyberredteam.agents.reporter import ReporterAgent
-from cyberredteam.agents.strategist import StrategistAgent
+from cyberredteam.evaluation import taxonomy
+from cyberredteam.evaluation.technique_specs import get_spec
 from cyberredteam.langgraph.state import RedTeamState
 from cyberredteam.logging import setup_logging
-from cyberredteam.schemas import StrategyType
+from cyberredteam.schemas import AttackBranch, StrategyType
 from cyberredteam.settings import get_settings
 from cyberredteam.storage.artifact_store import SQLiteStore
+
+# Max parallel attacker branches spawned per strategist dispatch.
+MAX_PARALLEL_BRANCHES = 3
 
 logger = setup_logging()
 
@@ -41,8 +49,6 @@ def get_node_store() -> SQLiteStore:
         _store = SQLiteStore(Path(settings.db_path))
     return _store
 
-def _strategist_factory(**kwargs) -> StrategistAgent:
-    return StrategistAgent(**kwargs)
 def _attacker_factory(**kwargs) -> AttackerAgent:
     return AttackerAgent(**kwargs)
 def _evaluator_factory(**kwargs) -> EvaluatorAgent:
@@ -50,11 +56,6 @@ def _evaluator_factory(**kwargs) -> EvaluatorAgent:
 def _defender_factory(**kwargs) -> DefenderAgent:
     return DefenderAgent(**kwargs)
 _reporter_factory: Optional[Callable[..., ReporterAgent]] = None
-
-
-def set_strategist_factory(factory: Callable[[], StrategistAgent]) -> None:
-    global _strategist_factory
-    _strategist_factory = factory
 
 
 def set_attacker_factory(factory: Callable[[], AttackerAgent]) -> None:
@@ -82,83 +83,125 @@ def set_reporter_factory(factory: Callable[..., ReporterAgent]) -> None:
 # ---------------------------------------------------------------------------
 
 def node_strategist(state: RedTeamState) -> dict:
-    """Select attack strategies based on target and risk appetite.
+    """Log-only pass-through ahead of the random parallel dispatch.
 
-    Returns delta with ``strategies`` and a log message.
+    The actual technique selection for fan-out is pure `random.sample` in
+    `dispatch_attacker_branches` (the conditional edge below) — no LLM call,
+    per design. `StrategistAgent.select_strategies()` (LLM-ranked) remains
+    available for callers that want ranked-not-random selection; it's simply
+    unused by this graph's default dispatch path.
     """
     logger.info(f"[Graph] Strategist node — Run {state['run_id']}")
-
-    # Extract previous vulnerabilities from successful attacks
-    prev_results = state.get("attack_results", [])
-    successful = [r for r in prev_results if r.success]
-    previous_vulnerabilities = list(set(r.strategy_type.value for r in successful))
-
-    strategist = _strategist_factory(store=get_node_store())
-    strategies = strategist.select_strategies(
-        target_id=state["target_id"],
-        risk_appetite="medium",
-        count=min(3, len(state["strategies"])),
-        previous_vulnerabilities=previous_vulnerabilities,
-        available_subset=state["strategies"],
-    )
-
-    selected = [s.value for s in strategies]
-    logger.info(f"[Graph] Strategist selected: {selected}")
+    candidates = state["strategies"]
+    logger.info(f"[Graph] Strategist candidates for random dispatch: {candidates}")
 
     return {
-        "strategies": selected,
-        "log_messages": [f"Strategist selected {len(selected)} strategies: {selected}"],
+        "log_messages": [f"Strategist ready to dispatch from {len(candidates)} candidate technique(s)"],
     }
 
 
 # ---------------------------------------------------------------------------
-# Node: attacker
+# Conditional edge: strategist → parallel attacker_branch fan-out
 # ---------------------------------------------------------------------------
 
-def node_attacker(state: RedTeamState) -> dict:
-    """Execute attacks for all strategies in this iteration.
+def dispatch_attacker_branches(state: RedTeamState) -> List[Send]:
+    """Randomly select up to MAX_PARALLEL_BRANCHES techniques and fan out.
 
-    Returns delta that *appends* to ``attack_results`` and
-    ``log_messages``.
+    Each selected technique becomes one independent AttackBranch (fresh
+    depth=0, its own attempt budget) sent to `node_attacker_branch` as a
+    parallel LangGraph branch. LangGraph waits for all Send-spawned branches
+    to complete before the downstream node (evaluator) runs.
     """
-    iteration = state["iteration"]
+    candidates = [StrategyType(s) for s in state["strategies"]]
+    if not candidates:
+        candidates = [StrategyType.PROMPT_INJECTION]
+    chosen = random.sample(candidates, min(MAX_PARALLEL_BRANCHES, len(candidates)))
+
+    logger.info(f"[Graph] Dispatching {len(chosen)} parallel attacker branch(es): {[c.value for c in chosen]}")
+
+    sends = []
+    for strategy in chosen:
+        asi_class, _ = taxonomy.lookup(strategy.value, "")
+        spec = get_spec(asi_class)
+        branch = AttackBranch(
+            branch_id=uuid.uuid4().hex,
+            capability_type=strategy.value,
+            technique_id=asi_class,
+            technique_spec=spec["spec"],
+            target_metadata={
+                "name": state["target_id"],
+                "declared_purpose": state["description"],
+                "observability_level": "black_box",
+            },
+            depth=0,
+            attempt_budget_remaining=state["max_attempts_per_strategy"],
+            parent_evidence=None,
+        )
+        sends.append(Send("attacker_branch", {
+            "branch": branch,
+            "run_id": state["run_id"],
+            "target_id": state["target_id"],
+            "iteration": state["iteration"],
+            "target_headers": state.get("target_headers"),
+            "target_request_template": state.get("target_request_template"),
+            "target_response_path": state.get("target_response_path"),
+        }))
+    return sends
+
+
+# ---------------------------------------------------------------------------
+# Node: attacker_branch (one parallel branch — one technique, one payload)
+# ---------------------------------------------------------------------------
+
+def node_attacker_branch(payload: dict) -> dict:
+    """Execute exactly one attack for one branch dispatched via Send().
+
+    Returns delta that *appends* a single-item list to ``attack_results`` and
+    ``log_messages`` — LangGraph's operator.add reducer concatenates each
+    parallel branch's delta regardless of completion order.
+    """
+    branch: AttackBranch = payload["branch"]
+    run_id = payload["run_id"]
+    target_id = payload["target_id"]
+    iteration = payload.get("iteration", 0)
+
     logger.info(
-        f"[Graph] Attacker node — Run {state['run_id']}, "
-        f"Iteration {iteration}"
+        f"[Graph] Attacker branch node — Run {run_id}, branch {branch.branch_id[:8]}, "
+        f"technique {branch.capability_type}"
     )
-    # Auto-detect HTTP target endpoints
-    target_id = state["target_id"]
+
     target_adapter = None
     if target_id.startswith("http://") or target_id.startswith("https://"):
         from cyberredteam.tools.target_adapter import HttpTargetAdapter
-        target_adapter = HttpTargetAdapter(endpoint=target_id)
-        logger.info(f"[Graph] Attacker using HTTP target adapter → {target_id}")
+        target_adapter = HttpTargetAdapter(
+            endpoint=target_id,
+            headers=payload.get("target_headers"),
+            request_template=payload.get("target_request_template"),
+            response_path=payload.get("target_response_path"),
+        )
 
     attacker = _attacker_factory(
         store=get_node_store(),
         **({"target_adapter": target_adapter} if target_adapter else {}),
     )
 
-    strategy_list = [StrategyType(s) for s in state["strategies"]]
-
-    results = attacker.batch_attack(
-        run_id=state["run_id"],
-        target_id=state["target_id"],
-        strategies=strategy_list,
-        max_attempts_per_strategy=state["max_attempts_per_strategy"],
-        previous_attempts=state.get("attack_results", []),
-        known_defenses=state.get("patch_results", []),
+    result = attacker.attack_branch(
+        branch=branch,
+        run_id=run_id,
+        target_id=target_id,
+        iteration=iteration,
     )
 
-    current_strategy = results[0].strategy_type.value if results else ""
-
-    logger.info(f"[Graph] Attacker executed {len(results)} attacks")
+    logger.info(f"[Graph] Attacker branch {branch.branch_id[:8]} complete")
 
     return {
-        "attack_results": results,  # appended via Annotated
-        "current_strategy": current_strategy,
+        "attack_results": [result],  # appended via Annotated
+        # current_strategy isn't updated here: it's a plain (non-Annotated) field
+        # and up to 3 parallel branches writing it in the same superstep would
+        # conflict (LangGraph's InvalidUpdateError). Not worth the added
+        # complexity of an Annotated list for a purely informational field.
         "log_messages": [
-            f"Attacker executed {len(results)} attacks (iteration {iteration})"
+            f"Attacker branch {branch.branch_id[:8]} ({branch.capability_type}) complete (iteration {iteration})"
         ],
     }
 
@@ -177,11 +220,10 @@ def node_evaluator(state: RedTeamState) -> dict:
 
     evaluator = _evaluator_factory(store=get_node_store())
 
-    # Evaluate the most recent batch (last N results where N = strategies × attempts)
-    batch_size = (
-        len(state["strategies"]) * state["max_attempts_per_strategy"]
-    )
-    recent = state["attack_results"][-batch_size:] if state["attack_results"] else []
+    # Evaluate the results produced by this iteration's parallel branches.
+    # Tag-based selection (not a slice) is required once branches can complete
+    # out of order — a positional "last N" slice can't be trusted under fan-out.
+    recent = [r for r in state["attack_results"] if r.iteration == state["iteration"]]
 
     if recent:
         evaluated = evaluator.evaluate_batch(recent)
@@ -251,7 +293,12 @@ def node_defender(state: RedTeamState) -> dict:
     target_adapter = None
     if target_id.startswith("http://") or target_id.startswith("https://"):
         from cyberredteam.tools.target_adapter import HttpTargetAdapter
-        target_adapter = HttpTargetAdapter(endpoint=target_id)
+        target_adapter = HttpTargetAdapter(
+            endpoint=target_id,
+            headers=state.get("target_headers"),
+            request_template=state.get("target_request_template"),
+            response_path=state.get("target_response_path"),
+        )
     else:
         from cyberredteam.tools.target_adapter import SandboxTargetAdapter
         target_adapter = SandboxTargetAdapter(target_id=target_id)

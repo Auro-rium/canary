@@ -31,6 +31,21 @@ from cyberredteam.tools.rag_probe import (
     generate_rag_probes,
     analyze_rag_retrieval_response,
 )
+from cyberredteam.tools.jailbreak import (
+    JailbreakTool,
+    generate_jailbreak_payloads,
+    check_jailbreak_response,
+)
+from cyberredteam.tools.instruction_hierarchy import (
+    InstructionHierarchyTool,
+    generate_hijack_payloads,
+    check_hijack_response,
+)
+from cyberredteam.tools.workflow_manipulation import (
+    WorkflowManipulationTool,
+    generate_dos_payloads,
+    check_dos_response,
+)
 
 # All LangChain @tool instances — pass to llm.bind_tools() to give an agent
 # direct access to every red-team detector and payload generator.
@@ -46,6 +61,12 @@ ALL_RED_TEAM_TOOLS = [
     get_sensitive_data_extraction_targets,
     generate_rag_probes,
     analyze_rag_retrieval_response,
+    generate_jailbreak_payloads,
+    check_jailbreak_response,
+    generate_hijack_payloads,
+    check_hijack_response,
+    generate_dos_payloads,
+    check_dos_response,
 ]
 
 __all__ = [
@@ -59,6 +80,9 @@ __all__ = [
     "MemoryPoisoningTool",
     "SensitiveDataExtractor",
     "RAGProbeTool",
+    "JailbreakTool",
+    "InstructionHierarchyTool",
+    "WorkflowManipulationTool",
     # @tool instances
     "generate_prompt_injection_payloads",
     "analyze_prompt_injection_response",
@@ -71,5 +95,11 @@ __all__ = [
     "get_sensitive_data_extraction_targets",
     "generate_rag_probes",
     "analyze_rag_retrieval_response",
+    "generate_jailbreak_payloads",
+    "check_jailbreak_response",
+    "generate_hijack_payloads",
+    "check_hijack_response",
+    "generate_dos_payloads",
+    "check_dos_response",
     "ALL_RED_TEAM_TOOLS",
 ]

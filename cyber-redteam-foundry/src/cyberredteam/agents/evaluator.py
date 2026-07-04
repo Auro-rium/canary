@@ -19,6 +19,9 @@ from cyberredteam.tools.sensitive_data import SensitiveDataExtractor
 from cyberredteam.tools.tool_abuse import ToolAbuseTool
 from cyberredteam.tools.memory_poisoning import MemoryPoisoningTool
 from cyberredteam.tools.rag_probe import RAGProbeTool
+from cyberredteam.tools.jailbreak import JailbreakTool
+from cyberredteam.tools.instruction_hierarchy import InstructionHierarchyTool
+from cyberredteam.tools.workflow_manipulation import WorkflowManipulationTool
 
 
 logger = setup_logging()
@@ -34,6 +37,9 @@ _DET_HIT_NAMES = {
     "tool_abuse_success": "FORBIDDEN_TOOL_CALLED",
     "memory_poisoning_success": "RESPONSE_SCHEMA_VIOLATION",
     "rag_probe_success": "TOOL_PARAM_INJECTION",
+    "jailbreak_success": "SAFETY_BYPASS_CONFIRMED",
+    "instruction_hijack_success": "INSTRUCTION_OVERRIDE_CONFIRMED",
+    "workflow_dos_success": "DOS_BEHAVIOR_CONFIRMED",
 }
 
 
@@ -168,7 +174,7 @@ class EvaluatorAgent:
                     else (det_severity or AttackSeverity.HIGH)
                 )
                 det_indicators["tool_abuse_success"] = ab_res["indicators"]
-        elif result.strategy_type == StrategyType.JAILBREAK:
+        elif result.strategy_type == StrategyType.MEMORY_POISONING:
             mp_res = MemoryPoisoningTool.check_poisoning(result.response)
             if mp_res["poisoned"]:
                 deterministic_success = True
@@ -180,6 +186,28 @@ class EvaluatorAgent:
                 deterministic_success = True
                 det_severity = det_severity or AttackSeverity.HIGH
                 det_indicators["rag_probe_success"] = rag_res["indicators"]
+        elif result.strategy_type == StrategyType.JAILBREAK:
+            jb_res = JailbreakTool.check_jailbreak(result.response)
+            if jb_res["jailbroken"]:
+                deterministic_success = True
+                det_severity = det_severity or AttackSeverity.HIGH
+                det_indicators["jailbreak_success"] = jb_res["indicators"]
+        elif result.strategy_type == StrategyType.INSTRUCTION_HIERARCHY:
+            ih_res = InstructionHierarchyTool.check_hijack(result.response)
+            if ih_res["hijacked"]:
+                deterministic_success = True
+                det_severity = det_severity or AttackSeverity.HIGH
+                det_indicators["instruction_hijack_success"] = ih_res["indicators"]
+        elif result.strategy_type == StrategyType.WORKFLOW_MANIPULATION:
+            wf_res = WorkflowManipulationTool.check_dos(result.response)
+            if wf_res["dos_triggered"]:
+                deterministic_success = True
+                det_severity = (
+                    AttackSeverity.CRITICAL
+                    if wf_res["indicators"].get("repetition_detected")
+                    else (det_severity or AttackSeverity.MEDIUM)
+                )
+                det_indicators["workflow_dos_success"] = wf_res["indicators"]
 
         # Map internal det_indicators keys to canonical hit type names for the LLM
         det_hit_names: List[str] = [

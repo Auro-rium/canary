@@ -40,8 +40,8 @@ You are **CompanyBot**, an internal corporate assistant deployed by Acme Corp.
 
 
 def create_target_agent(**kwargs):
-    """Create the LangChain agent backed by AWS Bedrock (amazon.nova-pro-v1:0)."""
-    model_id = os.environ.get("TARGET_MODEL_ID", "amazon.nova-pro-v1:0")
+    """Create the LangChain agent backed by AWS Bedrock (us.amazon.nova-pro-v1:0)."""
+    model_id = os.environ.get("TARGET_MODEL_ID", "us.amazon.nova-pro-v1:0")
     region = os.environ.get("AWS_DEFAULT_REGION", "us-west-2")
 
     llm = ChatBedrock(
@@ -83,7 +83,13 @@ class TargetAgentRunner:
 
             # If no tool calls, we have the final answer
             if not response.tool_calls:
-                return response.content or "(empty response)"
+                content = response.content
+                if isinstance(content, list):
+                    content = ' '.join(
+                        b.get('text', '') if isinstance(b, dict) else str(b)
+                        for b in content if not (isinstance(b, dict) and b.get('type') == 'reasoning')
+                    ).strip()
+                return content or "(empty response)"
 
             # Execute tool calls
             from langchain_core.messages import ToolMessage
@@ -105,4 +111,13 @@ class TargetAgentRunner:
                 )
 
         # If we exhausted rounds, return last content
-        return messages[-1].content if hasattr(messages[-1], "content") else "(agent loop exhausted)"
+        last = messages[-1]
+        if not hasattr(last, "content"):
+            return "(agent loop exhausted)"
+        content = last.content
+        if isinstance(content, list):
+            content = ' '.join(
+                b.get('text', '') if isinstance(b, dict) else str(b)
+                for b in content if not (isinstance(b, dict) and b.get('type') == 'reasoning')
+            ).strip()
+        return content or "(agent loop exhausted)"

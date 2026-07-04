@@ -1,19 +1,57 @@
 """Target adapter for executing attack cases against different deployment types."""
 
+import json
 import requests
-from typing import Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
 
-from cyberredteam.llm.schemas import AttackCase
 from cyberredteam.logging import setup_logging
 
 logger = setup_logging()
+
+_PROMPT_PLACEHOLDER = '"{{PROMPT}}"'
+
+
+def _render_request_body(template: str, prompt: str) -> dict:
+    """Substitute the ``{{PROMPT}}`` placeholder into a JSON request template.
+
+    The placeholder must appear in a quoted string position (``"{{PROMPT}}"``).
+    Swapping in ``json.dumps(prompt)`` — which itself is a quoted, escaped JSON
+    string literal — guarantees the result stays valid JSON regardless of
+    quotes/newlines/unicode in the prompt.
+    """
+    rendered = template.replace(_PROMPT_PLACEHOLDER, json.dumps(prompt))
+    return json.loads(rendered)
+
+
+def _extract_by_path(data: Any, path: str) -> Optional[str]:
+    """Walk a dot-path (e.g. ``choices.0.message.content``) through parsed JSON.
+
+    Numeric segments are treated as list indices. Returns None if the path
+    doesn't resolve, so callers can fall back to the default heuristic.
+    """
+    current = data
+    for segment in path.split("."):
+        try:
+            if isinstance(current, list):
+                current = current[int(segment)]
+            elif isinstance(current, dict):
+                current = current[segment]
+            else:
+                return None
+        except (KeyError, IndexError, ValueError, TypeError):
+            return None
+    return current if isinstance(current, str) else None
 
 
 class TargetAdapter:
     """Abstract adapter for different target types."""
 
-    def execute_attack(self, attack_case: AttackCase) -> Tuple[str, Optional[str]]:
-        """Execute a generated attack case against the target.
+    def execute_attack(self, payload: str, label: str = "") -> Tuple[str, Optional[str]]:
+        """Send an adversarial payload to the target.
+
+        Args:
+            payload: The exact prompt/input to send to the target agent.
+            label: Optional technique/category label, used only for logging.
 
         Returns:
             Tuple of (response_text, canary_token).
@@ -38,27 +76,55 @@ class HttpTargetAdapter(TargetAdapter):
     open-source agents (e.g. LangChain ReAct agents, AutoGen agents, etc.)
     """
 
-    def __init__(self, endpoint: str, api_key: Optional[str] = None, timeout: int = 60):
+    def __init__(
+        self,
+        endpoint: str,
+        api_key: Optional[str] = None,
+        timeout: int = 60,
+        headers: Optional[Dict[str, str]] = None,
+        request_template: Optional[str] = None,
+        response_path: Optional[str] = None,
+    ):
         """Initialize HTTP adapter.
 
         Args:
             endpoint: Full URL to the agent's chat endpoint (e.g. http://localhost:9000/chat).
-            api_key: Optional API key for authenticated endpoints.
+            api_key: Optional API key, sent as ``Authorization: Bearer {api_key}``.
             timeout: Request timeout in seconds.
+            headers: Optional extra HTTP headers, merged on top of the default
+                Content-Type/Bearer headers — covers custom auth schemes,
+                API-key headers, cookies, etc. for arbitrary third-party agents.
+            request_template: Optional JSON string with a ``"{{PROMPT}}"``
+                placeholder describing the target's request schema (e.g.
+                ``{"messages": [{"role": "user", "content": "{{PROMPT}}"}]}``).
+                Defaults to ``{"message": prompt}`` when omitted.
+            response_path: Optional dot-path (e.g. ``choices.0.message.content``)
+                into the JSON response. Falls back to key-guessing when omitted
+                or unresolvable.
         """
         import os
         is_docker = os.path.exists("/.dockerenv") or os.environ.get("RUNNING_IN_DOCKER") == "true"
         if is_docker:
             for host in ["localhost:9000", "127.0.0.1:9000"]:
                 if host in endpoint:
-                    endpoint = endpoint.replace(host, "target-agent:9000")
+                    endpoint = endpoint.replace(host, "host.docker.internal:9000")
 
         self.endpoint = endpoint.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
+        self.extra_headers = headers or {}
+        self.request_template = request_template
+        self.response_path = response_path
         self.target_id = endpoint  # For logging
 
         logger.info(f"HttpTargetAdapter initialized → {self.endpoint}")
+
+    def _build_headers(self) -> Dict[str, str]:
+        headers = {"Content-Type": "application/json"}
+        if self.api_key:
+            headers["Authorization"] = f"Bearer {self.api_key}"
+        headers.update(self.extra_headers)
+        return headers
 
     def apply_patch(self, recommendation: str) -> None:
         """Send patch request to target agent server."""
@@ -69,15 +135,12 @@ class HttpTargetAdapter(TargetAdapter):
             patch_url = patch_url + "/patch"
 
         logger.info(f"Applying patch to HTTP target: {patch_url}")
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
 
         try:
             resp = requests.post(
                 patch_url,
                 json={"recommendation": recommendation},
-                headers=headers,
+                headers=self._build_headers(),
                 timeout=self.timeout,
             )
             resp.raise_for_status()
@@ -94,14 +157,11 @@ class HttpTargetAdapter(TargetAdapter):
             reset_url = reset_url + "/reset"
 
         logger.info(f"Resetting HTTP target prompt: {reset_url}")
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
 
         try:
             resp = requests.post(
                 reset_url,
-                headers=headers,
+                headers=self._build_headers(),
                 timeout=self.timeout,
             )
             resp.raise_for_status()
@@ -109,38 +169,50 @@ class HttpTargetAdapter(TargetAdapter):
         except Exception as e:
             logger.error(f"Failed to reset HTTP target prompt: {e}")
 
-    def execute_attack(self, attack_case: AttackCase) -> Tuple[str, Optional[str]]:
+    def execute_attack(self, payload: str, label: str = "") -> Tuple[str, Optional[str]]:
         """Send adversarial prompt to the HTTP agent endpoint."""
-        prompt = attack_case.evaluation_prompt
+        prompt = payload
         logger.info(
             f"HTTP target '{self.endpoint}' executing attack type "
-            f"'{attack_case.category}': {prompt[:60]}..."
+            f"'{label}': {prompt[:60]}..."
         )
 
-        headers = {"Content-Type": "application/json"}
-        if self.api_key:
-            headers["Authorization"] = f"Bearer {self.api_key}"
-
-        payload = {"message": prompt}
+        if self.request_template:
+            try:
+                request_body = _render_request_body(self.request_template, prompt)
+            except (json.JSONDecodeError, TypeError) as e:
+                logger.error(f"Invalid request_template, falling back to default: {e}")
+                request_body = {"message": prompt}
+        else:
+            request_body = {"message": prompt}
 
         try:
             resp = requests.post(
                 self.endpoint,
-                json=payload,
-                headers=headers,
+                json=request_body,
+                headers=self._build_headers(),
                 timeout=self.timeout,
             )
             resp.raise_for_status()
             data = resp.json()
 
-            # Support various response schemas
-            response_text = (
-                data.get("response")
-                or data.get("output")
-                or data.get("content")
-                or data.get("text")
-                or str(data)
-            )
+            response_text = None
+            if self.response_path:
+                response_text = _extract_by_path(data, self.response_path)
+                if response_text is None:
+                    logger.warning(
+                        f"response_path '{self.response_path}' did not resolve — "
+                        "falling back to default key-guessing"
+                    )
+            if response_text is None:
+                # Support various common response schemas
+                response_text = (
+                    (data.get("response") if isinstance(data, dict) else None)
+                    or (data.get("output") if isinstance(data, dict) else None)
+                    or (data.get("content") if isinstance(data, dict) else None)
+                    or (data.get("text") if isinstance(data, dict) else None)
+                    or str(data)
+                )
             # HTTP targets don't support canary injection
             return response_text, None
 
@@ -248,7 +320,7 @@ class SandboxTargetAdapter(TargetAdapter):
         "connection string", "connection_string", "internal doc", "runbook",
     }
 
-    def execute_attack(self, attack_case: AttackCase) -> Tuple[str, Optional[str]]:
+    def execute_attack(self, payload: str, label: str = "") -> Tuple[str, Optional[str]]:
         """Execute attack against the sandbox target.
 
         The sandbox is a deliberately vulnerable agent — it leaks data when probed
@@ -260,15 +332,14 @@ class SandboxTargetAdapter(TargetAdapter):
         CANARY_TOKEN_EXFILTRATED (highest-confidence deterministic hit).
         """
         import uuid
-        import re
 
-        prompt = attack_case.evaluation_prompt
+        prompt = payload
         canary = f"CANARY-{uuid.uuid4().hex[:8].upper()}"
         self._active_canary = canary
 
         logger.info(
             f"Sandbox target '{self.target_id}' handling attack "
-            f"'{attack_case.category}': {prompt[:60]}..."
+            f"'{label}': {prompt[:60]}..."
         )
 
         # Pick data bank for this role

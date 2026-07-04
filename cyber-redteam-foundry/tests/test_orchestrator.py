@@ -60,7 +60,7 @@ class TestGraphBuild:
         graph = build_redteam_graph()
         # StateGraph exposes nodes dict
         node_names = set(graph.nodes.keys())
-        expected = {"strategist", "attacker", "evaluator", "defender", "reporter"}
+        expected = {"strategist", "attacker_branch", "evaluator", "defender", "reporter"}
         assert expected.issubset(node_names)
 
     def test_graph_compiles(self):
@@ -86,13 +86,13 @@ class TestRouting:
         state = _make_state(vulnerability_found=False)
         assert should_patch(state) == "reporter"
 
-    def test_should_iterate_routes_to_attacker(self):
+    def test_should_iterate_routes_to_strategist(self):
         state = _make_state(
             should_continue_iterating=True,
             iteration=1,
             max_iterations=3,
         )
-        assert should_iterate(state) == "attacker"
+        assert should_iterate(state) == "strategist"
 
     def test_should_iterate_routes_to_reporter_at_max(self):
         state = _make_state(
@@ -149,5 +149,5 @@ class TestMermaid:
         from cyberredteam.langgraph.graph import get_mermaid_graph
 
         mermaid = get_mermaid_graph()
-        for node in ["strategist", "attacker", "evaluator", "defender", "reporter"]:
+        for node in ["strategist", "attacker_branch", "evaluator", "defender", "reporter"]:
             assert node.lower() in mermaid.lower()

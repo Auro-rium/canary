@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import { useState, useEffect, useRef, useCallback } from 'react'
 import Navbar from '../components/Navbar'
 
 // Backend connection — empty string = relative URL, handled by nginx proxy
@@ -120,23 +120,31 @@ const TECHNIQUES = [
   },
 ]
 
-const AGENTS: AgentDef[] = [
+// Exported (not just const) so the canonical topology data stays defined here even though
+// the SVG view (AgentTopology, below) uses its own independent layout constants.
+export const AGENTS: AgentDef[] = [
   { id: 'orchestrator', label: 'Orchestrator',  role: 'control',   x: 0.5,  y: 0.12 },
+  { id: 'strategist',   label: 'Strategist',    role: 'control',   x: 0.2,  y: 0.12 },
   { id: 'attacker',     label: 'Attk. Agent',   role: 'attacker',  x: 0.2,  y: 0.38 },
   { id: 'evaluator',    label: 'Eval. Agent',   role: 'evaluator', x: 0.5,  y: 0.38 },
   { id: 'defender',     label: 'Def. Agent',    role: 'defender',  x: 0.8,  y: 0.38 },
   { id: 'target',       label: 'Target',         role: 'target',    x: 0.5,  y: 0.68 },
+  { id: 'reporter',     label: 'Reporter',       role: 'store',     x: 0.8,  y: 0.68 },
   { id: 'findings',     label: 'Findings Store', role: 'store',     x: 0.5,  y: 0.88 },
 ]
 
-const EDGES = [
+export const EDGES = [
   { from: 'orchestrator', to: 'attacker' },
   { from: 'orchestrator', to: 'evaluator' },
   { from: 'orchestrator', to: 'defender' },
+  { from: 'orchestrator', to: 'strategist' },
+  { from: 'strategist',   to: 'attacker' },
   { from: 'attacker',     to: 'target' },
   { from: 'evaluator',    to: 'target' },
   { from: 'evaluator',    to: 'findings' },
   { from: 'defender',     to: 'findings' },
+  { from: 'defender',     to: 'reporter' },
+  { from: 'reporter',     to: 'findings' },
 ]
 
 // ─── Mock simulation data ─────────────────────────────────────────────────────
@@ -248,317 +256,259 @@ function makeMockFindings(techniques: string[], campaignId: string): FindingPayl
   return results
 }
 
-// ─── Canvas rendering hook ────────────────────────────────────────────────────
+// ─── SVG agent topology ────────────────────────────────────────────────────────
 
-function useAgentCanvas(
-  canvasRef: React.RefObject<HTMLCanvasElement | null>,
-  phaseRef: React.RefObject<Phase | null>,
-  statusesRef: React.RefObject<Record<string, AgentStatus> | null>,
-  activeEdgesRef: React.RefObject<Set<string> | null>,
-) {
-  useEffect(() => {
-    const canvas = canvasRef.current
-    if (!canvas) return
+interface TopoProps {
+  phase: Phase
+  statuses: Record<string, AgentStatus>
+  activeEdge: string | null
+}
 
-    const setupSize = () => {
-      const parent = canvas.parentElement
-      if (!parent) return
-      const w = parent.clientWidth
-      const h = Math.max(500, parent.clientHeight || 560)
-      if (canvas.width !== w || canvas.height !== h) {
-        canvas.width = w
-        canvas.height = h
-      }
-    }
+const NODE_R = 32
 
-    setupSize()
+type TopoNode = {
+  cx: number
+  cy: number
+  label: string
+  color: string
+  rect?: { w: number; h: number }
+  abbrev?: string
+}
 
-    let frame: number
-    let tick = 0
-    const scanY = { current: 0 }
-    const dotT: Record<string, number> = {}
+const TOPO_NODES: Record<string, TopoNode> = {
+  orchestrator: { cx: 400, cy: 55,  label: 'ORCHESTRATOR',   color: '#ffffff', abbrev: 'ORC' },
+  strategist:   { cx: 150, cy: 165, label: 'STRATEGIST',     color: '#a78bfa', abbrev: 'STR' },
+  evaluator:    { cx: 400, cy: 165, label: 'EVALUATOR',      color: '#60a5fa', abbrev: 'EVL' },
+  defender:     { cx: 650, cy: 165, label: 'DEFENDER',       color: '#34d399', abbrev: 'DEF' },
+  attacker:     { cx: 150, cy: 310, label: 'ATTACKER',       color: '#ef4444', abbrev: 'ATK' },
+  target:       { cx: 400, cy: 310, label: 'TARGET',         color: '#f59e0b', rect: { w: 90, h: 36 } },
+  reporter:     { cx: 650, cy: 310, label: 'REPORTER',       color: '#c084fc', abbrev: 'RPT' },
+  findings:     { cx: 400, cy: 440, label: 'FINDINGS STORE', color: '#6b7280', rect: { w: 110, h: 28 } },
+}
 
-    const getPos = (agent: AgentDef, W: number, H: number) => ({
-      x: agent.x * W,
-      y: agent.y * H,
-    })
+const TOPO_EDGES: { from: string; to: string }[] = [
+  { from: 'orchestrator', to: 'strategist' },
+  { from: 'orchestrator', to: 'evaluator' },
+  { from: 'orchestrator', to: 'defender' },
+  { from: 'strategist',   to: 'attacker' },
+  { from: 'attacker',     to: 'target' },
+  { from: 'evaluator',    to: 'target' },
+  { from: 'evaluator',    to: 'findings' },
+  { from: 'defender',     to: 'reporter' },
+  { from: 'reporter',     to: 'findings' },
+]
 
-    const nodeR = (agent: AgentDef) => {
-      if (agent.role === 'control') return 22
-      if (agent.role === 'target' || agent.role === 'store') return 0
-      return 18
-    }
+const STATUS_COLORS: Record<AgentStatus, string> = {
+  idle:       'rgba(255,255,255,0.2)',
+  active:     'rgba(255,255,255,0.85)',
+  processing: '#ef4444',
+  done:       'rgba(255,255,255,0.35)',
+  error:      '#ef4444',
+}
 
-    const rectDims = (agent: AgentDef) =>
-      agent.role === 'target' ? { w: 68, h: 28 } :
-      agent.role === 'store'  ? { w: 80, h: 20 } : null
+const ARROW_IDS: Record<string, string> = {
+  '#ffffff': 'arr-ffffff',
+  '#a78bfa': 'arr-a78bfa',
+  '#60a5fa': 'arr-60a5fa',
+  '#34d399': 'arr-34d399',
+  '#ef4444': 'arr-ef4444',
+  '#f59e0b': 'arr-f59e0b',
+  '#c084fc': 'arr-c084fc',
+  '#6b7280': 'arr-6b7280',
+}
 
-    const edgeEndpoints = (from: AgentDef, to: AgentDef, W: number, H: number) => {
-      const fp = getPos(from, W, H)
-      const tp = getPos(to, W, H)
-      const dx = tp.x - fp.x
-      const dy = tp.y - fp.y
-      const angle = Math.atan2(dy, dx)
+function getNodeEndpoints(fromId: string, toId: string): { sx: number; sy: number; ex: number; ey: number } {
+  const from = TOPO_NODES[fromId]
+  const to   = TOPO_NODES[toId]
+  const dx   = to.cx - from.cx
+  const dy   = to.cy - from.cy
+  const dist = Math.sqrt(dx * dx + dy * dy) || 1
+  const ux   = dx / dist
+  const uy   = dy / dist
 
-      const srcDims = rectDims(from)
-      const tgtDims = rectDims(to)
+  let sx: number, sy: number
+  if (from.rect) {
+    const { w, h } = from.rect
+    const tx = ux !== 0 ? (w / 2) / Math.abs(ux) : Infinity
+    const ty = uy !== 0 ? (h / 2) / Math.abs(uy) : Infinity
+    const t  = Math.min(tx, ty)
+    sx = from.cx + ux * t
+    sy = from.cy + uy * t
+  } else {
+    sx = from.cx + ux * NODE_R
+    sy = from.cy + uy * NODE_R
+  }
 
-      let sx = fp.x, sy = fp.y
-      if (srcDims) {
-        sx = fp.x + Math.sign(dx) * srcDims.w / 2
-        sy = fp.y + Math.sign(dy) * srcDims.h / 2
-      } else {
-        sx = fp.x + Math.cos(angle) * nodeR(from)
-        sy = fp.y + Math.sin(angle) * nodeR(from)
-      }
+  let ex: number, ey: number
+  if (to.rect) {
+    const { w, h } = to.rect
+    const tx = ux !== 0 ? (w / 2) / Math.abs(ux) : Infinity
+    const ty = uy !== 0 ? (h / 2) / Math.abs(uy) : Infinity
+    const t  = Math.min(tx, ty)
+    ex = to.cx - ux * t
+    ey = to.cy - uy * t
+  } else {
+    ex = to.cx - ux * NODE_R
+    ey = to.cy - uy * NODE_R
+  }
 
-      let ex = tp.x, ey = tp.y
-      if (tgtDims) {
-        ex = tp.x - Math.sign(dx) * tgtDims.w / 2
-        ey = tp.y - Math.sign(dy) * tgtDims.h / 2
-      } else {
-        ex = tp.x - Math.cos(angle) * nodeR(to)
-        ey = tp.y - Math.sin(angle) * nodeR(to)
-      }
+  return { sx, sy, ex, ey }
+}
 
-      return { sx, sy, ex, ey, angle }
-    }
+function buildEdgePath(fromId: string, toId: string): string {
+  // evaluator→findings is routed as a curve so it doesn't cross through the target node
+  if (fromId === 'evaluator' && toId === 'findings') {
+    const evalNode = TOPO_NODES.evaluator
+    const findNode = TOPO_NODES.findings
+    const sx = evalNode.cx
+    const sy = evalNode.cy + NODE_R
+    const ex = findNode.cx
+    const ey = findNode.cy - findNode.rect!.h / 2
+    return `M ${sx} ${sy} C 490 280 490 400 ${ex} ${ey}`
+  }
+  const { sx, sy, ex, ey } = getNodeEndpoints(fromId, toId)
+  return `M ${sx} ${sy} L ${ex} ${ey}`
+}
 
-    const arrowhead = (ctx: CanvasRenderingContext2D, x: number, y: number, angle: number, color: string) => {
-      ctx.save()
-      ctx.translate(x, y)
-      ctx.rotate(angle)
-      ctx.fillStyle = color
-      ctx.beginPath()
-      ctx.moveTo(0, 0)
-      ctx.lineTo(-7, -3.5)
-      ctx.lineTo(-7, 3.5)
-      ctx.closePath()
-      ctx.fill()
-      ctx.restore()
-    }
+function AgentTopology({ phase, statuses, activeEdge }: TopoProps) {
+  const nodeIds = Object.keys(TOPO_NODES)
 
-    const draw = () => {
-      setupSize()
-      const ctx = canvas.getContext('2d')
-      if (!ctx) { frame = requestAnimationFrame(draw); return }
+  return (
+    <svg viewBox="0 0 800 520" className="w-full h-full" style={{ display: 'block', minHeight: 500 }}>
+      <defs>
+        <filter id="node-glow" x="-60%" y="-60%" width="220%" height="220%">
+          <feGaussianBlur stdDeviation="6" result="blur" in="SourceGraphic" />
+          <feMerge>
+            <feMergeNode in="blur" />
+            <feMergeNode in="SourceGraphic" />
+          </feMerge>
+        </filter>
+        {[
+          ['arr-inactive', 'rgba(255,255,255,0.1)'],
+          ['arr-ffffff', '#ffffff'],
+          ['arr-a78bfa', '#a78bfa'],
+          ['arr-60a5fa', '#60a5fa'],
+          ['arr-34d399', '#34d399'],
+          ['arr-ef4444', '#ef4444'],
+          ['arr-f59e0b', '#f59e0b'],
+          ['arr-c084fc', '#c084fc'],
+          ['arr-6b7280', '#6b7280'],
+        ].map(([id, color]) => (
+          <marker key={id} id={id} markerWidth={8} markerHeight={7} refX={8} refY={3.5} orient="auto" markerUnits="userSpaceOnUse">
+            <path d="M 0 0 L 8 3.5 L 0 7 Z" fill={color} />
+          </marker>
+        ))}
+      </defs>
 
-      const W = canvas.width
-      const H = canvas.height
-      const phase = phaseRef.current!
-      const statuses = statusesRef.current!
-      const activeEdges = activeEdgesRef.current!
+      {/* Edges */}
+      {TOPO_EDGES.map(({ from, to }) => {
+        const edgeKey   = `${from}->${to}`
+        const isActive  = activeEdge === edgeKey
+        const srcColor  = TOPO_NODES[from]?.color ?? '#ffffff'
+        const markerId  = isActive ? (ARROW_IDS[srcColor] ?? 'arr-inactive') : 'arr-inactive'
+        const edgePath  = buildEdgePath(from, to)
 
-      ctx.clearRect(0, 0, W, H)
+        return (
+          <g key={edgeKey} opacity={phase === 'idle' ? 0.4 : 1}>
+            <path
+              d={edgePath}
+              fill="none"
+              stroke={isActive ? srcColor : 'rgba(255,255,255,0.08)'}
+              strokeWidth={isActive ? 1.5 : 1}
+              markerEnd={`url(#${markerId})`}
+            />
+            {isActive && (
+              <circle r={4} fill={srcColor} opacity={0.9}>
+                <animateMotion dur="1.2s" repeatCount="indefinite" path={edgePath} />
+              </circle>
+            )}
+          </g>
+        )
+      })}
 
-      const dimAlpha = phase === 'idle' ? 0.3 : 1.0
+      {/* Nodes */}
+      {nodeIds.map(id => {
+        const node = TOPO_NODES[id]
+        const status: AgentStatus = statuses[id] ?? 'idle'
+        const isActive     = status === 'active'
+        const isProcessing = status === 'processing'
+        const isDone       = status === 'done'
+        const isLit        = isActive || isProcessing
+        const { cx, cy, label, color, rect, abbrev } = node
+        const strokeColor = isLit ? color : isDone ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.15)'
+        const fillColor   = isLit ? `${color}1A` : '#000000'
+        const statusColor = STATUS_COLORS[status]
+        const labelY  = rect ? cy + rect.h / 2 + 14 : cy + NODE_R + 14
+        const statusY = rect ? cy + rect.h / 2 + 26 : cy + NODE_R + 26
 
-      // Scan line
-      if (phase === 'running') {
-        scanY.current = (scanY.current + 1.2) % H
-        ctx.fillStyle = 'rgba(220,38,38,0.12)'
-        ctx.fillRect(0, scanY.current, W, 1)
-      }
+        return (
+          <g key={id} opacity={phase === 'idle' ? 0.35 : 1}>
+            {isProcessing && !rect && (
+              <circle cx={cx} cy={cy} r={NODE_R + 10} fill="none" stroke={color} strokeOpacity={0.55} strokeWidth={1.5} strokeDasharray="20 10">
+                <animateTransform attributeName="transform" type="rotate" from={`0 ${cx} ${cy}`} to={`360 ${cx} ${cy}`} dur="2.5s" repeatCount="indefinite" />
+              </circle>
+            )}
 
-      // Edges
-      EDGES.forEach(edge => {
-        const fromA = AGENTS.find(a => a.id === edge.from)!
-        const toA   = AGENTS.find(a => a.id === edge.to)!
-        const key   = `${edge.from}->${edge.to}`
-        const isActive = activeEdges.has(key)
-        const { sx, sy, ex, ey, angle } = edgeEndpoints(fromA, toA, W, H)
+            {rect ? (
+              <rect
+                x={cx - rect.w / 2} y={cy - rect.h / 2}
+                width={rect.w} height={rect.h}
+                fill={fillColor}
+                stroke={strokeColor}
+                strokeWidth={isLit ? 1.5 : 1}
+                strokeDasharray={id === 'target' ? '5 3' : '0'}
+                filter={isLit ? 'url(#node-glow)' : undefined}
+              />
+            ) : (
+              <circle
+                cx={cx} cy={cy} r={NODE_R}
+                fill={fillColor}
+                stroke={strokeColor}
+                strokeWidth={1.5}
+                filter={isLit ? 'url(#node-glow)' : undefined}
+              />
+            )}
 
-        ctx.save()
-        ctx.globalAlpha = dimAlpha
-        ctx.beginPath()
-        ctx.moveTo(sx, sy)
-        ctx.lineTo(ex, ey)
-        ctx.strokeStyle = isActive ? 'rgba(220,38,38,0.8)' : 'rgba(255,255,255,0.1)'
-        ctx.lineWidth = isActive ? 1.5 : 1
-        ctx.setLineDash([])
-        ctx.stroke()
+            {isDone && !rect && (
+              <path
+                d={`M ${cx - 9} ${cy} L ${cx - 3} ${cy + 7} L ${cx + 10} ${cy - 8}`}
+                fill="none" stroke="rgba(255,255,255,0.45)" strokeWidth={1.5} strokeLinecap="round"
+              />
+            )}
 
-        arrowhead(ctx, ex, ey, angle, isActive ? 'rgba(220,38,38,0.8)' : 'rgba(255,255,255,0.1)')
+            {!isDone && !rect && abbrev && (
+              <text x={cx} y={cy + 3} textAnchor="middle" fontSize={8} fontFamily="'JetBrains Mono', monospace" fontWeight="bold" fill={isLit ? color : 'rgba(255,255,255,0.35)'}>
+                {abbrev}
+              </text>
+            )}
 
-        // Traveling dot
-        if (isActive) {
-          dotT[key] = Math.min(1, (dotT[key] ?? 0) + 0.018)
-          const t = dotT[key]
-          const dx = sx + (ex - sx) * t
-          const dy = sy + (ey - sy) * t
-          ctx.globalAlpha = 1
-          ctx.beginPath()
-          ctx.arc(dx, dy, 4, 0, Math.PI * 2)
-          ctx.fillStyle = 'rgba(220,38,38,1)'
-          ctx.fill()
-        } else {
-          delete dotT[key]
-        }
-        ctx.restore()
-      })
+            {rect && (
+              <text x={cx} y={cy + 3} textAnchor="middle" fontSize={9} fontFamily="'JetBrains Mono', monospace" fill={isLit ? color : 'rgba(255,255,255,0.6)'}>
+                {label}
+              </text>
+            )}
 
-      // Nodes
-      AGENTS.forEach(agent => {
-        const { x, y } = getPos(agent, W, H)
-        const status: AgentStatus = statuses[agent.id] || 'idle'
+            {!rect && (
+              <text x={cx} y={labelY} textAnchor="middle" fontSize={9} fontFamily="'JetBrains Mono', monospace" fill="rgba(255,255,255,0.7)">
+                {label}
+              </text>
+            )}
 
-        ctx.save()
-        ctx.globalAlpha = dimAlpha
+            <circle cx={cx - 22} cy={statusY - 2} r={2.5} fill={statusColor} />
+            <text x={cx - 16} y={statusY + 1} fontSize={7} fontFamily="'JetBrains Mono', monospace" fill={statusColor}>
+              {status.toUpperCase()}
+            </text>
+          </g>
+        )
+      })}
 
-        const dims = rectDims(agent)
-        if (dims) {
-          // Rectangle node (target / store)
-          const { w, h } = dims
-          if (agent.role === 'target') {
-            ctx.strokeStyle = 'rgba(255,255,255,0.2)'
-            ctx.setLineDash([3, 3])
-          } else {
-            ctx.strokeStyle = 'rgba(255,255,255,0.1)'
-            ctx.setLineDash([])
-          }
-          ctx.lineWidth = 1
-          ctx.strokeRect(x - w / 2, y - h / 2, w, h)
-          ctx.setLineDash([])
-
-          ctx.fillStyle = agent.role === 'target' ? 'rgba(255,255,255,0.4)' : 'rgba(255,255,255,0.3)'
-          ctx.font = '8px "JetBrains Mono", monospace'
-          ctx.textAlign = 'center'
-          ctx.textBaseline = 'middle'
-          ctx.fillText(agent.label.toUpperCase(), x, y)
-        } else {
-          const r = nodeR(agent)
-
-          // Processing ring
-          if (status === 'processing') {
-            ctx.save()
-            ctx.beginPath()
-            ctx.arc(x, y, r + 9, tick * 0.05, tick * 0.05 + Math.PI * 1.5)
-            ctx.strokeStyle = 'rgba(220,38,38,0.55)'
-            ctx.lineWidth = 1.5
-            ctx.setLineDash([4, 4])
-            ctx.stroke()
-            ctx.restore()
-          }
-
-          // Attacker pulse ring
-          if (agent.role === 'attacker' && (status === 'active' || status === 'processing')) {
-            const pr = r + 6 + Math.sin(tick * 0.09) * 3
-            ctx.beginPath()
-            ctx.arc(x, y, pr, 0, Math.PI * 2)
-            ctx.strokeStyle = `rgba(220,38,38,${0.15 + Math.sin(tick * 0.09) * 0.1})`
-            ctx.lineWidth = 1
-            ctx.setLineDash([])
-            ctx.stroke()
-          }
-
-          // Background
-          ctx.beginPath()
-          ctx.arc(x, y, r, 0, Math.PI * 2)
-          ctx.fillStyle = 'rgba(0,0,0,0.85)'
-          ctx.fill()
-
-          // Border color
-          let border = 'rgba(255,255,255,0.4)'
-          if (agent.role === 'control') border = status === 'done' ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.6)'
-          else if (agent.role === 'attacker') border = status === 'done' ? 'rgba(220,38,38,0.3)' : 'rgba(220,38,38,1)'
-          if (status === 'done') border = agent.role === 'control' ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.15)'
-          if (status === 'error') border = 'rgba(220,38,38,1)'
-
-          ctx.beginPath()
-          ctx.arc(x, y, r, 0, Math.PI * 2)
-          ctx.strokeStyle = border
-          ctx.lineWidth = agent.role === 'control' ? 2 : 1
-          ctx.setLineDash([])
-          ctx.stroke()
-
-          // Abbreviation inside
-          if (status !== 'done') {
-            const abbrev: Record<string, string> = {
-              orchestrator: 'ORC', attacker: 'ATK', evaluator: 'EVL', defender: 'DEF'
-            }
-            if (abbrev[agent.id]) {
-              ctx.fillStyle = agent.role === 'control' ? 'rgba(255,255,255,0.75)'
-                : agent.role === 'attacker' ? 'rgba(248,113,113,0.9)'
-                : 'rgba(255,255,255,0.5)'
-              ctx.font = 'bold 7px "JetBrains Mono", monospace'
-              ctx.textAlign = 'center'
-              ctx.textBaseline = 'middle'
-              ctx.fillText(abbrev[agent.id], x, y)
-            }
-          }
-
-          // Done checkmark
-          if (status === 'done') {
-            ctx.strokeStyle = 'rgba(255,255,255,0.45)'
-            ctx.lineWidth = 1.5
-            ctx.setLineDash([])
-            ctx.beginPath()
-            ctx.moveTo(x - 5, y)
-            ctx.lineTo(x - 1, y + 4)
-            ctx.lineTo(x + 6, y - 5)
-            ctx.stroke()
-          }
-
-          // Label below
-          const labelC = agent.role === 'control' ? 'rgba(255,255,255,1)'
-            : agent.role === 'attacker' ? 'rgba(248,113,113,1)'
-            : 'rgba(255,255,255,0.7)'
-          ctx.fillStyle = labelC
-          ctx.font = '9px "JetBrains Mono", monospace'
-          ctx.textAlign = 'center'
-          ctx.textBaseline = 'top'
-          ctx.fillText(agent.label.toUpperCase(), x, y + r + 5)
-
-          // Status line
-          const statusColors: Record<AgentStatus, string> = {
-            idle: 'rgba(255,255,255,0.2)',
-            active: 'rgba(255,255,255,0.8)',
-            processing: 'rgba(220,38,38,0.9)',
-            done: 'rgba(255,255,255,0.35)',
-            error: 'rgba(220,38,38,1)',
-          }
-          const sc = statusColors[status]
-          const statusY = y + r + 19
-          ctx.beginPath()
-          ctx.arc(x - 17, statusY + 3.5, 2.5, 0, Math.PI * 2)
-          ctx.fillStyle = sc
-          ctx.fill()
-          ctx.fillStyle = sc
-          ctx.font = '7px "JetBrains Mono", monospace'
-          ctx.textAlign = 'left'
-          ctx.textBaseline = 'top'
-          ctx.fillText(status.toUpperCase(), x - 11, statusY)
-        }
-
-        ctx.restore()
-      })
-
-      // Idle overlay text
-      if (phase === 'idle') {
-        ctx.save()
-        ctx.globalAlpha = 1
-        ctx.fillStyle = 'rgba(255,255,255,0.15)'
-        ctx.font = '11px "JetBrains Mono", monospace'
-        ctx.textAlign = 'center'
-        ctx.textBaseline = 'middle'
-        ctx.fillText('AWAITING  CAMPAIGN', W / 2, H / 2 + 30)
-        ctx.restore()
-      }
-
-      tick++
-      frame = requestAnimationFrame(draw)
-    }
-
-    frame = requestAnimationFrame(draw)
-
-    const ro = new ResizeObserver(setupSize)
-    if (canvas.parentElement) ro.observe(canvas.parentElement)
-
-    return () => {
-      cancelAnimationFrame(frame)
-      ro.disconnect()
-    }
-  }, [canvasRef, phaseRef, statusesRef, activeEdgesRef])
+      {phase === 'idle' && (
+        <text x={400} y={485} textAnchor="middle" fontSize={11} fontFamily="'JetBrains Mono', monospace" fill="rgba(255,255,255,0.15)" letterSpacing={3}>
+          AWAITING CAMPAIGN
+        </text>
+      )}
+    </svg>
+  )
 }
 
 // ─── Main component ───────────────────────────────────────────────────────────
@@ -570,19 +520,23 @@ interface RunAuditPageProps {
 export default function RunAuditPage({ onBack }: RunAuditPageProps) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [targetUrl, setTargetUrl] = useState('')
-  const [targetType, setTargetType] = useState<'rest_api' | 'mcp' | 'a2a'>('rest_api')
-  const [authMethod, setAuthMethod] = useState<'none' | 'bearer' | 'apikey' | 'iam'>('none')
-  const [authToken, setAuthToken] = useState('')
+  const [showAdvancedTarget, setShowAdvancedTarget] = useState(false)
+  const [targetHeaders, setTargetHeaders] = useState('')
+  const [targetRequestTemplate, setTargetRequestTemplate] = useState('')
+  const [targetResponsePath, setTargetResponsePath] = useState('')
   const [selectedTechniques, setSelectedTechniques] = useState<string[]>([])
   const [campaignId] = useState(() => `RX-${Math.floor(Math.random() * 900000 + 100000)}`)
   const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentStatus>>({})
   const [activeEdge, setActiveEdge] = useState<string | null>(null)
   const [logs, setLogs] = useState<LogEntry[]>([])
   const [report, setReport] = useState<CompletePayload | null>(null)
+  const [reportMarkdown, setReportMarkdown] = useState<string | null>(null)
+  const [expandedFindings, setExpandedFindings] = useState<Set<string>>(new Set())
+  const [elapsedSeconds, setElapsedSeconds] = useState(0)
 
-  const canvasRef = useRef<HTMLCanvasElement>(null)
   const logEndRef  = useRef<HTMLDivElement>(null)
   const timerRefs  = useRef<ReturnType<typeof setTimeout>[]>([])
+  const startTimeRef = useRef<number>(0)
 
   // Refs for canvas loop (avoids re-creating the loop on every state change)
   const phaseRef         = useRef<Phase>('idle')
@@ -591,6 +545,25 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
 
   useEffect(() => { phaseRef.current = phase }, [phase])
   useEffect(() => { statusesRef.current = agentStatuses }, [agentStatuses])
+
+  // Fetch the full LLM-generated markdown report once the run completes.
+  useEffect(() => {
+    if (!report) return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch(`${API_BASE}/api/runs/${report.run_id}/report-markdown`, {
+          headers: { 'Authorization': `Bearer ${API_TOKEN}` },
+        })
+        if (!res.ok) return
+        const data = await res.json()
+        if (!cancelled) setReportMarkdown(data.markdown)
+      } catch {
+        // report.md may not exist for older runs — leave as null
+      }
+    })()
+    return () => { cancelled = true }
+  }, [report])
 
   // Sync active edge into the Set ref
   useEffect(() => {
@@ -604,7 +577,17 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
     }
   }, [activeEdge])
 
-  useAgentCanvas(canvasRef, phaseRef, statusesRef, activeEdgesRef)
+  // Elapsed campaign timer (drives the Phase 02 config-summary clock)
+  useEffect(() => {
+    if (phase === 'running') {
+      startTimeRef.current = Date.now()
+      setElapsedSeconds(0)
+      const interval = setInterval(() => {
+        setElapsedSeconds(Math.floor((Date.now() - startTimeRef.current) / 1000))
+      }, 1000)
+      return () => clearInterval(interval)
+    }
+  }, [phase])
 
   // Auto-scroll log
   useEffect(() => {
@@ -660,12 +643,23 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
 
   // ── Real backend via SSE ────────────────────────────────────────────────────
   const runRealCampaign = useCallback(async () => {
+    // Advanced target config is opt-in — omit fields the user left blank so
+    // the default target_agent stub contract ({"message": ...}) is untouched.
+    let parsedHeaders: Record<string, string> = {}
+    if (targetHeaders.trim()) {
+      try {
+        parsedHeaders = JSON.parse(targetHeaders)
+      } catch {
+        appendLog('ERROR', 'Custom headers must be valid JSON — ignoring.')
+      }
+    }
     const payload = {
       campaign_id: campaignId,
       target_url: targetUrl.trim(),
-      target_type: targetType,
-      auth: authMethod !== 'none' ? { type: authMethod, token: authToken } : { type: 'none' },
       techniques: selectedTechniques,
+      headers: parsedHeaders,
+      request_template: targetRequestTemplate.trim() || undefined,
+      response_path: targetResponsePath.trim() || undefined,
     }
 
     const res = await fetch(`${API_BASE}/api/campaigns/run`, {
@@ -677,24 +671,37 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
       body: JSON.stringify(payload),
     })
 
-    if (!res.ok) throw new Error(`Backend responded ${res.status}`)
+    if (!res.ok) {
+      // Backend was reached and explicitly rejected the request (bad auth,
+      // target not allowlisted, concurrency cap hit, etc.) — this is a real,
+      // actionable answer, not a "server is down" case. Surface it as-is
+      // rather than silently faking a campaign in the caller.
+      let detail = ''
+      try { detail = (await res.json())?.detail ?? '' } catch { /* body wasn't JSON */ }
+      const err = new Error(detail || `Backend responded ${res.status}`) as Error & { status?: number }
+      err.status = res.status
+      throw err
+    }
     if (!res.body) throw new Error('No SSE stream body')
 
     const reader  = res.body.getReader()
     const decoder = new TextDecoder()
 
+    let buffer = ''
     while (true) {
       const { done, value } = await reader.read()
       if (done) break
-      const text  = decoder.decode(value)
-      const lines = text.split('\n').filter(l => l.startsWith('data: '))
+      buffer += decoder.decode(value, { stream: true })
+      const lines = buffer.split('\n')
+      buffer = lines.pop() ?? ''   // keep incomplete last line
       for (const line of lines) {
+        if (!line.startsWith('data: ')) continue
         try {
           handleSSEEvent(JSON.parse(line.slice(6)))
         } catch { /* skip malformed */ }
       }
     }
-  }, [campaignId, targetUrl, targetType, authMethod, authToken, selectedTechniques, handleSSEEvent])
+  }, [campaignId, targetUrl, targetHeaders, targetRequestTemplate, targetResponsePath, selectedTechniques, handleSSEEvent, appendLog])
 
   // ── Mock simulation (demo / no-backend fallback) ────────────────────────────
   const runMockSimulation = useCallback(() => {
@@ -786,8 +793,16 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
     timerRefs.current = []
 
     if (API_TOKEN) {
-      // Try real backend first; fall back to simulation on error
-      runRealCampaign().catch(err => {
+      // Try real backend first; fall back to simulation only when the
+      // backend is genuinely unreachable (network/CORS failure has no
+      // `.status`). An explicit HTTP rejection (401/403/429/...) means the
+      // backend answered — show that real reason instead of faking results.
+      runRealCampaign().catch((err: Error & { status?: number }) => {
+        if (err.status !== undefined) {
+          appendLog('ERROR', err.message)
+          setPhase('idle')
+          return
+        }
         appendLog('ERROR', `Backend unavailable (${err.message}). Running simulation.`)
         runMockSimulation()
       })
@@ -816,14 +831,69 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
     activeEdgesRef.current.clear()
   }
 
-  // ─── LOG LEVEL COLOURS ──────────────────────────────────────────
-  const levelClass = (level: LogEntry['level']) => {
-    if (level === 'ATTACK')  return 'text-red-500'
-    if (level === 'EVAL')    return 'text-white/60'
-    if (level === 'DEFEND')  return 'text-white/40'
-    if (level === 'FINDING') return 'text-red-400'
-    if (level === 'ERROR')   return 'text-red-600'
-    return 'text-white/20'
+  // ─── VISUAL HELPERS ─────────────────────────────────────────────
+  const levelBadgeClass = (level: LogEntry['level']) => {
+    if (level === 'ATTACK')  return 'bg-red-600/80 text-white'
+    if (level === 'EVAL')    return 'bg-blue-600/70 text-white'
+    if (level === 'DEFEND')  return 'bg-green-700/70 text-white'
+    if (level === 'FINDING') return 'border border-red-500/60 text-red-400'
+    if (level === 'ERROR')   return 'bg-red-900 text-red-300'
+    return 'text-white/25'
+  }
+
+  const severityBar = (severity: string) => {
+    const bars = severity === 'CRITICAL' ? 4 : severity === 'HIGH' ? 3 : severity === 'MEDIUM' ? 2 : 1
+    const colorClass =
+      severity === 'CRITICAL' ? 'text-red-500' :
+      severity === 'HIGH'     ? 'text-orange-400' :
+      severity === 'MEDIUM'   ? 'text-yellow-400' : 'text-white/30'
+    return { filled: '█'.repeat(bars), empty: '░'.repeat(4 - bars), colorClass }
+  }
+
+  const scoreBlocks = (score: number) => {
+    const filled = Math.round(score * 10)
+    return `[${'█'.repeat(filled)}${'░'.repeat(10 - filled)}] ${(score * 100).toFixed(0)}%`
+  }
+
+  const verdictPillClass = (verdict: FindingPayload['verdict']) => {
+    if (verdict === 'VULNERABLE') return 'bg-red-600 text-white px-3 py-0.5 rounded-full text-[9px] font-bold uppercase tracking-wider'
+    if (verdict === 'RESILIENT')  return 'border border-white/60 text-white/70 px-3 py-0.5 rounded-full text-[9px] uppercase tracking-wider'
+    return 'border border-yellow-400/60 text-yellow-400 px-3 py-0.5 rounded-full text-[9px] uppercase tracking-wider'
+  }
+
+  const severityBorderColor = (severity: FindingPayload['severity']) => {
+    if (severity === 'CRITICAL') return '#dc2626'
+    if (severity === 'HIGH')     return '#f97316'
+    if (severity === 'MEDIUM')   return '#eab308'
+    return 'rgba(255,255,255,0.2)'
+  }
+
+  const formatElapsed = (s: number) =>
+    `${String(Math.floor(s / 60)).padStart(2, '0')}:${String(s % 60).padStart(2, '0')}`
+
+  const toggleFindingExpanded = (id: string) => {
+    setExpandedFindings(prev => {
+      const next = new Set(prev)
+      if (next.has(id)) next.delete(id)
+      else next.add(id)
+      return next
+    })
+  }
+
+  const copySummary = () => {
+    if (!report) return
+    const text = [
+      `Campaign: ${report.campaign_id}`,
+      `Target: ${targetUrl.trim() || 'N/A'}`,
+      `Critical: ${report.critical_count}`,
+      `High: ${report.high_count}`,
+      `Total Findings: ${report.total_findings}`,
+      `Duration: ${report.duration_seconds}s`,
+      '',
+      'Findings:',
+      ...report.findings.map(f => `  [${f.severity}] ${f.asi_code} ${f.technique_id}: ${f.verdict} (${(f.score * 100).toFixed(0)}%)`),
+    ].join('\n')
+    navigator.clipboard?.writeText(text)
   }
 
   const isRunning = phase === 'running'
@@ -834,7 +904,14 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
       <Navbar onRunAudit={resetCampaign} onLogoClick={onBack} />
 
       {/* ── PHASE 01: CAMPAIGN CONFIGURATION ── */}
-      <section className="px-6 sm:px-10 md:px-16 lg:px-20 py-16 border-b border-white/10 pt-36">
+      <section
+        className="px-6 sm:px-10 md:px-16 lg:px-20 py-16 border-b border-white/10 pt-36"
+        style={{
+          backgroundImage:
+            'linear-gradient(rgba(255,255,255,0.025) 1px, transparent 1px), linear-gradient(90deg, rgba(255,255,255,0.025) 1px, transparent 1px)',
+          backgroundSize: '28px 28px',
+        }}
+      >
         <p className="text-white/30 text-[10px] tracking-[0.3em] uppercase mb-10">
           // PHASE 01 — CAMPAIGN CONFIGURATION
         </p>
@@ -843,6 +920,21 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
 
           {/* LEFT: Target config */}
           <div>
+            {/* Campaign ID + status */}
+            <div className="flex items-center gap-3 border border-white/15 bg-white/[0.03] px-4 py-3 mb-8">
+              <div className="flex flex-col gap-0.5 flex-1 min-w-0">
+                <span className="text-white/30 text-[9px] uppercase tracking-[0.25em]">Campaign ID</span>
+                <span className="text-white text-base font-mono font-bold tracking-wider truncate">{campaignId}</span>
+              </div>
+              <div
+                className={`text-[9px] uppercase tracking-wider px-2 py-1 font-mono border shrink-0 ${
+                  isRunning ? 'border-red-500/40 text-red-400 bg-red-950/20' : 'border-white/15 text-white/30'
+                }`}
+              >
+                {isRunning ? '● RUNNING' : 'READY'}
+              </div>
+            </div>
+
             <p className="text-white text-xs uppercase tracking-[0.2em] mb-6">Target</p>
 
             {/* URL input */}
@@ -859,89 +951,107 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
                   disabled={isRunning}
                 />
               </div>
+              <p className="text-white/20 text-[9px] uppercase tracking-wider mt-1">
+                HTTP/JSON REST only — custom headers &amp; request/response schema supported below
+              </p>
             </div>
 
-            {/* Target type */}
+            {/* Advanced target config — opt-in, leave blank for the bundled stub's default contract */}
             <div className="mb-6">
-              <p className="text-white/40 text-[10px] uppercase tracking-wider mb-3">Target Type</p>
-              <div className="flex gap-2 flex-wrap">
-                {(['rest_api', 'mcp', 'a2a'] as const).map(type => (
-                  <button
-                    key={type}
-                    onClick={() => setTargetType(type)}
-                    disabled={isRunning}
-                    className={`px-4 py-2 text-[10px] uppercase tracking-[0.15em] transition-all duration-150 ${
-                      targetType === type
-                        ? 'bg-white text-black'
-                        : 'border border-white/20 text-white/50 hover:border-white/40'
-                    }`}
-                  >
-                    {type === 'rest_api' ? 'REST API' : type === 'mcp' ? 'MCP Server' : 'A2A Agent'}
-                  </button>
-                ))}
-              </div>
-            </div>
+              <button
+                type="button"
+                onClick={() => setShowAdvancedTarget(v => !v)}
+                disabled={isRunning}
+                className="text-[9px] uppercase tracking-wider text-white/40 hover:text-white/70 border border-white/15 hover:border-white/30 px-3 py-1.5 transition-colors disabled:opacity-30"
+              >
+                {showAdvancedTarget ? '− Hide' : '+ Advanced'} target config
+              </button>
 
-            {/* Auth method */}
-            <div className="mb-6">
-              <p className="text-white/40 text-[10px] uppercase tracking-wider mb-3">Auth Method</p>
-              <div className="flex gap-2 flex-wrap">
-                {(['none', 'bearer', 'apikey', 'iam'] as const).map(method => (
-                  <button
-                    key={method}
-                    onClick={() => setAuthMethod(method)}
-                    disabled={isRunning}
-                    className={`px-4 py-2 text-[10px] uppercase tracking-[0.15em] transition-all duration-150 ${
-                      authMethod === method
-                        ? 'bg-white text-black'
-                        : 'border border-white/20 text-white/50 hover:border-white/40'
-                    }`}
-                  >
-                    {method === 'none' ? 'None' : method === 'bearer' ? 'Bearer Token' : method === 'apikey' ? 'API Key' : 'IAM'}
-                  </button>
-                ))}
-              </div>
-              {(authMethod === 'bearer' || authMethod === 'apikey') && (
-                <div className="mt-3 transition-all duration-200">
-                  <input
-                    type="password"
-                    value={authToken}
-                    onChange={e => setAuthToken(e.target.value)}
-                    placeholder={authMethod === 'bearer' ? 'Bearer token...' : 'API key...'}
-                    className="w-full bg-white/[0.03] border border-white/20 text-white text-xs px-3 py-3 placeholder:text-white/20 outline-none focus:border-white/40 transition-colors"
-                    disabled={isRunning}
-                  />
+              {showAdvancedTarget && (
+                <div className="flex flex-col gap-4 mt-4">
+                  <div className="flex flex-col gap-2">
+                    <label className="text-white/40 text-[10px] uppercase tracking-wider">
+                      Headers (JSON)
+                    </label>
+                    <textarea
+                      value={targetHeaders}
+                      onChange={e => setTargetHeaders(e.target.value)}
+                      placeholder={'{"Authorization": "Bearer sk-...", "X-API-Key": "..."}'}
+                      rows={2}
+                      className="bg-white/[0.03] border border-white/20 focus:border-white/40 transition-colors px-3 py-2 text-white text-xs font-mono placeholder:text-white/20 outline-none resize-none"
+                      disabled={isRunning}
+                    />
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <label className="text-white/40 text-[10px] uppercase tracking-wider">
+                      Request Template (JSON, use {'"{{PROMPT}}"'} as the payload placeholder)
+                    </label>
+                    <textarea
+                      value={targetRequestTemplate}
+                      onChange={e => setTargetRequestTemplate(e.target.value)}
+                      placeholder={'{"messages": [{"role": "user", "content": "{{PROMPT}}"}]}'}
+                      rows={2}
+                      className="bg-white/[0.03] border border-white/20 focus:border-white/40 transition-colors px-3 py-2 text-white text-xs font-mono placeholder:text-white/20 outline-none resize-none"
+                      disabled={isRunning}
+                    />
+                  </div>
+
+                  <div className="flex flex-col gap-2">
+                    <label className="text-white/40 text-[10px] uppercase tracking-wider">
+                      Response Path (dot-path into the JSON response)
+                    </label>
+                    <input
+                      type="text"
+                      value={targetResponsePath}
+                      onChange={e => setTargetResponsePath(e.target.value)}
+                      placeholder="choices.0.message.content"
+                      className="bg-white/[0.03] border border-white/20 focus:border-white/40 transition-colors px-3 py-2 text-white text-xs font-mono placeholder:text-white/20 outline-none"
+                      disabled={isRunning}
+                    />
+                  </div>
+
+                  <p className="text-white/20 text-[9px] uppercase tracking-wider">
+                    Leave all three blank to use the default {'{"message": ...} → {"response": ...}'} contract
+                  </p>
                 </div>
               )}
-            </div>
-
-            {/* Campaign ID */}
-            <div className="flex items-center justify-between border border-white/10 bg-white/[0.02] px-3 py-2">
-              <span className="text-white/30 text-[10px] uppercase tracking-wider">Campaign ID</span>
-              <span className="text-white/60 text-xs font-mono">{campaignId}</span>
             </div>
           </div>
 
           {/* RIGHT: Technique selection */}
           <div>
-            <p className="text-white text-xs uppercase tracking-[0.2em] mb-1">Attack Techniques</p>
+            <div className="flex items-center justify-between mb-1">
+              <p className="text-white text-xs uppercase tracking-[0.2em]">Attack Techniques</p>
+              <button
+                onClick={() => setSelectedTechniques(TECHNIQUES.map(t => t.id))}
+                disabled={isRunning}
+                className="text-[9px] uppercase tracking-wider text-white/40 hover:text-white/70 border border-white/15 hover:border-white/30 px-3 py-1.5 transition-colors disabled:opacity-30"
+              >
+                Select All
+              </button>
+            </div>
             <p className="text-white/30 text-[10px] mb-6">Select techniques to include in the red-team run.</p>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
               {TECHNIQUES.map(tech => {
                 const selected = selectedTechniques.includes(tech.id)
+                const { filled, empty, colorClass } = severityBar(tech.severity)
                 return (
                   <div
                     key={tech.id}
                     onClick={() => !isRunning && toggleTechnique(tech.id)}
-                    className={`border p-4 transition-all duration-200 relative ${
+                    className={`relative overflow-hidden border p-4 transition-all duration-200 ${
                       isRunning ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
                     } ${
                       selected
-                        ? 'border-red-600/60 bg-red-950/20'
+                        ? 'border-l-2 border-l-red-500 border-red-600/50 bg-red-950/20'
                         : 'border-white/10 bg-white/[0.02] hover:border-white/25'
                     }`}
                   >
+                    {selected && (
+                      <div className="absolute inset-x-0 top-0 h-[1px] bg-gradient-to-r from-transparent via-red-500/60 to-transparent" />
+                    )}
                     <div className="flex items-start justify-between mb-3">
                       <span className="text-[10px] text-red-500/70 uppercase tracking-wider font-mono">{tech.asiCode}</span>
                       {selected && (
@@ -949,34 +1059,39 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
                       )}
                     </div>
                     <div className="text-white text-xs uppercase tracking-[0.1em] font-medium mb-1">{tech.name}</div>
-                    <div className="text-white/40 text-[10px] leading-relaxed">{tech.description}</div>
-                    <div className="mt-3 flex items-center gap-2">
-                      <span className={`text-[9px] uppercase tracking-wider px-2 py-0.5 ${
-                        tech.severity === 'CRITICAL' ? 'bg-red-600/20 text-red-400' :
-                        tech.severity === 'HIGH'     ? 'bg-orange-600/20 text-orange-400' :
-                                                       'bg-white/10 text-white/40'
-                      }`}>{tech.severity}</span>
-                      <span className="text-white/20 text-[9px]">{tech.estimatedDuration}</span>
+                    <div className="text-white/40 text-[10px] leading-relaxed mb-3">{tech.description}</div>
+                    <div className="flex items-center gap-2">
+                      <span className={`font-mono text-[10px] ${colorClass}`}>
+                        {filled}<span className="text-white/15">{empty}</span>
+                      </span>
+                      <span className={`text-[9px] uppercase tracking-wider ${colorClass}`}>{tech.severity}</span>
+                      <span className="text-white/20 text-[9px] ml-auto">{tech.estimatedDuration}</span>
                     </div>
                   </div>
                 )
               })}
             </div>
 
-            <div className="mt-6 flex items-center justify-between border-t border-white/10 pt-4">
+            <div className="mt-6 flex items-center justify-between">
               <span className="text-white/30 text-[10px] uppercase tracking-wider">
                 {selectedTechniques.length} technique{selectedTechniques.length !== 1 ? 's' : ''} selected
               </span>
-              <button
-                disabled={selectedTechniques.length === 0 || isRunning}
-                onClick={startCampaign}
-                className="px-8 py-3 bg-red-600 text-white text-xs uppercase tracking-[0.2em] font-medium
-                           hover:bg-red-500 disabled:opacity-30 disabled:cursor-not-allowed transition-all duration-200
-                           animate-pulse-red"
-              >
-                {isRunning ? 'Running...' : 'Run Audit →'}
-              </button>
             </div>
+
+            <button
+              disabled={selectedTechniques.length === 0 || isRunning}
+              onClick={startCampaign}
+              className="w-full mt-3 py-4 bg-red-600 text-white text-xs uppercase tracking-[0.2em] font-medium
+                         hover:bg-red-500 disabled:opacity-30 disabled:cursor-not-allowed transition-colors duration-200"
+              style={{
+                backgroundImage: 'linear-gradient(90deg, rgba(255,255,255,0.08) 0%, rgba(255,255,255,0.08) 100%)',
+                backgroundSize: isRunning ? '100% 100%' : '0% 100%',
+                backgroundRepeat: 'no-repeat',
+                transition: 'background-size 1s ease, background-color 0.2s ease',
+              }}
+            >
+              {isRunning ? '// EXECUTING...' : '// RUN AUDIT →'}
+            </button>
           </div>
         </div>
       </section>
@@ -987,21 +1102,50 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
           // PHASE 02 — EXECUTION THEATER
         </p>
 
-        <div className="grid grid-cols-1 lg:grid-cols-5 border-t border-white/10">
+        <div className="flex flex-col lg:flex-row border-t border-white/10" style={{ minHeight: 560 }}>
 
-          {/* Canvas */}
-          <div className="lg:col-span-3 relative min-h-[500px]">
-            <canvas
-              ref={canvasRef}
-              style={{ display: 'block', width: '100%', height: '100%', minHeight: 500 }}
-            />
+          {/* Config summary */}
+          {phase !== 'idle' && (
+            <div className="lg:w-[200px] shrink-0 border-b lg:border-b-0 lg:border-r border-white/10 p-5 flex flex-col gap-4 bg-white/[0.01]">
+              <div>
+                <div className="text-white/25 text-[9px] uppercase tracking-[0.2em] mb-1">Campaign</div>
+                <div className="text-white font-mono font-bold text-sm tracking-wider">{campaignId}</div>
+              </div>
+              <div>
+                <div className="text-white/25 text-[9px] uppercase tracking-[0.2em] mb-1">Target</div>
+                <div className="text-white/60 font-mono text-[10px] break-all leading-relaxed">
+                  {targetUrl.trim() || 'localhost:9000/chat'}
+                </div>
+              </div>
+              <div>
+                <div className="text-white/25 text-[9px] uppercase tracking-[0.2em] mb-1">Techniques</div>
+                <div className="text-white/60 font-mono text-[10px]">{selectedTechniques.length} selected</div>
+              </div>
+              <div>
+                <div className="text-white/25 text-[9px] uppercase tracking-[0.2em] mb-1">Status</div>
+                <div className={`flex items-center gap-1.5 font-mono text-[10px] ${isRunning ? 'text-red-400' : 'text-white/40'}`}>
+                  {phase === 'running' ? 'RUNNING' : 'COMPLETE'}
+                  {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse-red shrink-0" />}
+                </div>
+              </div>
+              <div>
+                <div className="text-white/25 text-[9px] uppercase tracking-[0.2em] mb-1">Elapsed</div>
+                <div className="text-white/60 font-mono text-[11px]">{formatElapsed(elapsedSeconds)}</div>
+              </div>
+            </div>
+          )}
+
+          {/* SVG Topology */}
+          <div className="flex-1 relative min-h-[500px] flex items-center justify-center">
+            <AgentTopology phase={phase} statuses={agentStatuses} activeEdge={activeEdge} />
           </div>
 
           {/* Log stream */}
-          <div className="lg:col-span-2 border-t lg:border-t-0 lg:border-l border-white/10 flex flex-col">
+          <div className="lg:w-[300px] shrink-0 border-t lg:border-t-0 lg:border-l border-white/10 flex flex-col">
             <div className="flex items-center justify-between px-4 py-3 border-b border-white/10 shrink-0">
               <span className="text-white/40 text-[10px] uppercase tracking-wider">Live Output</span>
               <div className="flex items-center gap-2">
+                <span className="text-white/25 text-[9px]">[{logs.length}]</span>
                 {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse-red" />}
                 <span className="text-white/30 text-[10px]">{isRunning ? 'LIVE' : phase === 'complete' ? 'DONE' : 'IDLE'}</span>
               </div>
@@ -1014,9 +1158,10 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
                 </div>
               )}
               {logs.map((entry, i) => (
-                <div key={i} className="px-4 py-1.5 border-b border-white/[0.04] flex gap-3 items-start">
+                <div key={i} className="px-3 py-1.5 border-b border-white/[0.04] flex gap-2 items-start">
+                  <span className="text-white/15 text-[9px] font-mono shrink-0 w-5 text-right mt-0.5">{i + 1}</span>
                   <span className="text-white/25 text-[9px] font-mono shrink-0 mt-0.5">{entry.timestamp}</span>
-                  <span className={`text-[9px] uppercase tracking-wider shrink-0 mt-0.5 w-16 ${levelClass(entry.level)}`}>
+                  <span className={`text-[8px] uppercase tracking-wider shrink-0 mt-0.5 px-1 py-0.5 ${levelBadgeClass(entry.level)}`}>
                     {entry.level}
                   </span>
                   <span className="text-white/70 text-[10px] font-mono leading-relaxed">{entry.message}</span>
@@ -1040,136 +1185,149 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
             // PHASE 03 — FINDINGS REPORT
           </p>
 
-          {/* Report header */}
-          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4
-                          px-6 sm:px-10 md:px-16 lg:px-20 py-8 border-b border-white/10">
-            <div className="flex flex-col gap-1">
-              <span className="text-white/30 text-[10px] uppercase tracking-wider">Campaign</span>
-              <span className="text-white font-bold text-lg tracking-tight">{report.campaign_id}</span>
-              <span className="text-white/30 text-[10px] font-mono">run: {report.run_id}</span>
-            </div>
-            <div className="flex gap-3 flex-wrap">
-              <div className="border border-red-600/40 bg-red-950/20 px-4 py-2 flex flex-col items-center">
-                <span className="text-red-400 text-xl font-bold">{report.critical_count}</span>
-                <span className="text-red-600/60 text-[9px] uppercase tracking-wider">Critical</span>
-              </div>
-              <div className="border border-white/20 px-4 py-2 flex flex-col items-center">
-                <span className="text-white text-xl font-bold">{report.high_count}</span>
-                <span className="text-white/30 text-[9px] uppercase tracking-wider">High</span>
-              </div>
-              <div className="border border-white/10 px-4 py-2 flex flex-col items-center">
-                <span className="text-white text-xl font-bold">{report.total_findings}</span>
-                <span className="text-white/30 text-[9px] uppercase tracking-wider">Total</span>
-              </div>
-              <div className="border border-white/10 px-4 py-2 flex flex-col items-center">
-                <span className="text-white text-xl font-bold">{report.duration_seconds}s</span>
-                <span className="text-white/30 text-[9px] uppercase tracking-wider">Duration</span>
-              </div>
-              <div className="border border-white/10 px-4 py-2 flex flex-col items-center">
-                <span className="text-white/40 text-xs font-mono truncate max-w-[160px]">
-                  {targetUrl.trim() || 'HR Agent'}
-                </span>
-                <span className="text-white/30 text-[9px] uppercase tracking-wider">Target</span>
-              </div>
+          {/* Summary bar */}
+          <div className="bg-gradient-to-r from-red-950/80 to-black px-6 sm:px-10 md:px-16 lg:px-20 py-4 mt-6 border-y border-red-900/30">
+            <div className="flex flex-wrap items-center gap-3 text-xs font-mono">
+              <span className="text-white font-bold tracking-wider">CAMPAIGN {report.campaign_id}</span>
+              <span className="text-red-900">│</span>
+              <span className="text-red-400">CRITICAL: {report.critical_count}</span>
+              <span className="text-red-900">│</span>
+              <span className="text-orange-400">HIGH: {report.high_count}</span>
+              <span className="text-red-900">│</span>
+              <span className="text-white/60">TOTAL FINDINGS: {report.total_findings}</span>
+              <span className="text-red-900">│</span>
+              <span className="text-white/60">DURATION: {report.duration_seconds}s</span>
+              <span className="text-red-900">│</span>
+              <span className="text-white/60">TARGET: {targetUrl.trim() || 'localhost:9000'}</span>
             </div>
           </div>
 
-          {/* Finding cards */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 px-6 sm:px-10 md:px-16 lg:px-20 py-8">
-            {report.findings.map((finding, index) => (
-              <div
-                key={finding.finding_id}
-                className={`border p-5 relative animate-report ${
-                  finding.severity === 'CRITICAL' ? 'border-red-600/50 bg-red-950/10' : 'border-white/10 bg-white/[0.02]'
-                }`}
-                style={{ animationDelay: `${index * 100}ms` }}
-              >
-                {/* Top bar */}
-                <div className="flex items-start justify-between mb-4">
-                  <div className="flex flex-col gap-1">
-                    <span className="text-[9px] text-red-500/70 uppercase tracking-wider">{finding.asi_code}</span>
-                    <span className="text-white text-xs uppercase tracking-[0.1em] font-medium">
-                      {finding.technique_id.replace(/-/g, ' ')}
-                    </span>
-                  </div>
-                  <div className="flex flex-col items-end gap-1">
-                    <span className={`text-[9px] uppercase tracking-wider px-2 py-0.5 ${
-                      finding.severity === 'CRITICAL' ? 'bg-red-600/20 text-red-400' :
-                      finding.severity === 'HIGH'     ? 'bg-orange-600/15 text-orange-400' :
-                                                        'bg-white/10 text-white/40'
-                    }`}>{finding.severity}</span>
-                    <span className={`text-[9px] uppercase tracking-wider ${
-                      finding.verdict === 'VULNERABLE'    ? 'text-red-400' :
-                      finding.verdict === 'RESILIENT'     ? 'text-white/50' : 'text-white/30'
-                    }`}>{finding.verdict}</span>
-                  </div>
+          {/* Risk severity overview */}
+          {(() => {
+            const vulnFindings = report.findings.filter(f => f.verdict === 'VULNERABLE')
+            const critCount = vulnFindings.filter(f => f.severity === 'CRITICAL').length
+            const highCount = vulnFindings.filter(f => f.severity === 'HIGH').length
+            const medCount  = vulnFindings.filter(f => f.severity === 'MEDIUM').length
+            const lowCount  = vulnFindings.filter(f => f.severity === 'LOW').length
+            if (critCount + highCount + medCount + lowCount === 0) return null
+            return (
+              <div className="px-6 sm:px-10 md:px-16 lg:px-20 py-5 border-b border-white/10">
+                <div className="text-white/25 text-[9px] uppercase tracking-[0.2em] mb-3">Risk Severity Profile</div>
+                <div className="flex h-2 gap-0.5 max-w-[420px]">
+                  {critCount > 0 && <div className="bg-red-600" style={{ flex: critCount }} />}
+                  {highCount > 0 && <div className="bg-orange-500" style={{ flex: highCount }} />}
+                  {medCount  > 0 && <div className="bg-yellow-500" style={{ flex: medCount }} />}
+                  {lowCount  > 0 && <div className="bg-white/30" style={{ flex: lowCount }} />}
                 </div>
-
-                {/* Score bar */}
-                <div className="mb-4">
-                  <div className="flex justify-between mb-1">
-                    <span className="text-white/30 text-[9px] uppercase tracking-wider">Vulnerability Score</span>
-                    <span className="text-white/60 text-[9px] font-mono">{(finding.score * 100).toFixed(0)}%</span>
-                  </div>
-                  <div className="h-[2px] bg-white/10 w-full">
-                    <div
-                      className={`h-full transition-all duration-1000 ${finding.score > 0.7 ? 'bg-red-500' : 'bg-white/40'}`}
-                      style={{ width: `${finding.score * 100}%` }}
-                    />
-                  </div>
-                </div>
-
-                {/* Adversarial input */}
-                <div className="mb-4 border border-white/10 bg-black p-3">
-                  <div className="text-white/20 text-[9px] uppercase tracking-wider mb-2">Adversarial Input</div>
-                  <div className="text-white/60 text-[10px] font-mono leading-relaxed line-clamp-3">
-                    {finding.adversarial_input}
-                  </div>
-                </div>
-
-                {/* Target response */}
-                <div className="mb-4">
-                  <div className="text-white/20 text-[9px] uppercase tracking-wider mb-1">Target Response</div>
-                  <div className="text-white/50 text-[10px] leading-relaxed line-clamp-2">
-                    {finding.target_response_summary}
-                  </div>
-                </div>
-
-                {/* Deterministic hits */}
-                {finding.deterministic_hits.length > 0 && (
-                  <div className="mb-4 flex flex-wrap gap-1">
-                    {finding.deterministic_hits.map(hit => (
-                      <span key={hit} className="text-[9px] bg-red-950/30 border border-red-600/20 text-red-400/70 px-2 py-0.5">
-                        {hit}
-                      </span>
-                    ))}
-                  </div>
-                )}
-
-                {/* Verdict path + threshold */}
-                <div className="flex gap-4 mb-4 border-t border-white/[0.06] pt-3">
-                  <div className="flex flex-col gap-0.5">
-                    <span className="text-white/20 text-[9px] uppercase tracking-wider">Verdict Path</span>
-                    <span className="text-white/50 text-[10px] font-mono">{finding.verdict_path}</span>
-                  </div>
-                  <div className="flex flex-col gap-0.5">
-                    <span className="text-white/20 text-[9px] uppercase tracking-wider">Threshold</span>
-                    <span className="text-white/50 text-[10px] font-mono">{finding.threshold_used}</span>
-                  </div>
-                </div>
-
-                {/* Recommendation */}
-                <div className="border-t border-white/[0.06] pt-3">
-                  <div className="text-white/20 text-[9px] uppercase tracking-wider mb-1">Recommendation</div>
-                  <div className="text-white/60 text-[10px] leading-relaxed">{finding.recommendation}</div>
-                </div>
-
-                {/* Finding ID */}
-                <div className="absolute bottom-3 right-4 text-white/15 text-[9px] font-mono">
-                  {finding.finding_id}
+                <div className="flex gap-4 mt-2 flex-wrap">
+                  {critCount > 0 && <span className="text-red-500 text-[9px] font-mono">CRITICAL █ {critCount}</span>}
+                  {highCount > 0 && <span className="text-orange-400 text-[9px] font-mono">HIGH █ {highCount}</span>}
+                  {medCount  > 0 && <span className="text-yellow-400 text-[9px] font-mono">MEDIUM █ {medCount}</span>}
+                  {lowCount  > 0 && <span className="text-white/30 text-[9px] font-mono">LOW █ {lowCount}</span>}
                 </div>
               </div>
-            ))}
+            )
+          })()}
+
+          {/* Full narrative report (markdown) */}
+          {reportMarkdown && (
+            <div className="px-6 sm:px-10 md:px-16 lg:px-20 py-5 border-b border-white/10">
+              <div className="text-white/25 text-[9px] uppercase tracking-[0.2em] mb-3">Full Report (Markdown)</div>
+              <div className="border border-white/10 bg-white/[0.02] p-4 max-h-96 overflow-y-auto">
+                <pre className="text-white/50 text-[10px] leading-relaxed whitespace-pre-wrap font-mono">{reportMarkdown}</pre>
+              </div>
+            </div>
+          )}
+
+          {/* Finding cards */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 px-6 sm:px-10 md:px-16 lg:px-20 py-8">
+            {report.findings.map((finding, index) => {
+              const isExpanded = expandedFindings.has(finding.finding_id)
+              const advInput = finding.adversarial_input
+              const needsExpand = advInput.length > 80
+              const technique = TECHNIQUES.find(t => t.id === finding.technique_id)
+
+              return (
+                <div
+                  key={finding.finding_id}
+                  className="border border-white/10 bg-white/[0.02] relative animate-report"
+                  style={{
+                    animationDelay: `${index * 100}ms`,
+                    borderLeft: `4px solid ${severityBorderColor(finding.severity)}`,
+                  }}
+                >
+                  {/* Top section */}
+                  <div className="p-5 border-b border-white/[0.06]">
+                    <div className="flex items-start justify-between gap-3 mb-3">
+                      <div className="min-w-0">
+                        <div className="text-white/25 text-[10px] font-mono mb-0.5">{finding.asi_code}</div>
+                        <div className="text-white font-semibold text-xs uppercase tracking-[0.1em]">
+                          {technique?.name ?? finding.technique_id.replace(/-/g, ' ')}
+                        </div>
+                      </div>
+                      <span className={verdictPillClass(finding.verdict)}>{finding.verdict}</span>
+                    </div>
+
+                    <div>
+                      <div className="text-white/25 text-[9px] uppercase tracking-wider mb-1">Vulnerability Score</div>
+                      <div className={`font-mono text-[11px] ${
+                        finding.score > 0.7 ? 'text-red-400' : finding.score > 0.4 ? 'text-orange-400' : 'text-white/40'
+                      }`}>
+                        {scoreBlocks(finding.score)}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Adversarial input */}
+                  <div className="p-5 border-b border-white/[0.06]">
+                    <div className="text-white/20 text-[9px] uppercase tracking-wider mb-2">Adversarial Input</div>
+                    <div className="bg-black border border-white/[0.06] p-3">
+                      <span className="text-white/60 text-[10px] font-mono leading-relaxed">
+                        {isExpanded || !needsExpand ? advInput : `${advInput.slice(0, 80)}...`}
+                      </span>
+                      {needsExpand && (
+                        <button
+                          onClick={() => toggleFindingExpanded(finding.finding_id)}
+                          className="block mt-1 text-[9px] text-white/30 hover:text-white/60 font-mono underline transition-colors"
+                        >
+                          [{isExpanded ? 'collapse' : 'expand'}]
+                        </button>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Target response + deterministic hits */}
+                  <div className="p-5 border-b border-white/[0.06]">
+                    <div className="text-white/20 text-[9px] uppercase tracking-wider mb-1">Target Response</div>
+                    <div className="text-white/50 text-[10px] leading-relaxed mb-3">{finding.target_response_summary}</div>
+                    {finding.deterministic_hits.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {finding.deterministic_hits.map(hit => (
+                          <span key={hit} className="text-[9px] bg-red-950/30 border border-red-600/20 text-red-400/70 px-2 py-0.5 font-mono">
+                            {hit}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Recommendation */}
+                  <div className="p-5 border-b border-white/[0.06]">
+                    <div className="text-white/20 text-[9px] uppercase tracking-wider mb-2">Recommendation</div>
+                    <div className="text-white/50 text-[10px] leading-relaxed italic">{finding.recommendation}</div>
+                  </div>
+
+                  {/* Footer */}
+                  <div className="px-5 py-3 flex items-center justify-between gap-2 flex-wrap">
+                    <span className="text-white/15 text-[9px] font-mono">{finding.finding_id}</span>
+                    <div className="flex gap-4">
+                      <span className="text-white/25 text-[9px] font-mono">path: {finding.verdict_path}</span>
+                      <span className="text-white/25 text-[9px] font-mono">threshold: {finding.threshold_used}</span>
+                    </div>
+                  </div>
+                </div>
+              )
+            })}
           </div>
 
           {/* Report footer */}
@@ -1177,7 +1335,13 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
             <div className="text-white/20 text-[10px] uppercase tracking-wider">
               Agent Canary · Campaign {report.campaign_id} · {new Date().toISOString().slice(0, 10)}
             </div>
-            <div className="flex gap-3">
+            <div className="flex gap-3 flex-wrap">
+              <button
+                onClick={copySummary}
+                className="px-5 py-2.5 border border-white/20 text-white/60 text-[10px] uppercase tracking-[0.15em] hover:border-white/40 hover:text-white transition-all duration-200"
+              >
+                Copy Summary
+              </button>
               <button
                 onClick={exportJSON}
                 className="px-5 py-2.5 border border-white/20 text-white/60 text-[10px] uppercase tracking-[0.15em] hover:border-white/40 hover:text-white transition-all duration-200"

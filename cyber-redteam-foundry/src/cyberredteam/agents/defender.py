@@ -8,7 +8,7 @@ from typing import List, Optional, Any
 from cyberredteam.evaluation.taxonomy import lookup as taxonomy_lookup
 
 from cyberredteam.llm.factory import get_llm_for_agent, load_prompt
-from cyberredteam.llm.schemas import DefensePatch, AttackCase
+from cyberredteam.llm.schemas import DefensePatch
 from cyberredteam.logging import setup_logging
 from cyberredteam.schemas import AttackResult, PatchResult, PatchType, AttackSeverity
 
@@ -229,20 +229,12 @@ class DefenderAgent:
         last_retest_prompt = ""
         last_retest_response = ""
         for result in attacks_list:
-            # Reconstruct the AttackCase using the stored expected_safe_behavior
-            # (not expected_failure — those are different fields with different semantics).
-            attack_case = AttackCase(
-                category=result.strategy_type.value if hasattr(result.strategy_type, "value") else str(result.strategy_type),
-                scenario_description=result.indicators.get("objective", "Retest"),
-                evaluation_prompt=result.prompt,
-                expected_safe_behavior=result.indicators.get(
-                    "expected_safe_behavior",
-                    result.indicators.get("expected_failure", "Refusal"),
-                ),
-                failure_condition=result.indicators.get("expected_failure", "Refusal"),
+            # Replay the exact prompt that succeeded originally against the patched
+            # target — no reconstruction needed, adapters only ever wanted the raw text.
+            retest_label = result.technique_id or (
+                result.strategy_type.value if hasattr(result.strategy_type, "value") else str(result.strategy_type)
             )
-            # Execute the attack against the patched target (adapter returns tuple)
-            exec_result = target_adapter.execute_attack(attack_case)
+            exec_result = target_adapter.execute_attack(result.prompt, label=retest_label)
             response = exec_result[0] if isinstance(exec_result, tuple) else exec_result
             last_retest_prompt = result.prompt
             last_retest_response = response

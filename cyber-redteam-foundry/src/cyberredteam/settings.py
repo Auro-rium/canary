@@ -53,7 +53,10 @@ class Settings(BaseSettings):
     report_format: str = "markdown"  # markdown | json | both
 
     # Run Configuration
+    # Total attempts per LLM call (including the first), not retries-after-first.
+    # Applied via LangChain's Runnable.with_retry() in llm/bedrock.py.
     max_retries: int = 3
+    max_concurrent_runs: int = 3
     timeout_seconds: int = 30
     deterministic_seed: int = 42
 

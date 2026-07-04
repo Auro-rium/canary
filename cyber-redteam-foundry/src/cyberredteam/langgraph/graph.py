@@ -2,9 +2,11 @@
 
 Builds a ``StateGraph[RedTeamState]`` with:
 
-*  5 nodes: strategist → attacker → evaluator → (defender | reporter)
+*  5 nodes: strategist → attacker_branch (parallel fan-out) → evaluator → (defender | reporter)
+*  strategist dispatches up to 3 parallel attacker_branch invocations via Send(),
+   one randomly-chosen technique each — LangGraph waits for all of them before evaluator runs
 *  Conditional edge from evaluator (vulnerability_found → defender, else reporter)
-*  Iterative loop: defender → (attacker if iterations remain, else reporter)
+*  Iterative loop: defender → (strategist, to re-dispatch a fresh branch set, if iterations remain, else reporter)
 *  SQLite-backed checkpointing for persistence and resumability
 *  Auto-generated Mermaid diagram
 """
@@ -14,7 +16,8 @@ from typing import Literal, Optional
 from langgraph.graph import END, StateGraph
 
 from cyberredteam.langgraph.nodes import (
-    node_attacker,
+    dispatch_attacker_branches,
+    node_attacker_branch,
     node_defender,
     node_evaluator,
     node_reporter,
@@ -46,21 +49,22 @@ def should_patch(state: RedTeamState) -> Literal["defender", "reporter"]:
     return "defender" if state["vulnerability_found"] else "reporter"
 
 
-def should_iterate(state: RedTeamState) -> Literal["attacker", "reporter"]:
-    """Route back to attacker if iterations remain, else to reporter.
+def should_iterate(state: RedTeamState) -> Literal["strategist", "reporter"]:
+    """Route back to strategist (to re-dispatch a fresh branch set) if
+    iterations remain, else to reporter.
 
     Args:
         state: Current RedTeamState
 
     Returns:
-        Next node: ``"attacker"`` or ``"reporter"``
+        Next node: ``"strategist"`` or ``"reporter"``
     """
     logger.info(
         f"[Graph] Routing after defender: "
         f"should_continue={state['should_continue_iterating']}, "
         f"iteration={state['iteration']}/{state['max_iterations']}"
     )
-    return "attacker" if state["should_continue_iterating"] else "reporter"
+    return "strategist" if state["should_continue_iterating"] else "reporter"
 
 
 # ---------------------------------------------------------------------------
@@ -77,7 +81,7 @@ def build_redteam_graph() -> StateGraph:
 
     # Add nodes
     graph.add_node("strategist", node_strategist)
-    graph.add_node("attacker", node_attacker)
+    graph.add_node("attacker_branch", node_attacker_branch)
     graph.add_node("evaluator", node_evaluator)
     graph.add_node("defender", node_defender)
     graph.add_node("reporter", node_reporter)
@@ -85,9 +89,12 @@ def build_redteam_graph() -> StateGraph:
     # Entry point
     graph.set_entry_point("strategist")
 
-    # Linear edges
-    graph.add_edge("strategist", "attacker")
-    graph.add_edge("attacker", "evaluator")
+    # Parallel fan-out: strategist → up to 3 concurrent attacker_branch invocations,
+    # one randomly-chosen technique each. LangGraph waits for all Send-spawned
+    # branches to complete before evaluator runs (superstep boundary) — no manual
+    # join/barrier logic needed.
+    graph.add_conditional_edges("strategist", dispatch_attacker_branches)
+    graph.add_edge("attacker_branch", "evaluator")
 
     # Conditional: evaluator → defender (vuln found) | reporter (clean)
     graph.add_conditional_edges(
@@ -99,12 +106,13 @@ def build_redteam_graph() -> StateGraph:
         },
     )
 
-    # Iterative loop: defender → attacker (if iterations remain) | reporter
+    # Iterative loop: defender → strategist, to re-dispatch a fresh parallel
+    # branch set (if iterations remain) | reporter
     graph.add_conditional_edges(
         "defender",
         should_iterate,
         {
-            "attacker": "attacker",
+            "strategist": "strategist",
             "reporter": "reporter",
         },
     )
@@ -179,21 +187,21 @@ def _fallback_mermaid() -> str:
     return """\
 graph TD
     START([START])
-    strategist["<b>Strategist</b><br/>Select attack families"]
-    attacker["<b>Attacker</b><br/>Execute attacks"]
+    strategist["<b>Strategist</b><br/>Randomly dispatch ≤3 techniques"]
+    attacker_branch["<b>Attacker Branch</b><br/>Execute one attack (parallel ×≤3)"]
     evaluator["<b>Evaluator</b><br/>Score & assess"]
     defender["<b>Defender</b><br/>Plan & apply patches"]
     reporter["<b>Reporter</b><br/>Generate report"]
     END_NODE([END])
 
     START --> strategist
-    strategist --> attacker
-    attacker --> evaluator
+    strategist -.->|Send x≤3, random| attacker_branch
+    attacker_branch --> evaluator
 
     evaluator -->|vulnerability_found| defender
     evaluator -->|no vulnerabilities| reporter
 
-    defender -->|should_continue_iterating| attacker
+    defender -->|should_continue_iterating| strategist
     defender -->|max_iterations reached| reporter
 
     reporter --> END_NODE
@@ -201,7 +209,7 @@ graph TD
     style START fill:#90EE90
     style END_NODE fill:#FFB6C6
     style strategist fill:#87CEEB
-    style attacker fill:#87CEEB
+    style attacker_branch fill:#87CEEB
     style evaluator fill:#87CEEB
     style defender fill:#FFD700
     style reporter fill:#DDA0DD
