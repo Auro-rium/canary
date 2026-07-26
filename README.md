@@ -10,6 +10,10 @@
 
 Autonomous AI red-team platform. Point it at any HTTP-based AI agent, and a 4-agent LangGraph pipeline attacks it, evaluates findings, and streams live results to a React dashboard. Vulnerabilities are triaged manually — no auto-remediation.
 
+![Agent Canary demo: launching a campaign, live SSE agent topology, findings report, Findings page, and the Console](demo/demo.gif)
+
+Full-length recording: [demo/demo.mp4](demo/demo.mp4)
+
 ---
 
 ## Repository Layout
@@ -168,16 +172,6 @@ React 19 SPA served on port **8000**, four pages:
 | Findings | Paginated findings table with verdict badges, severity, status lifecycle controls. |
 | Red Team | Live incident feed, run detail panel, strategy labels. |
 | Console | Chat-centric command interface for driving campaigns and querying findings/coverage/trends. |
-
----
-
-## Demo
-
-A real end-to-end run against the bundled `target_agent` stub — launching a campaign from Run Audit, watching the live agent topology and log stream over SSE, the findings report, then a look at the Findings page and the chat-driven Console.
-
-![Agent Canary demo: launching a campaign, live SSE agent topology, findings report, Findings page, and the Console](demo/demo.gif)
-
-Full-length recording (with audio-free real-time pacing): [demo/demo.mp4](demo/demo.mp4)
 
 ---
 
