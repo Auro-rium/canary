@@ -175,7 +175,9 @@ React 19 SPA served on port **8000**, four pages:
 
 A real end-to-end run against the bundled `target_agent` stub — launching a campaign from Run Audit, watching the live agent topology and log stream over SSE, the findings report, then a look at the Findings page and the chat-driven Console.
 
-https://github.com/Auro-rium/canary/raw/main/demo/demo.mp4
+<video src="https://github.com/Auro-rium/canary/raw/main/demo/demo.mp4" controls width="100%">
+  Your browser doesn't support inline video — <a href="https://github.com/Auro-rium/canary/raw/main/demo/demo.mp4">download the demo</a> instead.
+</video>
 
 ---
 
