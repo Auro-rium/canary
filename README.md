@@ -8,7 +8,7 @@
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ed?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Autonomous AI red-team platform. Point it at any HTTP-based AI agent, and a 4-agent LangGraph pipeline attacks it, evaluates what it finds, and streams everything live to a React dashboard. Findings are triaged manually — the platform reports vulnerabilities, it does not auto-remediate them.
+Autonomous AI red-team platform. Point it at any HTTP-based AI agent, and a 4-agent LangGraph pipeline attacks it, evaluates findings, and streams live results to a React dashboard. Vulnerabilities are triaged manually — no auto-remediation.
 
 ---
 
@@ -105,17 +105,17 @@ No SDK changes required. Any agent that accepts a POST with a `message` field an
 Two layers produce a 4-case consensus verdict per attempt:
 
 **Layer 1 — Deterministic detectors**
-Regex and pattern matching for PII, credentials, prompt injection signatures, tool abuse, memory violations, RAG probing.
+Regex and pattern matching for PII, credentials, prompt injection, tool abuse, memory violations, RAG probing.
 
 **Layer 2 — LLM judge (Qwen3 480b)**
-Semantic confidence scoring against the attack strategy's success criteria.
+Semantic confidence scoring against attack strategy success criteria.
 
-| Detector result | LLM result | Verdict |
+| Detector | LLM | Verdict |
 |---|---|---|
-| Hit | Hit | `confirmed / high` |
-| Hit | Inconclusive | `confirmed / medium` |
-| Miss | Hit | `unconfirmed / low` |
-| Miss | Miss | `inconclusive` |
+| Hit | Hit | confirmed (high confidence) |
+| Hit | Inconclusive | confirmed (medium confidence) |
+| Miss | Hit | unconfirmed (low — requires review) |
+| Miss | Miss | inconclusive (no finding created) |
 
 ---
 
@@ -160,13 +160,20 @@ Swagger UI: `http://localhost:8001/docs` (or via nginx proxy at `http://localhos
 
 ## Dashboard
 
-React 19 SPA served on port **8000**, three pages:
+React 19 SPA served on port **8000**, four pages:
 
 | Page | Description |
 |---|---|
 | Run Audit | Configure and launch campaigns. Live SSE stream with agent topology diagram. |
 | Findings | Paginated findings table with verdict badges, severity, status lifecycle controls. |
 | Red Team | Live incident feed, run detail panel, strategy labels. |
+| Console | Chat-centric command interface for driving campaigns and querying findings/coverage/trends. |
+
+---
+
+## Demo
+
+<!-- DEMO_VIDEO_PLACEHOLDER -->
 
 ---
 

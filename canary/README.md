@@ -7,7 +7,7 @@
 [![nginx](https://img.shields.io/badge/nginx-1.25--alpine-009639.svg)](https://nginx.org/)
 [![Docker](https://img.shields.io/badge/Docker-multi--stage-2496ed.svg)](https://www.docker.com/)
 
-Real-time frontend dashboard for the **Cyber Red Team Foundry** backend. Communicates over REST and Server-Sent Events. Built with React 19 + TypeScript + Vite 8, styled with pure TailwindCSS and JetBrains Mono typography, and served via nginx in production.
+Real-time dashboard for the **Cyber Red Team Foundry** backend, built with React 19 + TypeScript + Vite 8. Styled with TailwindCSS and JetBrains Mono, served via nginx, communicating over REST and Server-Sent Events.
 
 ---
 
@@ -17,12 +17,11 @@ Real-time frontend dashboard for the **Cyber Red Team Foundry** backend. Communi
 
 Campaign launch and live monitoring.
 
-- Configure target URL, attack strategy, and intensity level.
-- Submits `POST /api/campaigns/run` and opens an SSE stream to receive live events.
-- Renders a 5-node agent topology diagram (strategist, attacker, evaluator, target, findings store) with animated edges during an active run.
-- Three sequential phases: **CONFIG → RUNNING → FINDINGS REPORT**.
-- Final report surfaces `campaign_id`, `run_id`, critical/high/total finding counts, duration, and target.
-- Falls back to a client-side mock simulation when `VITE_API_TOKEN` is not set.
+- Submits `POST /api/campaigns/run` with target URL, attack strategies, and intensity.
+- Opens SSE stream for live events; renders 4-node agent topology with animated edges.
+- Three phases: **CONFIG → RUNNING → REPORT**.
+- Final report: campaign_id, run_id, finding counts (by severity), duration, target.
+- Mock simulation mode when `VITE_API_TOKEN` is not set.
 
 **SSE event types** emitted by `POST /api/campaigns/run`:
 
@@ -37,42 +36,37 @@ Campaign launch and live monitoring.
 
 Paginated findings review with status management.
 
-- Lists findings from `GET /api/findings` with filter controls: `severity`, `status`, `asi_class`.
-- Each card includes a `VerdictBadge` that lazy-fetches `GET /api/findings/{id}` and renders verdict, confidence score, and verdict path.
-- Status transition panel posts `PUT /api/findings/{id}/status` with `reviewer_id` and `rationale`.
-- Attempts table sourced from `GET /api/findings/{id}/attempts`.
+- Filters by `severity`, `status`, `asi_class`.
+- Verdict badges lazy-fetch details and render confidence score + verdict path.
+- Status transitions (`PUT /api/findings/{id}/status`) require `reviewer_id` + `rationale`.
+- Attempts table from `GET /api/findings/{id}/attempts`.
 
 ### RedTeamPage — `/redteam`
 
 Live incident feed and run detail panel.
 
-- Polls `GET /api/incidents` every 30 seconds for the live incident feed.
-- Row click opens a detail panel sourced from `GET /api/runs/{run_id}`.
-- Attacks table shows humanized strategy labels and 8-character `finding_id` values.
-- Finding IDs link back to FindingsPage for cross-reference.
+- Polls `GET /api/incidents` every 30 seconds.
+- Row click opens detail panel from `GET /api/runs/{run_id}`.
+- Attacks table with humanized strategy labels and finding IDs (linkable to FindingsPage).
 
 ### Console — `/console`
 
-Chat-centric command interface for driving a campaign and querying the backend, alongside a live agent-graph view. Sits next to the existing pages rather than replacing them.
+Chat command interface for driving campaigns and querying results, with live agent-graph visualization.
 
-- Three-panel layout: run history/navigation sidebar, chat, and a live agent graph (the same topology view used by RunAuditPage).
-- Pattern-matched commands, no LLM involved:
+- Three-panel layout: run history sidebar, chat panel, live agent graph.
+- Pattern-matched commands (no LLM):
 
   | Command | Effect |
   |---|---|
-  | `connect <url>` | Set the target endpoint |
-  | `run <slug,slug>` / `run all` | Start a campaign via `POST /api/campaigns/run` (SSE) |
-  | `show findings` | `GET /api/findings` |
-  | `show incidents` | `GET /api/incidents` |
-  | `show coverage <target_id>` | `GET /api/targets/{id}/coverage` |
-  | `show trends <target_id>` | `GET /api/targets/{id}/trends` |
-  | `show run <run_id>` | `GET /api/runs/{run_id}` |
-  | `re-run last` | Replay the last campaign's target/techniques |
-  | `export` | Download the last completed report as JSON |
-  | `help` | List commands |
+  | `connect <url>` | Set target endpoint |
+  | `run <slug,slug>` \| `run all` | Launch campaign (SSE) |
+  | `show findings` \| `incidents` \| `coverage` \| `trends` \| `run <id>` | Query endpoints |
+  | `re-run last` | Replay previous campaign |
+  | `export` | Download report as JSON |
+  | `help` | List all commands |
 
-- Completed campaign reports are saved to IndexedDB (via `idb-keyval`) so run history survives a page reload.
-- Console state (chat log, campaign phase, agent statuses, findings) is held in a `zustand` store (`src/store/useConsoleStore.ts`), separate from the local component state used by the other pages.
+- Run history persisted to IndexedDB via `idb-keyval`.
+- State managed by `zustand` store (`src/store/useConsoleStore.ts`).
 
 ---
 
@@ -165,7 +159,7 @@ npm install
 npm run dev        # http://localhost:5173
 ```
 
-Create `.env.local` and set `VITE_API_TOKEN` to authenticate against a running backend instance. Without a token, `RunAuditPage` runs the built-in client-side mock simulation instead.
+Create `.env.local` with `VITE_API_TOKEN` to authenticate against a running backend. Without it, pages default to built-in mock simulation.
 
 ---
 
@@ -231,5 +225,4 @@ All requests are authenticated with `Authorization: Bearer <VITE_API_TOKEN>`. Ev
 | `GET` | `/api/targets/{id}/coverage` | Console (`show coverage`) |
 | `GET` | `/api/targets/{id}/trends` | Console (`show trends`) |
 | `GET` | `/api/incidents` | RedTeamPage, Console (`show incidents`) |
-| `GET` | `/api/runs/{run_id}` | RedTeamPage |
 | `POST` | `/api/campaigns/run` (SSE) | RunAuditPage, Console (`run`) |
