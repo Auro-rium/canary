@@ -1,16 +1,11 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Navbar from '../components/Navbar'
-
-// Backend connection — empty string = relative URL, handled by nginx proxy
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const _env = (import.meta as any).env as Record<string, string>
-const API_BASE  = _env.VITE_API_URL  || ''
-const API_TOKEN = _env.VITE_API_TOKEN || ''
+import AgentGraphPanel from '../components/console/AgentGraphPanel'
+import { API_TOKEN, getRunReportMarkdown, runCampaignSSE } from '../lib/api'
+import { TECHNIQUES } from '../lib/techniques'
+import type { Phase, AgentStatus, LogEntry, FindingPayload, CompletePayload } from '../lib/types'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-
-type Phase = 'idle' | 'running' | 'complete'
-type AgentStatus = 'idle' | 'active' | 'processing' | 'done' | 'error'
 
 interface AgentDef {
   id: string
@@ -20,108 +15,8 @@ interface AgentDef {
   y: number
 }
 
-interface LogEntry {
-  timestamp: string
-  level: 'SYSTEM' | 'ATTACK' | 'EVAL' | 'FINDING' | 'ERROR'
-  message: string
-}
-
-interface FindingPayload {
-  finding_id: string
-  technique_id: string
-  asi_code: string
-  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW'
-  verdict: 'VULNERABLE' | 'RESILIENT' | 'INCONCLUSIVE'
-  verdict_path: 'consensus' | 'heuristic_fallback'
-  score: number
-  adversarial_input: string
-  target_response_summary: string
-  deterministic_hits: string[]
-  threshold_used: number
-  recommendation: string
-}
-
-interface CompletePayload {
-  campaign_id: string
-  run_id: string
-  total_findings: number
-  critical_count: number
-  high_count: number
-  duration_seconds: number
-  findings: FindingPayload[]
-}
-
-// ─── Constants ────────────────────────────────────────────────────────────────
-
-const TECHNIQUES = [
-  {
-    id: 'prompt-injection',
-    asiCode: 'ASI-01',
-    name: 'Prompt Injection',
-    description: 'Adversarial inputs overriding system instructions via user turn manipulation.',
-    severity: 'CRITICAL' as const,
-    estimatedDuration: '~45s',
-  },
-  {
-    id: 'memory-poisoning',
-    asiCode: 'ASI-02',
-    name: 'Memory Poisoning',
-    description: 'Corrupting agent long-term memory stores to alter future reasoning chains.',
-    severity: 'CRITICAL' as const,
-    estimatedDuration: '~60s',
-  },
-  {
-    id: 'tool-abuse',
-    asiCode: 'ASI-03',
-    name: 'Tool & Plugin Abuse',
-    description: 'Exploiting tool-call interfaces to invoke unintended external actions.',
-    severity: 'HIGH' as const,
-    estimatedDuration: '~30s',
-  },
-  {
-    id: 'privilege-escalation',
-    asiCode: 'ASI-04',
-    name: 'Privilege Escalation',
-    description: 'Manipulating agent context to exceed authorized permission boundaries.',
-    severity: 'CRITICAL' as const,
-    estimatedDuration: '~50s',
-  },
-  {
-    id: 'goal-hijacking',
-    asiCode: 'ASI-05',
-    name: 'Goal Hijacking',
-    description: 'Redirecting agent objective mid-session via indirect instruction channels.',
-    severity: 'HIGH' as const,
-    estimatedDuration: '~40s',
-  },
-  {
-    id: 'data-exfiltration',
-    asiCode: 'ASI-06',
-    name: 'Data Exfiltration',
-    description: 'Probing agent for leakage of system prompts, PII, or internal context.',
-    severity: 'HIGH' as const,
-    estimatedDuration: '~35s',
-  },
-  {
-    id: 'supply-chain',
-    asiCode: 'ASI-08',
-    name: 'Supply Chain Attack',
-    description: 'Injecting malicious content via third-party tool responses or RAG sources.',
-    severity: 'HIGH' as const,
-    estimatedDuration: '~55s',
-  },
-  {
-    id: 'denial-of-service',
-    asiCode: 'ASI-09',
-    name: 'Agent DoS',
-    description: 'Overloading agent reasoning loops via recursive or infinitely deferred tasks.',
-    severity: 'MEDIUM' as const,
-    estimatedDuration: '~25s',
-  },
-]
-
 // Exported (not just const) so the canonical topology data stays defined here even though
-// the SVG view (AgentTopology, below) uses its own independent layout constants.
+// the SVG view (AgentGraphPanel, in components/console) uses its own independent layout constants.
 export const AGENTS: AgentDef[] = [
   { id: 'orchestrator', label: 'Orchestrator',  role: 'control',   x: 0.5,  y: 0.12 },
   { id: 'strategist',   label: 'Strategist',    role: 'control',   x: 0.2,  y: 0.12 },
@@ -253,257 +148,6 @@ function makeMockFindings(techniques: string[], campaignId: string): FindingPayl
   return results
 }
 
-// ─── SVG agent topology ────────────────────────────────────────────────────────
-
-interface TopoProps {
-  phase: Phase
-  statuses: Record<string, AgentStatus>
-  activeEdge: string | null
-}
-
-const NODE_R = 32
-
-type TopoNode = {
-  cx: number
-  cy: number
-  label: string
-  color: string
-  rect?: { w: number; h: number }
-  abbrev?: string
-}
-
-const TOPO_NODES: Record<string, TopoNode> = {
-  orchestrator: { cx: 400, cy: 55,  label: 'ORCHESTRATOR',   color: '#ffffff', abbrev: 'ORC' },
-  strategist:   { cx: 150, cy: 165, label: 'STRATEGIST',     color: '#a78bfa', abbrev: 'STR' },
-  evaluator:    { cx: 400, cy: 165, label: 'EVALUATOR',      color: '#60a5fa', abbrev: 'EVL' },
-  attacker:     { cx: 150, cy: 310, label: 'ATTACKER',       color: '#ef4444', abbrev: 'ATK' },
-  target:       { cx: 400, cy: 310, label: 'TARGET',         color: '#f59e0b', rect: { w: 90, h: 36 } },
-  reporter:     { cx: 650, cy: 310, label: 'REPORTER',       color: '#c084fc', abbrev: 'RPT' },
-  findings:     { cx: 400, cy: 440, label: 'FINDINGS STORE', color: '#6b7280', rect: { w: 110, h: 28 } },
-}
-
-const TOPO_EDGES: { from: string; to: string }[] = [
-  { from: 'orchestrator', to: 'strategist' },
-  { from: 'orchestrator', to: 'evaluator' },
-  { from: 'strategist',   to: 'attacker' },
-  { from: 'attacker',     to: 'target' },
-  { from: 'evaluator',    to: 'target' },
-  { from: 'evaluator',    to: 'findings' },
-  { from: 'evaluator',    to: 'reporter' },
-  { from: 'reporter',     to: 'findings' },
-]
-
-const STATUS_COLORS: Record<AgentStatus, string> = {
-  idle:       'rgba(255,255,255,0.2)',
-  active:     'rgba(255,255,255,0.85)',
-  processing: '#ef4444',
-  done:       'rgba(255,255,255,0.35)',
-  error:      '#ef4444',
-}
-
-const ARROW_IDS: Record<string, string> = {
-  '#ffffff': 'arr-ffffff',
-  '#a78bfa': 'arr-a78bfa',
-  '#60a5fa': 'arr-60a5fa',
-  '#ef4444': 'arr-ef4444',
-  '#f59e0b': 'arr-f59e0b',
-  '#c084fc': 'arr-c084fc',
-  '#6b7280': 'arr-6b7280',
-}
-
-function getNodeEndpoints(fromId: string, toId: string): { sx: number; sy: number; ex: number; ey: number } {
-  const from = TOPO_NODES[fromId]
-  const to   = TOPO_NODES[toId]
-  const dx   = to.cx - from.cx
-  const dy   = to.cy - from.cy
-  const dist = Math.sqrt(dx * dx + dy * dy) || 1
-  const ux   = dx / dist
-  const uy   = dy / dist
-
-  let sx: number, sy: number
-  if (from.rect) {
-    const { w, h } = from.rect
-    const tx = ux !== 0 ? (w / 2) / Math.abs(ux) : Infinity
-    const ty = uy !== 0 ? (h / 2) / Math.abs(uy) : Infinity
-    const t  = Math.min(tx, ty)
-    sx = from.cx + ux * t
-    sy = from.cy + uy * t
-  } else {
-    sx = from.cx + ux * NODE_R
-    sy = from.cy + uy * NODE_R
-  }
-
-  let ex: number, ey: number
-  if (to.rect) {
-    const { w, h } = to.rect
-    const tx = ux !== 0 ? (w / 2) / Math.abs(ux) : Infinity
-    const ty = uy !== 0 ? (h / 2) / Math.abs(uy) : Infinity
-    const t  = Math.min(tx, ty)
-    ex = to.cx - ux * t
-    ey = to.cy - uy * t
-  } else {
-    ex = to.cx - ux * NODE_R
-    ey = to.cy - uy * NODE_R
-  }
-
-  return { sx, sy, ex, ey }
-}
-
-function buildEdgePath(fromId: string, toId: string): string {
-  // evaluator→findings is routed as a curve so it doesn't cross through the target node
-  if (fromId === 'evaluator' && toId === 'findings') {
-    const evalNode = TOPO_NODES.evaluator
-    const findNode = TOPO_NODES.findings
-    const sx = evalNode.cx
-    const sy = evalNode.cy + NODE_R
-    const ex = findNode.cx
-    const ey = findNode.cy - findNode.rect!.h / 2
-    return `M ${sx} ${sy} C 490 280 490 400 ${ex} ${ey}`
-  }
-  const { sx, sy, ex, ey } = getNodeEndpoints(fromId, toId)
-  return `M ${sx} ${sy} L ${ex} ${ey}`
-}
-
-function AgentTopology({ phase, statuses, activeEdge }: TopoProps) {
-  const nodeIds = Object.keys(TOPO_NODES)
-
-  return (
-    <svg viewBox="0 0 800 520" className="w-full h-full" style={{ display: 'block', minHeight: 500 }}>
-      <defs>
-        <filter id="node-glow" x="-60%" y="-60%" width="220%" height="220%">
-          <feGaussianBlur stdDeviation="6" result="blur" in="SourceGraphic" />
-          <feMerge>
-            <feMergeNode in="blur" />
-            <feMergeNode in="SourceGraphic" />
-          </feMerge>
-        </filter>
-        {[
-          ['arr-inactive', 'rgba(255,255,255,0.1)'],
-          ['arr-ffffff', '#ffffff'],
-          ['arr-a78bfa', '#a78bfa'],
-          ['arr-60a5fa', '#60a5fa'],
-          ['arr-ef4444', '#ef4444'],
-          ['arr-f59e0b', '#f59e0b'],
-          ['arr-c084fc', '#c084fc'],
-          ['arr-6b7280', '#6b7280'],
-        ].map(([id, color]) => (
-          <marker key={id} id={id} markerWidth={8} markerHeight={7} refX={8} refY={3.5} orient="auto" markerUnits="userSpaceOnUse">
-            <path d="M 0 0 L 8 3.5 L 0 7 Z" fill={color} />
-          </marker>
-        ))}
-      </defs>
-
-      {/* Edges */}
-      {TOPO_EDGES.map(({ from, to }) => {
-        const edgeKey   = `${from}->${to}`
-        const isActive  = activeEdge === edgeKey
-        const srcColor  = TOPO_NODES[from]?.color ?? '#ffffff'
-        const markerId  = isActive ? (ARROW_IDS[srcColor] ?? 'arr-inactive') : 'arr-inactive'
-        const edgePath  = buildEdgePath(from, to)
-
-        return (
-          <g key={edgeKey} opacity={phase === 'idle' ? 0.4 : 1}>
-            <path
-              d={edgePath}
-              fill="none"
-              stroke={isActive ? srcColor : 'rgba(255,255,255,0.08)'}
-              strokeWidth={isActive ? 1.5 : 1}
-              markerEnd={`url(#${markerId})`}
-            />
-            {isActive && (
-              <circle r={4} fill={srcColor} opacity={0.9}>
-                <animateMotion dur="1.2s" repeatCount="indefinite" path={edgePath} />
-              </circle>
-            )}
-          </g>
-        )
-      })}
-
-      {/* Nodes */}
-      {nodeIds.map(id => {
-        const node = TOPO_NODES[id]
-        const status: AgentStatus = statuses[id] ?? 'idle'
-        const isActive     = status === 'active'
-        const isProcessing = status === 'processing'
-        const isDone       = status === 'done'
-        const isLit        = isActive || isProcessing
-        const { cx, cy, label, color, rect, abbrev } = node
-        const strokeColor = isLit ? color : isDone ? 'rgba(255,255,255,0.2)' : 'rgba(255,255,255,0.15)'
-        const fillColor   = isLit ? `${color}1A` : '#000000'
-        const statusColor = STATUS_COLORS[status]
-        const labelY  = rect ? cy + rect.h / 2 + 14 : cy + NODE_R + 14
-        const statusY = rect ? cy + rect.h / 2 + 26 : cy + NODE_R + 26
-
-        return (
-          <g key={id} opacity={phase === 'idle' ? 0.35 : 1}>
-            {isProcessing && !rect && (
-              <circle cx={cx} cy={cy} r={NODE_R + 10} fill="none" stroke={color} strokeOpacity={0.55} strokeWidth={1.5} strokeDasharray="20 10">
-                <animateTransform attributeName="transform" type="rotate" from={`0 ${cx} ${cy}`} to={`360 ${cx} ${cy}`} dur="2.5s" repeatCount="indefinite" />
-              </circle>
-            )}
-
-            {rect ? (
-              <rect
-                x={cx - rect.w / 2} y={cy - rect.h / 2}
-                width={rect.w} height={rect.h}
-                fill={fillColor}
-                stroke={strokeColor}
-                strokeWidth={isLit ? 1.5 : 1}
-                strokeDasharray={id === 'target' ? '5 3' : '0'}
-                filter={isLit ? 'url(#node-glow)' : undefined}
-              />
-            ) : (
-              <circle
-                cx={cx} cy={cy} r={NODE_R}
-                fill={fillColor}
-                stroke={strokeColor}
-                strokeWidth={1.5}
-                filter={isLit ? 'url(#node-glow)' : undefined}
-              />
-            )}
-
-            {isDone && !rect && (
-              <path
-                d={`M ${cx - 9} ${cy} L ${cx - 3} ${cy + 7} L ${cx + 10} ${cy - 8}`}
-                fill="none" stroke="rgba(255,255,255,0.45)" strokeWidth={1.5} strokeLinecap="round"
-              />
-            )}
-
-            {!isDone && !rect && abbrev && (
-              <text x={cx} y={cy + 3} textAnchor="middle" fontSize={8} fontFamily="'JetBrains Mono', monospace" fontWeight="bold" fill={isLit ? color : 'rgba(255,255,255,0.35)'}>
-                {abbrev}
-              </text>
-            )}
-
-            {rect && (
-              <text x={cx} y={cy + 3} textAnchor="middle" fontSize={9} fontFamily="'JetBrains Mono', monospace" fill={isLit ? color : 'rgba(255,255,255,0.6)'}>
-                {label}
-              </text>
-            )}
-
-            {!rect && (
-              <text x={cx} y={labelY} textAnchor="middle" fontSize={9} fontFamily="'JetBrains Mono', monospace" fill="rgba(255,255,255,0.7)">
-                {label}
-              </text>
-            )}
-
-            <circle cx={cx - 22} cy={statusY - 2} r={2.5} fill={statusColor} />
-            <text x={cx - 16} y={statusY + 1} fontSize={7} fontFamily="'JetBrains Mono', monospace" fill={statusColor}>
-              {status.toUpperCase()}
-            </text>
-          </g>
-        )
-      })}
-
-      {phase === 'idle' && (
-        <text x={400} y={485} textAnchor="middle" fontSize={11} fontFamily="'JetBrains Mono', monospace" fill="rgba(255,255,255,0.15)" letterSpacing={3}>
-          AWAITING CAMPAIGN
-        </text>
-      )}
-    </svg>
-  )
-}
-
 // ─── Main component ───────────────────────────────────────────────────────────
 
 interface RunAuditPageProps {
@@ -545,11 +189,7 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
     let cancelled = false
     ;(async () => {
       try {
-        const res = await fetch(`${API_BASE}/api/runs/${report.run_id}/report-markdown`, {
-          headers: { 'Authorization': `Bearer ${API_TOKEN}` },
-        })
-        if (!res.ok) return
-        const data = await res.json()
+        const data = await getRunReportMarkdown(report.run_id)
         if (!cancelled) setReportMarkdown(data.markdown)
       } catch {
         // report.md may not exist for older runs — leave as null
@@ -646,54 +286,22 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
         appendLog('ERROR', 'Custom headers must be valid JSON — ignoring.')
       }
     }
-    const payload = {
-      campaign_id: campaignId,
-      target_url: targetUrl.trim(),
-      techniques: selectedTechniques,
-      headers: parsedHeaders,
-      request_template: targetRequestTemplate.trim() || undefined,
-      response_path: targetResponsePath.trim() || undefined,
-    }
-
-    const res = await fetch(`${API_BASE}/api/campaigns/run`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${API_TOKEN}`,
+    // Backend was reached and explicitly rejected the request (bad auth,
+    // target not allowlisted, concurrency cap hit, etc.) — this is a real,
+    // actionable answer, not a "server is down" case. Surface it as-is
+    // rather than silently faking a campaign in the caller (ApiError carries
+    // `.status` so the caller below can distinguish it from a network failure).
+    await runCampaignSSE(
+      {
+        campaign_id: campaignId,
+        target_url: targetUrl.trim(),
+        techniques: selectedTechniques,
+        headers: parsedHeaders,
+        request_template: targetRequestTemplate.trim() || undefined,
+        response_path: targetResponsePath.trim() || undefined,
       },
-      body: JSON.stringify(payload),
-    })
-
-    if (!res.ok) {
-      // Backend was reached and explicitly rejected the request (bad auth,
-      // target not allowlisted, concurrency cap hit, etc.) — this is a real,
-      // actionable answer, not a "server is down" case. Surface it as-is
-      // rather than silently faking a campaign in the caller.
-      let detail = ''
-      try { detail = (await res.json())?.detail ?? '' } catch { /* body wasn't JSON */ }
-      const err = new Error(detail || `Backend responded ${res.status}`) as Error & { status?: number }
-      err.status = res.status
-      throw err
-    }
-    if (!res.body) throw new Error('No SSE stream body')
-
-    const reader  = res.body.getReader()
-    const decoder = new TextDecoder()
-
-    let buffer = ''
-    while (true) {
-      const { done, value } = await reader.read()
-      if (done) break
-      buffer += decoder.decode(value, { stream: true })
-      const lines = buffer.split('\n')
-      buffer = lines.pop() ?? ''   // keep incomplete last line
-      for (const line of lines) {
-        if (!line.startsWith('data: ')) continue
-        try {
-          handleSSEEvent(JSON.parse(line.slice(6)))
-        } catch { /* skip malformed */ }
-      }
-    }
+      handleSSEEvent,
+    )
   }, [campaignId, targetUrl, targetHeaders, targetRequestTemplate, targetResponsePath, selectedTechniques, handleSSEEvent, appendLog])
 
   // ── Mock simulation (demo / no-backend fallback) ────────────────────────────
@@ -742,7 +350,7 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
           updateAgent('attacker', 'idle')
           updateAgent('evaluator', 'idle')
         }
-      }, base + 4000)
+      }, base + 3200)
     })
 
     const totalMs = 2000 + techniques.length * PER_TECHNIQUE_MS + 800
@@ -1120,7 +728,7 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
 
           {/* SVG Topology */}
           <div className="flex-1 relative min-h-[500px] flex items-center justify-center">
-            <AgentTopology phase={phase} statuses={agentStatuses} activeEdge={activeEdge} />
+            <AgentGraphPanel phase={phase} statuses={agentStatuses} activeEdge={activeEdge} />
           </div>
 
           {/* Log stream */}

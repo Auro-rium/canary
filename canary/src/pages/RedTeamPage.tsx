@@ -1,12 +1,6 @@
 import React, { useState, useEffect, useCallback } from 'react'
 import Navbar from '../components/Navbar'
-
-// Backend connection — empty string = relative URL, handled by nginx proxy
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const _env = (import.meta as any).env as Record<string, string>
-const API_BASE  = _env.VITE_API_URL  || ''
-const API_TOKEN = _env.VITE_API_TOKEN || ''
-const authHeader = () => ({ 'Authorization': `Bearer ${API_TOKEN}`, 'Content-Type': 'application/json' })
+import { getIncidents, getRun } from '../lib/api'
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -206,9 +200,10 @@ interface RedTeamPageProps {
   onBack: () => void
   onRunAudit: () => void
   onFindings?: () => void
+  onConsole?: () => void
 }
 
-export default function RedTeamPage({ onBack, onRunAudit, onFindings }: RedTeamPageProps) {
+export default function RedTeamPage({ onBack, onRunAudit, onFindings, onConsole }: RedTeamPageProps) {
   const [incidents,        setIncidents]        = useState<Incident[]>([])
   const [loading,          setLoading]          = useState(true)
   const [error,            setError]            = useState<string | null>(null)
@@ -221,11 +216,7 @@ export default function RedTeamPage({ onBack, onRunAudit, onFindings }: RedTeamP
   // ── Fetch incidents ─────────────────────────────────────────────────────────
   const fetchIncidents = useCallback(async () => {
     try {
-      const res = await fetch(`${API_BASE}/api/incidents`, {
-        headers: authHeader(),
-      })
-      if (!res.ok) throw new Error(`Server responded ${res.status}`)
-      const data: Incident[] = await res.json()
+      const data = await getIncidents() as Incident[]
       setIncidents(data)
       setError(null)
     } catch (e) {
@@ -248,11 +239,7 @@ export default function RedTeamPage({ onBack, onRunAudit, onFindings }: RedTeamP
     setRunDetail(null)
     setActiveRunId(runId)
     try {
-      const res = await fetch(`${API_BASE}/api/runs/${runId}`, {
-        headers: authHeader(),
-      })
-      if (!res.ok) throw new Error(`Server responded ${res.status}`)
-      const data: RunDetail = await res.json()
+      const data = await getRun(runId) as RunDetail
       setRunDetail(data)
     } catch (e) {
       setRunDetailError((e as Error).message)
@@ -289,8 +276,7 @@ export default function RedTeamPage({ onBack, onRunAudit, onFindings }: RedTeamP
   // ─── RENDER ─────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-black text-white font-mono">
-      <Navbar onRunAudit={onRunAudit} onLogoClick={onBack} onFindings={onFindings} />
-
+      <Navbar onRunAudit={onRunAudit} onLogoClick={onBack} onFindings={onFindings} onConsole={onConsole} />
       {/* ── SECTION 01: LIVE INCIDENT FEED ── */}
       <section className="px-6 sm:px-10 md:px-16 lg:px-20 py-16 border-b border-white/10 pt-36">
 
