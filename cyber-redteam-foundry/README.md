@@ -8,7 +8,7 @@
 [![pytest](https://img.shields.io/badge/tests-111%20passed-brightgreen.svg?logo=pytest)](https://pytest.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Red-team orchestration engine for AI agents. FastAPI + LangGraph on AWS Bedrock. Attacks any HTTP-based AI agent via a fully generic request/response contract, runs up to 3 attack techniques as parallel LangGraph branches per iteration, evaluates findings against an ASI/ATLAS taxonomy, and generates structured audit reports. Findings are triaged manually (`wont_fix`/`false_positive`) — the system does not auto-remediate.
+Red-team orchestration engine for AI agents. FastAPI + LangGraph on AWS Bedrock. Attacks any HTTP-based AI agent via a generic request/response contract, runs ≤3 techniques as parallel branches per iteration, evaluates against ASI/ATLAS taxonomy, and generates structured audit reports. Findings are triaged manually — no auto-remediation.
 
 ---
 
@@ -122,13 +122,9 @@ a circular import (`langgraph/__init__.py` eagerly imports `graph.py` → `nodes
 | 3 | Evaluator | `qwen.qwen3-coder-480b-a35b-v1:0` | Deterministic detectors + LLM judge, 4-case consensus; also owns the iterate-vs-report routing decision |
 | 4 | Reporter | `qwen.qwen3-coder-480b-a35b-v1:0` | Markdown + JSON audit reports |
 
-Models are configured in `configs/models.yaml`. Credentials resolve via the standard `boto3` chain (env vars → shared credentials file → instance/role profile).
+Models configured in `configs/models.yaml`. Credentials resolve via standard `boto3` chain (env vars, `~/.aws/credentials`, or instance role).
 
-The strategist's technique selection is intentionally not an LLM call — it's `random.sample` over
-the candidate `StrategyType` list, so which ≤3 techniques run each iteration is fast and
-unpredictable to the target. `StrategistAgent.select_strategies()` (LLM-ranked scoring) still
-exists in `agents/strategist.py` for callers that want ranked-not-random selection, but the
-default graph doesn't use it.
+The strategist's technique selection is intentionally not an LLM call — it uses `random.sample` over the candidate `StrategyType` list, keeping selection fast and unpredictable to the target. An LLM-ranked method (`StrategistAgent.select_strategies()`) exists in `agents/strategist.py` for alternative selection strategies.
 
 ### LangGraph flow — parallel fan-out
 
@@ -153,13 +149,7 @@ flowchart TD
     style I     fill:#3b82f6,color:#fff,stroke:none
 ```
 
-Each `Send()`-spawned branch is an independent invocation of `node_attacker_branch` — LangGraph
-waits for all of them to complete (a superstep boundary) before `evaluator` runs; no manual
-join/barrier logic is needed. Their single-item `attack_results` deltas concatenate via the
-existing `Annotated[List[AttackResult], operator.add]` reducer regardless of completion order.
-The iterate loop routes back to `strategist` (not directly to an "attacker" node — there isn't one
-anymore) to re-dispatch a fresh set of parallel branches each iteration. The decision to loop or
-proceed to `reporter` is made by `evaluator` itself — there is no separate node in between.
+Each `Send()` spawns an independent `node_attacker_branch` invocation. LangGraph waits for all to complete (superstep boundary) before `evaluator` runs. `attack_results` concatenate via `Annotated[List[AttackResult], operator.add]` regardless of completion order. The iterate loop routes back to `strategist` to re-dispatch fresh branches each iteration; the evaluator itself decides to loop or proceed to `reporter`.
 
 ### `RedTeamState` fields
 
@@ -174,11 +164,7 @@ proceed to `reporter` is made by `evaluator` itself — there is no separate nod
 | `vulnerability_found` | `bool` | Whether any threshold was exceeded |
 | `should_continue_iterating` | `bool` | Routing flag for the iterate loop |
 
-Per-branch bookkeeping (`AttackBranch`: `branch_id`, `depth`, `attempt_budget_remaining`,
-`parent_evidence`) deliberately does **not** live in `RedTeamState` — it travels through each
-`Send()` payload instead, since independent per-branch depth/budget countdowns don't merge
-cleanly via `Annotated[list, operator.add]` reducer semantics. Only the branch's output (an
-`AttackResult`) rejoins shared state.
+Per-branch bookkeeping (`AttackBranch`: `branch_id`, `depth`, `attempt_budget_remaining`, `parent_evidence`) travels through `Send()` payloads, not shared state — independent per-branch countdowns don't merge cleanly via `Annotated[list, operator.add]` reducers. Only `AttackResult` rejoins shared state.
 
 Each agent's system prompt lives in `prompts/<agent>.md`. `RedTeamState` uses append-only list annotations so every node sees the complete execution timeline across SQLite checkpoint boundaries.
 
@@ -186,9 +172,7 @@ Each agent's system prompt lives in `prompts/<agent>.md`. `RedTeamState` uses ap
 
 ## Attacker Contract & Parallel Fan-Out
 
-Each attacker branch is a single, strictly-scoped invocation — one `capability_type` (a
-`StrategyType` value) and one `technique_id` (an ASI class, e.g. `ASI04`) per call. The attacker
-LLM's structured output is `AttackerOutput` (`llm/schemas.py`):
+Each attacker branch is a single, strictly-scoped invocation: one `capability_type` (`StrategyType` value) and one `technique_id` (ASI class, e.g. `ASI04`). The LLM's structured output is `AttackerOutput` (`llm/schemas.py`):
 
 ```json
 {
@@ -229,20 +213,15 @@ Full contract and refusal-category list: `prompts/attacker.md`.
 
 ## Targeting Any HTTP Agent
 
-`HttpTargetAdapter` (in `tools/target_adapter.py`) sends `POST {endpoint}` and reads the response
-back as free text — the request/response shape is fully configurable per target, so it isn't
-limited to the bundled demo agent's `{"message": "..."} → {"response": "..."}` contract:
+`HttpTargetAdapter` sends `POST {endpoint}` with a configurable request/response contract — not limited to the demo agent's `{"message": "..."} → {"response": "..."}` format:
 
 | Config | Purpose | Default |
 |---|---|---|
-| `request_template` | JSON string with a `"{{PROMPT}}"` placeholder describing the target's request schema, e.g. `{"messages": [{"role": "user", "content": "{{PROMPT}}"}]}` for an OpenAI-style endpoint | `{"message": "{{PROMPT}}"}` |
-| `response_path` | Dot-path into the JSON response, e.g. `choices.0.message.content` (numeric segments = list indices) | key-guessing over `response`/`output`/`content`/`text` |
-| `headers` | Extra HTTP headers merged on top of `Content-Type`/`Authorization: Bearer` — covers custom auth schemes, API-key headers, cookies | `{}` |
+| `request_template` | JSON with `"{{PROMPT}}"` placeholder (e.g., `{"messages": [{"role": "user", "content": "{{PROMPT}}"}]}` for OpenAI-style) | `{"message": "{{PROMPT}}"}` |
+| `response_path` | Dot-path into response (e.g., `choices.0.message.content`; numeric segments = list indices) | Key-guessing: `response`, `output`, `content`, `text` |
+| `headers` | Extra HTTP headers (custom auth, API keys, cookies) merged with `Content-Type` and `Authorization: Bearer` | `{}` |
 
-`{{PROMPT}}` substitution uses `json.dumps()` on the swap-in value, so quotes/newlines/unicode in
-the payload always produce valid JSON regardless of where the placeholder sits in the template.
-An unresolvable `response_path` falls back to the default key-guessing heuristic rather than
-failing the attempt.
+`{{PROMPT}}` is JSON-escaped via `json.dumps()`, ensuring valid JSON regardless of placeholder position. Unresolvable `response_path` falls back to key-guessing.
 
 ```bash
 cyber-rt run \
@@ -363,16 +342,16 @@ runs/redteam.db       — Audit artifacts (5 tables)
 ### Finding lifecycle
 
 ```
-open → wont_fix        (manual; requires reviewer_id + rationale)
-open → false_positive  (manual; requires reviewer_id + rationale)
+open → wont_fix        (manual, requires reviewer_id + rationale)
+open → false_positive  (manual, requires reviewer_id + rationale)
 open → inconclusive    (manual)
 ```
 
-Findings are reported and triaged manually — there is no automated remediation or retest step.
+Manual triage only — no automated remediation or retest.
 
 ### Semantic deduplication
 
-`embedder.py` uses `sentence-transformers/all-MiniLM-L6-v2` (384-dim embeddings). A new finding is only inserted if no existing finding has cosine similarity ≥ 0.92 against the same target + strategy combination.
+`embedder.py` uses `sentence-transformers/all-MiniLM-L6-v2` (384-dim embeddings). New findings are suppressed if an existing finding has cosine similarity ≥ 0.92 against the same target + strategy.
 
 ---
 
@@ -498,17 +477,14 @@ docker run -p 8001:8001 --env-file .env redteam-backend
 docker compose up -d redteam-backend
 ```
 
-The image exposes port `8001` (FastAPI). **The demo target agent is not part of the Compose
-stack** — run it as a plain host process alongside the containers:
+Port `8001` (FastAPI) is exposed. **The demo target agent is not part of the Compose stack** — run it separately:
 
 ```bash
 cd cyber-redteam-foundry
 PYTHONPATH=src python -m target_agent.server --port 9000
 ```
 
-The backend container reaches it via `host.docker.internal:9000` (`extra_hosts` in
-`docker-compose.yml`). This keeps the target agent isolated from the attacker/evaluator
-containers by construction — it's the thing being attacked, not part of the tooling.
+The backend reaches it via `host.docker.internal:9000` (`extra_hosts` in `docker-compose.yml`), keeping the target isolated by construction.
 
 ---
 
@@ -518,6 +494,4 @@ containers by construction — it's the thing being attacked, not part of the to
 pytest tests/ -v --cov=src/cyberredteam --cov-report=term-missing
 ```
 
-111 tests, including a real parallel-fan-out integration test (`TestParallelFanOut` in
-`test_langgraph.py`) that exercises the strategist's random dispatch end-to-end against the fake
-LLM fixture — no AWS credentials required. Coverage report printed to terminal.
+111 tests, including a parallel-fan-out integration test (`TestParallelFanOut`) that exercises end-to-end random dispatch against mock LLMs — no AWS credentials required. Coverage report to terminal.
