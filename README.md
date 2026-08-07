@@ -8,7 +8,13 @@
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ed?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Autonomous AI red-team platform. Point it at any HTTP-based AI agent, and a 4-agent LangGraph pipeline attacks it, evaluates findings, and streams live results to a React dashboard. Vulnerabilities are triaged manually — no auto-remediation.
+**Your unit tests tell you whether your AI agent still works. Canary tells you whether your latest commit made it dangerous.**
+
+Canary is CI security for HTTP AI agents. On every PR or main commit, the
+GitHub Action runs the existing LangGraph red-team engine against the preview,
+compares canonical findings with the last passing `main` baseline, uploads
+evidence, and returns **PASS / WARN / BLOCK**. Vulnerabilities are triaged
+manually — no auto-remediation.
 
 ![Agent Canary demo: launching a campaign, live SSE agent topology, findings report, Findings page, and the Console](demo/demo.gif)
 
@@ -187,8 +193,8 @@ git clone <repo-url> canary && cd canary
 cp cyber-redteam-foundry/.env.example cyber-redteam-foundry/.env
 # Edit cyber-redteam-foundry/.env — see Environment Variables section below
 
-# 3. Frontend token (must match API_SECRET_KEY above)
-echo 'VITE_API_TOKEN=your-api-secret-key' > .env
+# 3. Server-side nginx proxy token (must match the backend key; never VITE_*)
+export API_SECRET_KEY='your-api-secret-key'
 
 # 4. Build and start
 docker compose up -d --build
@@ -247,12 +253,10 @@ TIMEOUT_SECONDS=30
 DETERMINISTIC_SEED=42
 ```
 
-### Root `.env` (frontend build arg)
-
-```env
-# Must match API_SECRET_KEY in cyber-redteam-foundry/.env
-VITE_API_TOKEN="change-me"
-```
+The browser never receives `API_SECRET_KEY`. Docker nginx injects it only into
+its server-side upstream request. For Vercel, set `CANARY_API_URL` and
+`CANARY_API_TOKEN` as server-only environment variables for the read-only
+dashboard proxy; do not create `VITE_API_TOKEN`.
 
 ---
 
@@ -274,7 +278,6 @@ cyber-rt server --port 8001
 ```bash
 cd canary
 npm install
-echo 'VITE_API_TOKEN=change-me' > .env
 npm run dev
 # → http://localhost:5173
 ```
@@ -322,35 +325,57 @@ cyber-rt graph           # print Mermaid diagram of the LangGraph workflow
 
 ---
 
-## CUTC: CI for AI-agent security
+## CI for AI-agent security
 
-Agent Canary now includes a release-gate product layer on top of the existing
-LangGraph red-team engine. Register a project once, then evaluate each preview
-release against the previous completed baseline:
+The repository is the product surface: commit `canary.yaml`, deploy a preview,
+and call the reusable Action after the preview is healthy.
 
 ```text
-PR → preview agent → Canary attack campaign → finding comparison → PASS / WARN / BLOCK
+PR / push → preview agent → Canary attack campaign → last safe main baseline → PASS / WARN / BLOCK
 ```
 
-The API exposes:
+The GitHub Action submits repository + commit SHA + target contract to
+`POST /api/ci/releases`. Canary auto-registers the project by
+`owner/repository`; there is no `project-id` secret and no dashboard onboarding
+step. A passing default-branch release is the only release permitted to advance
+the baseline. The Action waits for the real engine, downloads immutable:
+
+- `report.json` — finding IDs, comparison and raw evidence
+- `report.md` — human-readable attack input, response/tool trace, detector,
+  judge, taxonomy, severity and confidence
+
+and fails CI when the decision is `block`.
+
+The API also exposes:
 
 - `POST /api/projects` — register a project and target contract
 - `POST /api/projects/verify-target` — safely probe a public preview endpoint
 - `POST /api/projects/{project_id}/releases` — start a commit-tied evaluation
 - `GET /api/projects/{project_id}/releases` and `GET /api/releases/{release_id}` — show evidence and gate status
 
-The first completed release establishes the baseline. Later releases only
-block when they introduce findings that breach the project policy (critical or
-high by default). Existing canonical finding IDs are reported as known rather
-than repeatedly treated as regressions.
+Existing canonical finding IDs are reported as known rather than repeatedly
+treated as regressions. The dashboard is evidence/history UX only; it is
+read-only and cannot become an unauthenticated attack launcher.
+
+### Add Canary to an agent repository
+
+```yaml
+- uses: Auro-rium/canary/action@main
+  with:
+    api-url: ${{ secrets.CANARY_API_URL }}
+    api-token: ${{ secrets.CANARY_API_TOKEN }}
+    target-url: ${{ needs.preview.outputs.agent_url }}
+```
+
+See [`canary.yaml`](canary.yaml) and [`action/README.md`](action/README.md).
 
 ### Deployment
 
 - Deploy `cyber-redteam-foundry/` as the existing Docker service on AWS. Set
   `API_SECRET_KEY` and `FRONTEND_ORIGINS=https://<your-vercel-dashboard>`.
 - Deploy `canary/` as a separate Vercel project. Set its Root Directory to
-  `canary`, and configure `VITE_API_URL` and `VITE_API_TOKEN` from
-  `canary/.env.example`.
-- Commit `canary.yaml` with the agent repository and configure the three
-  `CANARY_*` repository secrets. The included workflow invokes
-  [`action/action.yml`](action/action.yml) on each trusted pull request.
+  `canary`, plus server-only `CANARY_API_URL` and `CANARY_API_TOKEN` for its
+  read-only proxy.
+- Commit `canary.yaml` with the agent repository and configure
+  `CANARY_API_URL` + `CANARY_API_TOKEN` as GitHub secrets. Pass the public
+  preview endpoint from the deployment job to [`action/action.yml`](action/action.yml).

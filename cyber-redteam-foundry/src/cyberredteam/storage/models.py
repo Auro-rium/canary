@@ -128,6 +128,9 @@ class ProjectRecord(Base):
     project_id = Column(String, primary_key=True)
     name = Column(String, nullable=False)
     slug = Column(String, nullable=False, unique=True, index=True)
+    # GitHub repository identity is optional for projects created through the
+    # dashboard, but is the stable identity for repository-native CI runs.
+    repository = Column(String, nullable=True, index=True)
     environment = Column(String, nullable=False, default="preview")
     endpoint = Column(String, nullable=False)
     request_template = Column(String, nullable=False, default='{"message":"{{PROMPT}}"}')
@@ -146,6 +149,11 @@ class ReleaseRecord(Base):
     release_id = Column(String, primary_key=True)
     project_id = Column(String, nullable=False, index=True)
     commit_sha = Column(String, nullable=False, index=True)
+    git_ref = Column(String, nullable=True, index=True)
+    event_name = Column(String, nullable=True)
+    # A baseline is promoted only by a passing run on the configured default
+    # branch. PRs never replace the safe reference point.
+    is_baseline = Column(Integer, nullable=False, default=0, index=True)
     environment = Column(String, nullable=False)
     run_id = Column(String, nullable=True, index=True)
     status = Column(String, nullable=False, default="running")
@@ -187,6 +195,14 @@ def _migrate_columns(engine) -> None:
         ],
         "attack_traces": [
             ("finding_id",     "VARCHAR"),
+        ],
+        "projects": [
+            ("repository", "VARCHAR"),
+        ],
+        "releases": [
+            ("git_ref", "VARCHAR"),
+            ("event_name", "VARCHAR"),
+            ("is_baseline", "INTEGER DEFAULT 0"),
         ],
     }
     with engine.connect() as conn:

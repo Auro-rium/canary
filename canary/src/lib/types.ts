@@ -41,6 +41,7 @@ export interface CanaryProject {
   project_id: string
   name: string
   slug: string
+  repository?: string | null
   environment: string
   endpoint: string
   request_template: string
@@ -55,6 +56,9 @@ export interface CanaryRelease {
   release_id: string
   project_id: string
   commit_sha: string
+  ref?: string | null
+  event_name?: string | null
+  is_baseline?: boolean
   environment: string
   run_id: string | null
   status: 'running' | 'completed' | 'failed'
@@ -73,6 +77,7 @@ export interface CanaryRelease {
     known_finding_ids?: string[]
     resolved_finding_ids?: string[]
     baseline_established?: boolean
+    baseline_missing?: boolean
   }
   created_at: string | null
   completed_at: string | null

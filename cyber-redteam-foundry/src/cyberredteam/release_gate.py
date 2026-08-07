@@ -33,7 +33,7 @@ def slugify(name: str) -> str:
     return slug or "project"
 
 
-def validate_public_http_endpoint(endpoint: str) -> None:
+def validate_public_http_endpoint(endpoint: str, *, allow_private: bool = False) -> None:
     """Reject malformed and private-network target URLs before verification.
 
     Canary only probes explicitly registered public preview endpoints. Blocking
@@ -51,7 +51,7 @@ def validate_public_http_endpoint(endpoint: str) -> None:
 
     for raw_address in addresses:
         address = ipaddress.ip_address(raw_address)
-        if (
+        if not allow_private and (
             address.is_private
             or address.is_loopback
             or address.is_link_local
@@ -67,6 +67,7 @@ def project_payload(project: ProjectRecord) -> dict[str, Any]:
         "project_id": project.project_id,
         "name": project.name,
         "slug": project.slug,
+        "repository": project.repository,
         "environment": project.environment,
         "endpoint": project.endpoint,
         "request_template": project.request_template,
@@ -83,6 +84,9 @@ def release_payload(release: ReleaseRecord) -> dict[str, Any]:
         "release_id": release.release_id,
         "project_id": release.project_id,
         "commit_sha": release.commit_sha,
+        "ref": release.git_ref,
+        "event_name": release.event_name,
+        "is_baseline": bool(release.is_baseline),
         "environment": release.environment,
         "run_id": release.run_id,
         "status": release.status,
@@ -108,6 +112,7 @@ def create_project(session, data: dict[str, Any]) -> ProjectRecord:
         project_id=uuid.uuid4().hex,
         name=data["name"].strip(),
         slug=candidate,
+        repository=data.get("repository"),
         environment=data.get("environment") or "preview",
         endpoint=data["endpoint"].strip(),
         request_template=data.get("request_template") or '{"message":"{{PROMPT}}"}',
@@ -116,6 +121,38 @@ def create_project(session, data: dict[str, Any]) -> ProjectRecord:
         gate={**DEFAULT_GATE, **(data.get("gate") or {})},
     )
     session.add(project)
+    session.commit()
+    session.refresh(project)
+    return project
+
+
+def upsert_ci_project(session, data: dict[str, Any]) -> ProjectRecord:
+    """Create or refresh the CI target contract for a GitHub repository.
+
+    CI never needs a dashboard-created project ID. The repository name is its
+    identity and the checked-in canary.yaml is the source of truth on every
+    run. Secrets are deliberately not accepted or stored in this model.
+    """
+    repository = data["repository"].strip().lower()
+    project = session.scalar(select(ProjectRecord).where(ProjectRecord.repository == repository))
+    if project is None:
+        project = create_project(
+            session,
+            {
+                **data,
+                "name": data.get("name") or repository,
+                "repository": repository,
+            },
+        )
+        return project
+
+    project.name = data.get("name") or repository
+    project.environment = data.get("environment") or project.environment
+    project.endpoint = data["endpoint"].strip()
+    project.request_template = data.get("request_template") or project.request_template
+    project.response_path = data.get("response_path") or None
+    project.strategies = data.get("strategies") or list(DEFAULT_STRATEGIES)
+    project.gate = {**DEFAULT_GATE, **(data.get("gate") or {})}
     session.commit()
     session.refresh(project)
     return project
@@ -130,12 +167,42 @@ def latest_completed_release(session, project_id: str) -> ReleaseRecord | None:
     return session.scalar(query)
 
 
-def create_release(session, project: ProjectRecord, commit_sha: str, environment: str) -> ReleaseRecord:
-    baseline = latest_completed_release(session, project.project_id)
+def latest_safe_baseline(session, project_id: str) -> ReleaseRecord | None:
+    """Return only a passing default-branch release, never a PR result."""
+    return session.scalar(
+        select(ReleaseRecord)
+        .where(
+            ReleaseRecord.project_id == project_id,
+            ReleaseRecord.status == "completed",
+            ReleaseRecord.decision == "pass",
+            ReleaseRecord.is_baseline == 1,
+        )
+        .order_by(ReleaseRecord.completed_at.desc(), ReleaseRecord.created_at.desc())
+    )
+
+
+def create_release(
+    session,
+    project: ProjectRecord,
+    commit_sha: str,
+    environment: str,
+    *,
+    git_ref: str | None = None,
+    event_name: str | None = None,
+) -> ReleaseRecord:
+    # Preserve the dashboard/manual release behavior for existing users. CI
+    # supplies a git ref and therefore uses the stricter main-only baseline.
+    baseline = (
+        latest_safe_baseline(session, project.project_id)
+        if git_ref is not None
+        else latest_completed_release(session, project.project_id)
+    )
     release = ReleaseRecord(
         release_id=uuid.uuid4().hex,
         project_id=project.project_id,
         commit_sha=commit_sha,
+        git_ref=git_ref,
+        event_name=event_name,
         environment=environment,
         status="running",
         baseline_release_id=baseline.release_id if baseline else None,
@@ -157,7 +224,7 @@ def mark_release_failed(session, release_id: str, message: str) -> None:
     session.commit()
 
 
-def finalise_release(session, release_id: str) -> ReleaseRecord:
+def finalise_release(session, release_id: str, *, default_branch: str = "main") -> ReleaseRecord:
     """Turn canonical findings from a run into an immutable release decision."""
     release = session.get(ReleaseRecord, release_id)
     if release is None:
@@ -219,8 +286,12 @@ def finalise_release(session, release_id: str) -> ReleaseRecord:
         "known_finding_ids": known_ids,
         "resolved_finding_ids": sorted(baseline_ids - set(finding_ids)),
         "baseline_release_id": release.baseline_release_id,
-        "baseline_established": not has_baseline,
+        "baseline_established": not has_baseline and release.git_ref == default_branch,
+        "baseline_missing": not has_baseline,
     }
+    # Only a clean default-branch commit can become the next comparison point.
+    # A PR can be inspected but may never silently move the security baseline.
+    release.is_baseline = int(release.git_ref == default_branch and decision == "pass")
     release.completed_at = datetime.utcnow()
     session.commit()
     session.refresh(release)

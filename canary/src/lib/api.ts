@@ -1,13 +1,10 @@
 import type { CanaryProject, CanaryRelease, SSEEvent } from './types'
 
-// Backend connection — empty string = relative URL, handled by nginx proxy
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const _env = (import.meta as any).env as Record<string, string>
-export const API_BASE = _env.VITE_API_URL || ''
-export const API_TOKEN = _env.VITE_API_TOKEN || ''
+// The browser always talks to a same-origin, read-only proxy. The proxy holds
+// CANARY_API_TOKEN server-side; no bearer credential is bundled into Vite.
+export const API_BASE = ''
 
 export const authHeader = (): Record<string, string> => ({
-  'Authorization': `Bearer ${API_TOKEN}`,
   'Content-Type': 'application/json',
 })
 

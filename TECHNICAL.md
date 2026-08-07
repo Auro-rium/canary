@@ -333,14 +333,10 @@ app-level FastAPI dependency (`FastAPI(dependencies=[Depends(require_auth)])`, a
 so every route requires it. It fails closed: if `settings.api_secret_key` (i.e. `API_SECRET_KEY`
 env var, `settings.py:30`) isn't set, every request gets `503` rather than running open
 (api.py:36-40); otherwise it checks `Authorization: Bearer <token>` matches exactly
-(api.py:41-43). The frontend's `authHeader()` (`canary/src/lib/api.ts:9-12`) sends
-`Authorization: Bearer ${API_TOKEN}` where `API_TOKEN = import.meta.env.VITE_API_TOKEN` — i.e.
-the same shared secret, but **baked into the frontend bundle at Vite build time** (it's a
-`VITE_`-prefixed env var, inlined by Vite's build step, not read at runtime). `docker-compose.yml`
-wires this explicitly: the frontend build receives `VITE_API_TOKEN: "${VITE_API_TOKEN}"` as a
-build arg (docker-compose.yml:45-49) with a comment that it "Must match API_SECRET_KEY in
-cyber-redteam-foundry/.env" — there's no runtime handshake, just an operator-maintained shared
-value across two separately-built images.
+(api.py:41-43). The browser no longer receives that bearer credential. It calls a same-origin,
+read-only proxy: Vercel holds `CANARY_API_URL` and `CANARY_API_TOKEN` as server-only variables,
+while Docker nginx expands `API_SECRET_KEY` only in its upstream configuration. The GitHub Action
+uses its own repository secret. Thus a `VITE_*` build variable never carries a Canary API token.
 
 ---
 
@@ -425,10 +421,10 @@ lines 9-11):
   (`target_adapter.py:102`) to decide whether to rewrite `localhost:9000` endpoints. Port 8001
   is published to the host both for direct FastAPI inspection and because nginx proxies to it
   internally (comment at lines 1-3).
-- **`canary-frontend`** — built from `canary/Dockerfile`, receives `VITE_API_URL=""` (relative
-  URL, so nginx proxies `/api/*` to the backend) and `VITE_API_TOKEN` as build args (lines 45-49),
-  publishes host port 8000 → container port 80 (nginx), and `depends_on: redteam-backend`
-  (lines 55-56).
+- **`canary-frontend`** — built from `canary/Dockerfile`, publishes host port 8000 → container
+  port 80 (nginx), and `depends_on: redteam-backend`. nginx receives `API_SECRET_KEY` only as a
+  runtime environment variable and injects it into upstream API requests; the static bundle has
+  no API token.
 
 **`target_agent` deliberately runs outside Docker**, as a bare host process:
 `PYTHONPATH=src python -m target_agent.server --port 9000` (comment at docker-compose.yml:6,

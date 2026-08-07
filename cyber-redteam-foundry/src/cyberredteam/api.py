@@ -12,7 +12,7 @@ from typing import Dict, List, Optional
 import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
@@ -28,9 +28,18 @@ from cyberredteam.release_gate import (
     mark_release_failed,
     project_payload,
     release_payload,
+    upsert_ci_project,
     validate_public_http_endpoint,
 )
-from cyberredteam.storage.models import AttackRecord, ProjectRecord, ReleaseRecord, RunRecord
+from cyberredteam.storage.models import (
+    AttackRecord,
+    FindingRecord,
+    ProjectRecord,
+    ReleaseRecord,
+    RunRecord,
+    TraceRecord,
+    VerdictRecord,
+)
 
 logger = logging.getLogger("cyberredteam.api")
 logging.basicConfig(level=logging.INFO)
@@ -107,8 +116,24 @@ class ReleaseCreateRequest(BaseModel):
     environment: Optional[str] = None
 
 
+class CiReleaseRequest(BaseModel):
+    """Repository-native release contract submitted by the GitHub Action."""
+
+    repository: str = Field(min_length=3, max_length=200)
+    commit_sha: str = Field(min_length=4, max_length=128)
+    ref: str = Field(default="main", max_length=256)
+    event_name: str = Field(default="push", max_length=64)
+    default_branch: str = Field(default="main", max_length=128)
+    environment: str = Field(default="preview", max_length=64)
+    endpoint: str
+    request_template: str = '{"message":"{{PROMPT}}"}'
+    response_path: Optional[str] = None
+    strategies: List[str] = Field(default_factory=list)
+    gate: Dict[str, object] = Field(default_factory=dict)
+
+
 def _validate_target_contract(endpoint: str, request_template: str) -> None:
-    validate_public_http_endpoint(endpoint)
+    validate_public_http_endpoint(endpoint, allow_private=settings.allow_private_targets)
     try:
         decoded = json.loads(request_template)
     except (json.JSONDecodeError, TypeError) as error:
@@ -197,6 +222,7 @@ def run_release_orchestrator_thread(
     run_id: str,
     project: ProjectRecord,
     strategy_types: List[StrategyType],
+    default_branch: str = "main",
 ) -> None:
     """Run a project release and persist its baseline comparison on completion."""
     run_orchestrator_thread(
@@ -213,7 +239,7 @@ def run_release_orchestrator_thread(
         with store.SessionLocal() as session:
             run = session.get(RunRecord, run_id)
             if run and run.status == "completed":
-                finalise_release(session, release_id)
+                finalise_release(session, release_id, default_branch=default_branch)
             else:
                 mark_release_failed(session, release_id, "Red-team run failed before comparison")
     except Exception as error:
@@ -243,6 +269,72 @@ def _project_or_404(session, project_id: str) -> ProjectRecord:
     if project is None:
         raise HTTPException(status_code=404, detail="Project not found")
     return project
+
+
+def _start_release(
+    project: ProjectRecord,
+    *,
+    commit_sha: str,
+    environment: str,
+    git_ref: str | None = None,
+    event_name: str | None = None,
+    default_branch: str = "main",
+) -> dict:
+    """Persist and launch a release with the immutable CI metadata attached."""
+    with _active_runs_lock:
+        if _running_count() >= settings.max_concurrent_runs:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Maximum concurrent runs ({settings.max_concurrent_runs}) reached. Try again once a run completes.",
+            )
+        run_id = uuid.uuid4().hex[:12]
+        active_runs[run_id] = "running"
+
+    store = SQLiteStore(Path(settings.db_path))
+    try:
+        with store.SessionLocal() as session:
+            project_in_session = session.get(ProjectRecord, project.project_id)
+            if project_in_session is None:
+                raise HTTPException(status_code=404, detail="Project not found")
+            release = create_release(
+                session,
+                project_in_session,
+                commit_sha,
+                environment,
+                git_ref=git_ref,
+                event_name=event_name,
+            )
+            release.run_id = run_id
+            session.commit()
+            session.refresh(release)
+            store.save_run_start(run_id, project_in_session.endpoint)
+            snapshot = project_payload(project_in_session)
+            response_payload = release_payload(release)
+    except Exception:
+        active_runs.pop(run_id, None)
+        raise
+    finally:
+        store.close()
+
+    project_snapshot = ProjectRecord(
+        project_id=snapshot["project_id"],
+        name=snapshot["name"],
+        slug=snapshot["slug"],
+        repository=snapshot.get("repository"),
+        environment=snapshot["environment"],
+        endpoint=snapshot["endpoint"],
+        request_template=snapshot["request_template"],
+        response_path=snapshot["response_path"],
+        strategies=snapshot["strategies"],
+        gate=snapshot["gate"],
+    )
+    threading.Thread(
+        target=run_release_orchestrator_thread,
+        args=(response_payload["release_id"], run_id, project_snapshot, _release_strategies(snapshot["strategies"])),
+        kwargs={"default_branch": default_branch},
+        daemon=True,
+    ).start()
+    return response_payload
 
 
 @app.post("/api/projects", status_code=201)
@@ -335,49 +427,66 @@ def create_project_release(project_id: str, body: ReleaseCreateRequest):
     if not re.fullmatch(r"[A-Za-z0-9._/-]{4,128}", body.commit_sha):
         raise HTTPException(status_code=422, detail="commit_sha contains unsupported characters")
 
-    with _active_runs_lock:
-        if _running_count() >= settings.max_concurrent_runs:
-            raise HTTPException(
-                status_code=429,
-                detail=f"Maximum concurrent runs ({settings.max_concurrent_runs}) reached. Try again once a run completes.",
-            )
-        run_id = uuid.uuid4().hex[:12]
-        active_runs[run_id] = "running"
-
     store = SQLiteStore(Path(settings.db_path))
     try:
         with store.SessionLocal() as session:
             project = _project_or_404(session, project_id)
-            release = create_release(session, project, body.commit_sha, body.environment or project.environment)
-            release.run_id = run_id
-            session.commit()
-            session.refresh(release)
-            store.save_run_start(run_id, project.endpoint)
             snapshot = project_payload(project)
-            response_payload = release_payload(release)
-    except Exception:
-        active_runs.pop(run_id, None)
-        raise
+    finally:
+        store.close()
+    project_snapshot = ProjectRecord(**snapshot)
+    return _start_release(
+        project_snapshot,
+        commit_sha=body.commit_sha,
+        environment=body.environment or project_snapshot.environment,
+    )
+
+
+@app.post("/api/ci/releases", status_code=202)
+def create_ci_release(body: CiReleaseRequest):
+    """Start a release from a checked-in ``canary.yaml`` configuration.
+
+    This is the only endpoint the reusable GitHub Action needs. It upserts the
+    project by ``owner/repository`` and retains the last *passing default-branch*
+    release as the baseline, removing manual dashboard onboarding from CI.
+    """
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+", body.repository):
+        raise HTTPException(status_code=422, detail="repository must be owner/name")
+    if not re.fullmatch(r"[A-Za-z0-9._/-]{4,128}", body.commit_sha):
+        raise HTTPException(status_code=422, detail="commit_sha contains unsupported characters")
+    try:
+        _validate_target_contract(body.endpoint, body.request_template)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    store = SQLiteStore(Path(settings.db_path))
+    try:
+        with store.SessionLocal() as session:
+            project = upsert_ci_project(
+                session,
+                {
+                    "repository": body.repository,
+                    "name": body.repository,
+                    "environment": body.environment,
+                    "endpoint": body.endpoint,
+                    "request_template": body.request_template,
+                    "response_path": body.response_path,
+                    "strategies": body.strategies or DEFAULT_STRATEGIES,
+                    "gate": body.gate,
+                },
+            )
+            snapshot = project_payload(project)
     finally:
         store.close()
 
-    project_snapshot = ProjectRecord(
-        project_id=snapshot["project_id"],
-        name=snapshot["name"],
-        slug=snapshot["slug"],
-        environment=snapshot["environment"],
-        endpoint=snapshot["endpoint"],
-        request_template=snapshot["request_template"],
-        response_path=snapshot["response_path"],
-        strategies=snapshot["strategies"],
-        gate=snapshot["gate"],
+    return _start_release(
+        ProjectRecord(**snapshot),
+        commit_sha=body.commit_sha,
+        environment=body.environment,
+        git_ref=body.ref,
+        event_name=body.event_name,
+        default_branch=body.default_branch,
     )
-    threading.Thread(
-        target=run_release_orchestrator_thread,
-        args=(response_payload["release_id"], run_id, project_snapshot, _release_strategies(snapshot["strategies"])),
-        daemon=True,
-    ).start()
-    return response_payload
 
 
 @app.get("/api/projects/{project_id}/releases")
@@ -407,6 +516,128 @@ def get_release(release_id: str):
             return release_payload(release)
     finally:
         store.close()
+
+
+def _release_evidence(session, release: ReleaseRecord) -> list[dict]:
+    """Join the canonical finding to its raw attack, trace and judge evidence."""
+    evidence: list[dict] = []
+    for finding_id in release.finding_ids or []:
+        finding = session.get(FindingRecord, finding_id)
+        attack = session.scalar(
+            select(AttackRecord)
+            .where(AttackRecord.run_id == release.run_id, AttackRecord.finding_id == finding_id)
+            .order_by(AttackRecord.id.desc())
+        )
+        trace = session.scalar(
+            select(TraceRecord)
+            .where(TraceRecord.run_id == release.run_id, TraceRecord.finding_id == finding_id)
+            .order_by(TraceRecord.captured_at.desc())
+        )
+        verdict = session.scalar(
+            select(VerdictRecord)
+            .where(VerdictRecord.run_id == release.run_id, VerdictRecord.finding_id == finding_id)
+            .order_by(VerdictRecord.timestamp.desc())
+        )
+        indicators = (attack.indicators if attack and attack.indicators else {})
+        evidence.append(
+            {
+                "finding_id": finding_id,
+                "strategy": (finding.strategy if finding else None) or (attack.strategy_type if attack else None),
+                "taxonomy": {
+                    "asi_class": finding.asi_class if finding else indicators.get("asi_class"),
+                    "atlas_technique": finding.atlas_technique if finding else None,
+                },
+                "severity": (finding.severity if finding else None) or (attack.severity if attack else "unknown"),
+                "confidence": verdict.confidence if verdict else None,
+                "adversarial_input": (trace.adversarial_input if trace else None) or (attack.prompt if attack else None),
+                "target_response": (trace.target_response if trace else None) or (attack.response if attack else None),
+                "tool_trace": trace.tool_calls_observed if trace else [],
+                "deterministic_detector": {
+                    "score": verdict.deterministic_score if verdict else None,
+                    "hits": indicators.get("deterministic_hits", []),
+                    "threshold": attack.score_threshold if attack else None,
+                },
+                "llm_judge": {
+                    "score": verdict.llm_judge_score if verdict else None,
+                    "consensus_score": verdict.consensus_score if verdict else None,
+                    "verdict": verdict.verdict if verdict else None,
+                    "rationale": verdict.rationale if verdict else None,
+                },
+            }
+        )
+    return evidence
+
+
+def _release_markdown(payload: dict) -> str:
+    release = payload["release"]
+    comparison = release["comparison"]
+    summary = release["summary"]
+    lines = [
+        "# Agent Canary security report",
+        "",
+        f"**Decision: {str(release.get('decision') or 'pending').upper()}**",
+        "",
+        f"- Repository: `{payload['project'].get('repository') or payload['project']['slug']}`",
+        f"- Commit: `{release['commit_sha']}`",
+        f"- Ref: `{release.get('ref') or 'unknown'}`",
+        f"- Baseline: `{comparison.get('baseline_release_id') or 'not established'}`",
+        f"- New findings: {len(comparison.get('new_finding_ids', []))}",
+        f"- Known findings: {len(comparison.get('known_finding_ids', []))}",
+        f"- Coverage: {summary.get('coverage', 0)}%",
+        "",
+        "## Evidence",
+        "",
+    ]
+    if not payload["findings"]:
+        lines.append("No confirmed findings were observed in this release.")
+    for finding in payload["findings"]:
+        lines.extend(
+            [
+                f"### {finding['severity'].upper()} — {finding['strategy'] or 'unknown strategy'}",
+                "",
+                f"- Finding: `{finding['finding_id']}`",
+                f"- Taxonomy: `{finding['taxonomy'].get('asi_class') or 'unclassified'}`",
+                f"- Confidence: `{finding['confidence'] or 'unknown'}`",
+                "",
+                "**Adversarial input**",
+                "```text",
+                finding.get("adversarial_input") or "(not captured)",
+                "```",
+                "**Target response / tool trace**",
+                "```text",
+                finding.get("target_response") or "(not captured)",
+                "```",
+                f"Detector score: `{finding['deterministic_detector'].get('score')}`; LLM judge score: `{finding['llm_judge'].get('score')}`.",
+                "",
+            ]
+        )
+    return "\n".join(lines)
+
+
+@app.get("/api/releases/{release_id}/report")
+def get_release_report(release_id: str):
+    """Return the artifact-ready, evidence-backed JSON report for one release."""
+    store = SQLiteStore(Path(settings.db_path))
+    try:
+        with store.SessionLocal() as session:
+            release = session.get(ReleaseRecord, release_id)
+            if release is None:
+                raise HTTPException(status_code=404, detail="Release not found")
+            project = _project_or_404(session, release.project_id)
+            return {
+                "release": release_payload(release),
+                "project": project_payload(project),
+                "findings": _release_evidence(session, release),
+            }
+    finally:
+        store.close()
+
+
+@app.get("/api/releases/{release_id}/report.md", response_class=PlainTextResponse)
+def get_release_markdown_report(release_id: str):
+    """Render the same immutable release evidence as a GitHub-friendly report."""
+    report = get_release_report(release_id)
+    return _release_markdown(report)
 
 
 @app.post("/api/runs")

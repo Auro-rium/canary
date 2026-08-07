@@ -2,7 +2,10 @@ version: 1
 
 # Commit this with the agent code. Endpoint credentials belong in CI secrets.
 target:
+  # The Action replaces this from its target-url input / CANARY_TARGET_URL.
+  # It must be a public preview URL reachable by the hosted Canary API.
   endpoint: ${CANARY_TARGET_URL}
+  health: /health
   request_template: '{"message":"{{PROMPT}}"}'
   response_path: response
 
@@ -14,6 +17,12 @@ security:
     - sensitive_data_exposure
     - authorization_boundary
     - retrieval_poisoning
+    - jailbreak
+    - memory_poisoning
+    - workflow_manipulation
+    - agent_handoff_corruption
+    - instruction_hierarchy
+    - context_isolation
 
 gate:
   block_on:

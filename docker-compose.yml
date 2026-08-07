@@ -42,13 +42,11 @@ services:
     build:
       context: ./canary
       dockerfile: Dockerfile
-      args:
-        # Empty string → relative URL → nginx proxies /api/* to backend
-        VITE_API_URL: ""
-        # Must match API_SECRET_KEY in cyber-redteam-foundry/.env
-        VITE_API_TOKEN: "${VITE_API_TOKEN}"
     ports:
       - "8000:80"
+    environment:
+      # Server-side nginx proxy only; never bake this into a VITE_* variable.
+      API_SECRET_KEY: "${API_SECRET_KEY:?export API_SECRET_KEY before docker compose up}"
     networks:
       - canary-net
     restart: unless-stopped

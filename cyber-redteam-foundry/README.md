@@ -412,7 +412,7 @@ AWS_ACCESS_KEY_ID=
 AWS_SECRET_ACCESS_KEY=
 AWS_DEFAULT_REGION=us-west-2
 
-# API auth — must match VITE_API_TOKEN in the frontend
+# API auth — used by GitHub Actions and server-side dashboard proxy only
 API_SECRET_KEY=
 
 # Target allowlist — comma-separated endpoints this tool is permitted to attack.

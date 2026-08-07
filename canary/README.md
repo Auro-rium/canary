@@ -7,7 +7,7 @@
 [![nginx](https://img.shields.io/badge/nginx-1.25--alpine-009639.svg)](https://nginx.org/)
 [![Docker](https://img.shields.io/badge/Docker-multi--stage-2496ed.svg)](https://www.docker.com/)
 
-Real-time dashboard for the **Cyber Red Team Foundry** backend, built with React 19 + TypeScript + Vite 8. Styled with TailwindCSS and JetBrains Mono, served via nginx, communicating over REST and Server-Sent Events.
+Read-only release-evidence dashboard for the **Cyber Red Team Foundry** backend, built with React 19 + TypeScript + Vite 8. CI owns attack execution; the browser never holds a Canary bearer token.
 
 ---
 
@@ -15,13 +15,13 @@ Real-time dashboard for the **Cyber Red Team Foundry** backend, built with React
 
 ### RunAuditPage — `/audit`
 
-Campaign launch and live monitoring.
+Historical campaign monitoring. Production attack launches happen in GitHub Actions.
 
 - Submits `POST /api/campaigns/run` with target URL, attack strategies, and intensity.
 - Opens SSE stream for live events; renders 4-node agent topology with animated edges.
 - Three phases: **CONFIG → RUNNING → REPORT**.
 - Final report: campaign_id, run_id, finding counts (by severity), duration, target.
-- Mock simulation mode when `VITE_API_TOKEN` is not set.
+- The public deployment does not simulate results when API access is unavailable.
 
 **SSE event types** emitted by `POST /api/campaigns/run`:
 
@@ -128,12 +128,12 @@ No external UI component library. All UI is hand-built with Tailwind utility cla
 
 | Variable | Description | Default |
 |---|---|---|
-| `VITE_API_URL` | Backend base URL | `""` (relative — nginx proxies) |
-| `VITE_API_TOKEN` | Bearer token; must match `API_SECRET_KEY` on the backend | — |
+| `CANARY_API_URL` | Upstream backend base URL, server-side Vercel env | — |
+| `CANARY_API_TOKEN` | Backend bearer token, server-side Vercel env | — |
 
-When `VITE_API_URL` is empty (the default), all `/api/*` requests are relative and nginx routes them to `redteam-backend:8001`. In dev, Vite's proxy handles the same routing to `http://localhost:8001`.
+The browser always requests its same-origin `/api/*` path. Vercel's read-only proxy injects the server-side token; Docker nginx injects `API_SECRET_KEY` into its upstream request.
 
-All requests include `Authorization: Bearer <VITE_API_TOKEN>`.
+No `VITE_API_TOKEN` is supported: Vite would embed it in a public JavaScript bundle.
 
 ---
 
@@ -159,7 +159,7 @@ npm install
 npm run dev        # http://localhost:5173
 ```
 
-Create `.env.local` with `VITE_API_TOKEN` to authenticate against a running backend. Without it, pages default to built-in mock simulation.
+For local UI work, run the Docker stack so nginx can supply the server-side API credential. The Vite server is intentionally not an authenticated production proxy.
 
 ---
 
@@ -179,8 +179,6 @@ Multi-stage build: Node 20 builds the static assets, nginx 1.25-alpine serves th
 
 ```bash
 docker build -t canary-frontend \
-  --build-arg VITE_API_URL="" \
-  --build-arg VITE_API_TOKEN="your-token" \
   .
 ```
 
@@ -207,7 +205,7 @@ The container serves the SPA on port **8000** and proxies `/api/*` to `redteam-b
 
 ## API Surface
 
-All requests are authenticated with `Authorization: Bearer <VITE_API_TOKEN>`. Every route below is wrapped in `src/lib/api.ts`, the single client shared by all pages and the Console — no page constructs its own fetch/auth boilerplate.
+The dashboard proxy authenticates server-side and permits GET/HEAD only. Every browser request is wrapped in `src/lib/api.ts`; CI writes releases through the authenticated backend API.
 
 | Method | Endpoint | Used by |
 |---|---|---|

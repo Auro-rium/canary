@@ -40,6 +40,10 @@ class Settings(BaseSettings):
     # production).
     allowed_targets: str = ""
 
+    # Local Docker demos can opt into private-network targets. Keep false for
+    # every hosted deployment so target registration cannot become SSRF.
+    allow_private_targets: bool = False
+
     # Target
     target_mode: str = "sandbox"  # sandbox | http
     target_endpoint: Optional[str] = None

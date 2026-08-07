@@ -1,89 +1,208 @@
 name: Agent Canary
-description: Attack a registered preview agent and block a pull request on new security regressions.
+description: Run an agent security release gate from the repository's checked-in canary.yaml.
 inputs:
   api-url:
-    description: Base URL for the hosted Agent Canary API.
+    description: Base URL for the hosted Canary API.
     required: true
   api-token:
-    description: Canary API bearer token.
+    description: Canary API bearer token. Keep this in GitHub Actions secrets.
     required: true
-  project-id:
-    description: Registered Canary project ID.
-    required: true
-  commit-sha:
-    description: Revision being evaluated. Defaults to the current GitHub SHA.
+  target-url:
+    description: Public preview-agent chat endpoint. Overrides target.endpoint in canary.yaml.
     required: false
-    default: ${{ github.sha }}
+    default: ""
+  config-path:
+    description: Path to the checked-in Canary configuration.
+    required: false
+    default: canary.yaml
+  start-command:
+    description: Optional command that starts the agent before Canary probes it.
+    required: false
+    default: ""
+  health-url:
+    description: Optional health endpoint. Overrides target.health in canary.yaml.
+    required: false
+    default: ""
+  commit-sha:
+    description: Revision being evaluated.
+    required: false
+    default: ${{ github.event.pull_request.head.sha || github.sha }}
+  git-ref:
+    description: Branch/ref being evaluated; only the default branch may advance the baseline.
+    required: false
+    default: ${{ github.head_ref || github.ref_name }}
+  default-branch:
+    description: Repository branch that owns the safe baseline.
+    required: false
+    default: ${{ github.event.repository.default_branch || 'main' }}
   environment:
-    description: Release environment.
+    description: Environment label shown in release history.
     required: false
     default: preview
   poll-seconds:
-    description: Maximum seconds to wait for the red-team run.
+    description: Maximum seconds to wait for the real red-team run.
     required: false
-    default: "600"
+    default: "900"
+  report-dir:
+    description: Directory where JSON and Markdown report artifacts are written.
+    required: false
+    default: canary-report
 outputs:
   decision:
-    description: Release-gate decision: pass, warn, or block.
-    value: ${{ steps.wait.outputs.decision }}
+    description: "Release-gate decision: pass, warn, or block."
+    value: ${{ steps.execute.outputs.decision }}
   release-id:
-    description: Canary release record ID.
-    value: ${{ steps.create.outputs.release_id }}
+    description: Immutable Canary release record ID.
+    value: ${{ steps.execute.outputs.release_id }}
+  report-dir:
+    description: Directory containing report.json and report.md.
+    value: ${{ steps.execute.outputs.report_dir }}
 runs:
   using: composite
   steps:
-    - id: create
+    - id: execute
       shell: bash
       env:
         CANARY_API_URL: ${{ inputs.api-url }}
         CANARY_API_TOKEN: ${{ inputs.api-token }}
-        CANARY_PROJECT_ID: ${{ inputs.project-id }}
+        CANARY_TARGET_URL: ${{ inputs.target-url }}
+        CANARY_CONFIG_PATH: ${{ inputs.config-path }}
+        CANARY_START_COMMAND: ${{ inputs.start-command }}
+        CANARY_HEALTH_URL: ${{ inputs.health-url }}
         CANARY_COMMIT_SHA: ${{ inputs.commit-sha }}
+        CANARY_GIT_REF: ${{ inputs.git-ref }}
+        CANARY_DEFAULT_BRANCH: ${{ inputs.default-branch }}
         CANARY_ENVIRONMENT: ${{ inputs.environment }}
+        CANARY_POLL_SECONDS: ${{ inputs.poll-seconds }}
+        CANARY_REPORT_DIR: ${{ inputs.report-dir }}
+        CANARY_REPOSITORY: ${{ github.repository }}
+        CANARY_EVENT_NAME: ${{ github.event_name }}
       run: |
         set -euo pipefail
+        test -f "$CANARY_CONFIG_PATH"
+        mkdir -p "$CANARY_REPORT_DIR"
+
+        # Ruby ships on GitHub-hosted runners and provides a real YAML parser;
+        # no untrusted shell interpolation or third-party config action needed.
+        ruby <<'RUBY'
+        require "yaml"
+        require "json"
+        require "uri"
+
+        config = YAML.safe_load(File.read(ENV.fetch("CANARY_CONFIG_PATH")), aliases: false) || {}
+        target = config.fetch("target") { raise "canary.yaml must contain target" }
+        configured_endpoint = target.fetch("endpoint") { raise "target.endpoint is required" }.to_s
+        endpoint = ENV.fetch("CANARY_TARGET_URL", "").strip
+        endpoint = configured_endpoint if endpoint.empty?
+        endpoint = endpoint.gsub("${CANARY_TARGET_URL}", ENV.fetch("CANARY_TARGET_URL", ""))
+        raise "target endpoint is empty; set target-url or CANARY_TARGET_URL" if endpoint.empty? || endpoint.include?("${")
+
+        health = ENV.fetch("CANARY_HEALTH_URL", "").strip
+        health = target["health"].to_s if health.empty? && target["health"]
+        if !health.empty? && health.start_with?("/")
+          uri = URI(endpoint)
+          health = "#{uri.scheme}://#{uri.host}#{uri.port ? ":#{uri.port}" : ""}#{health}"
+        end
+
+        request_template = target["request"] || target["request_template"] || '{"message":"{{PROMPT}}"}'
+        request_template = JSON.generate(request_template) unless request_template.is_a?(String)
+        request = {
+          repository: ENV.fetch("CANARY_REPOSITORY"),
+          commit_sha: ENV.fetch("CANARY_COMMIT_SHA"),
+          ref: ENV.fetch("CANARY_GIT_REF"),
+          event_name: ENV.fetch("CANARY_EVENT_NAME"),
+          default_branch: ENV.fetch("CANARY_DEFAULT_BRANCH"),
+          environment: ENV.fetch("CANARY_ENVIRONMENT"),
+          endpoint: endpoint,
+          request_template: request_template,
+          response_path: target["response_path"],
+          strategies: (config.dig("security", "strategies") || []),
+          gate: (config["gate"] || {})
+        }
+        report_dir = ENV.fetch("CANARY_REPORT_DIR")
+        File.write(File.join(report_dir, "release-request.json"), JSON.pretty_generate(request))
+        File.write(File.join(report_dir, ".health-url"), health) unless health.empty?
+        RUBY
+
+        agent_pid=""
+        cleanup() {
+          if [[ -n "$agent_pid" ]] && kill -0 "$agent_pid" 2>/dev/null; then
+            kill "$agent_pid" 2>/dev/null || true
+          fi
+        }
+        trap cleanup EXIT
+        if [[ -n "$CANARY_START_COMMAND" ]]; then
+          nohup bash -lc "$CANARY_START_COMMAND" >"$CANARY_REPORT_DIR/agent.log" 2>&1 &
+          agent_pid="$!"
+        fi
+
+        health_url=""
+        [[ -f "$CANARY_REPORT_DIR/.health-url" ]] && health_url="$(<"$CANARY_REPORT_DIR/.health-url")"
+        if [[ -n "$health_url" ]]; then
+          deadline=$((SECONDS + 90))
+          until curl --fail --silent --show-error --max-time 5 "$health_url" >/dev/null; do
+            if (( SECONDS >= deadline )); then
+              echo "Agent did not become healthy at $health_url" >&2
+              exit 1
+            fi
+            sleep 2
+          done
+        fi
+
         response="$(curl --fail-with-body --silent --show-error \
-          --request POST "${CANARY_API_URL%/}/api/projects/${CANARY_PROJECT_ID}/releases" \
+          --request POST "${CANARY_API_URL%/}/api/ci/releases" \
           --header "Authorization: Bearer ${CANARY_API_TOKEN}" \
           --header "Content-Type: application/json" \
-          --data "{\"commit_sha\":\"${CANARY_COMMIT_SHA}\",\"environment\":\"${CANARY_ENVIRONMENT}\"}")"
-        release_id="$(jq --raw-output '.release_id' <<<"${response}")"
-        test -n "${release_id}" && test "${release_id}" != "null"
-        echo "release_id=${release_id}" >> "$GITHUB_OUTPUT"
-    - id: wait
-      shell: bash
-      env:
-        CANARY_API_URL: ${{ inputs.api-url }}
-        CANARY_API_TOKEN: ${{ inputs.api-token }}
-        CANARY_RELEASE_ID: ${{ steps.create.outputs.release_id }}
-        CANARY_POLL_SECONDS: ${{ inputs.poll-seconds }}
-      run: |
-        set -euo pipefail
+          --data @"$CANARY_REPORT_DIR/release-request.json")"
+        release_id="$(jq --raw-output '.release_id' <<<"$response")"
+        test -n "$release_id" && test "$release_id" != "null"
+        echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
+
+        status="running"
         deadline=$((SECONDS + CANARY_POLL_SECONDS))
         while (( SECONDS < deadline )); do
           release="$(curl --fail-with-body --silent --show-error \
             --header "Authorization: Bearer ${CANARY_API_TOKEN}" \
-            "${CANARY_API_URL%/}/api/releases/${CANARY_RELEASE_ID}")"
-          status="$(jq --raw-output '.status' <<<"${release}")"
-          if [[ "${status}" == "completed" || "${status}" == "failed" ]]; then
-            break
-          fi
+            "${CANARY_API_URL%/}/api/releases/${release_id}")"
+          status="$(jq --raw-output '.status' <<<"$release")"
+          if [[ "$status" == "completed" || "$status" == "failed" ]]; then break; fi
           sleep 10
         done
-        if [[ "${status}" != "completed" && "${status}" != "failed" ]]; then
-          echo "Agent Canary timed out waiting for release ${CANARY_RELEASE_ID}" >&2
+        if [[ "$status" != "completed" && "$status" != "failed" ]]; then
+          echo "Agent Canary timed out waiting for release $release_id" >&2
           exit 1
         fi
-        decision="$(jq --raw-output '.decision // "block"' <<<"${release}")"
-        echo "decision=${decision}" >> "$GITHUB_OUTPUT"
-        {
-          echo "## Agent Canary"
-          echo
-          echo "Release: \`${CANARY_RELEASE_ID}\`"
-          echo "Decision: **${decision^^}**"
-          echo
-          echo '```json'
-          jq '{summary, comparison}' <<<"${release}"
-          echo '```'
-        } >> "$GITHUB_STEP_SUMMARY"
-        [[ "${decision}" != "block" ]]
+
+        decision="$(jq --raw-output '.decision // "block"' <<<"$release")"
+        curl --fail-with-body --silent --show-error \
+          --header "Authorization: Bearer ${CANARY_API_TOKEN}" \
+          "${CANARY_API_URL%/}/api/releases/${release_id}/report" \
+          > "$CANARY_REPORT_DIR/report.json"
+        curl --fail-with-body --silent --show-error \
+          --header "Authorization: Bearer ${CANARY_API_TOKEN}" \
+          "${CANARY_API_URL%/}/api/releases/${release_id}/report.md" \
+          > "$CANARY_REPORT_DIR/report.md"
+        echo "decision=$decision" >> "$GITHUB_OUTPUT"
+        echo "report_dir=$CANARY_REPORT_DIR" >> "$GITHUB_OUTPUT"
+        cat "$CANARY_REPORT_DIR/report.md" >> "$GITHUB_STEP_SUMMARY"
+
+    - name: Upload Canary evidence
+      if: ${{ always() }}
+      uses: actions/upload-artifact@v4
+      with:
+        name: canary-security-report-${{ inputs.commit-sha }}
+        path: ${{ inputs.report-dir }}
+        if-no-files-found: warn
+        retention-days: 14
+
+    - name: Enforce release gate
+      shell: bash
+      env:
+        CANARY_DECISION: ${{ steps.execute.outputs.decision }}
+      run: |
+        set -euo pipefail
+        test -n "$CANARY_DECISION"
+        if [[ "$CANARY_DECISION" == "block" ]]; then
+          echo "Agent Canary blocked this release because it introduced policy-violating security regressions." >&2
+          exit 1
+        fi
