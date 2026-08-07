@@ -319,3 +319,38 @@ cyber-rt graph           # print Mermaid diagram of the LangGraph workflow
 ## License
 
 [MIT](https://opensource.org/licenses/MIT)
+
+---
+
+## CUTC: CI for AI-agent security
+
+Agent Canary now includes a release-gate product layer on top of the existing
+LangGraph red-team engine. Register a project once, then evaluate each preview
+release against the previous completed baseline:
+
+```text
+PR → preview agent → Canary attack campaign → finding comparison → PASS / WARN / BLOCK
+```
+
+The API exposes:
+
+- `POST /api/projects` — register a project and target contract
+- `POST /api/projects/verify-target` — safely probe a public preview endpoint
+- `POST /api/projects/{project_id}/releases` — start a commit-tied evaluation
+- `GET /api/projects/{project_id}/releases` and `GET /api/releases/{release_id}` — show evidence and gate status
+
+The first completed release establishes the baseline. Later releases only
+block when they introduce findings that breach the project policy (critical or
+high by default). Existing canonical finding IDs are reported as known rather
+than repeatedly treated as regressions.
+
+### Deployment
+
+- Deploy `cyber-redteam-foundry/` as the existing Docker service on AWS. Set
+  `API_SECRET_KEY` and `FRONTEND_ORIGINS=https://<your-vercel-dashboard>`.
+- Deploy `canary/` as a separate Vercel project. Set its Root Directory to
+  `canary`, and configure `VITE_API_URL` and `VITE_API_TOKEN` from
+  `canary/.env.example`.
+- Commit `canary.yaml` with the agent repository and configure the three
+  `CANARY_*` repository secrets. The included workflow invokes
+  [`action/action.yml`](action/action.yml) on each trusted pull request.

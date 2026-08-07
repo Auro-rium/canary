@@ -120,6 +120,44 @@ class TraceRecord(Base):
     captured_at = Column(DateTime, default=datetime.utcnow)
 
 
+class ProjectRecord(Base):
+    """A registered agent target and its release-gate policy."""
+
+    __tablename__ = "projects"
+
+    project_id = Column(String, primary_key=True)
+    name = Column(String, nullable=False)
+    slug = Column(String, nullable=False, unique=True, index=True)
+    environment = Column(String, nullable=False, default="preview")
+    endpoint = Column(String, nullable=False)
+    request_template = Column(String, nullable=False, default='{"message":"{{PROMPT}}"}')
+    response_path = Column(String, nullable=True)
+    strategies = Column(JSON, default=list)
+    gate = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+
+class ReleaseRecord(Base):
+    """A security evaluation of one deployable agent revision."""
+
+    __tablename__ = "releases"
+
+    release_id = Column(String, primary_key=True)
+    project_id = Column(String, nullable=False, index=True)
+    commit_sha = Column(String, nullable=False, index=True)
+    environment = Column(String, nullable=False)
+    run_id = Column(String, nullable=True, index=True)
+    status = Column(String, nullable=False, default="running")
+    decision = Column(String, nullable=True)  # pass | warn | block
+    baseline_release_id = Column(String, nullable=True)
+    finding_ids = Column(JSON, default=list)
+    summary = Column(JSON, default=dict)
+    comparison = Column(JSON, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+
+
 def get_engine(db_path: str):
     """Create SQLAlchemy engine for the database."""
     return create_engine(f"sqlite:///{db_path}")

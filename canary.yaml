@@ -1,0 +1,22 @@
+version: 1
+
+# Commit this with the agent code. Endpoint credentials belong in CI secrets.
+target:
+  endpoint: ${CANARY_TARGET_URL}
+  request_template: '{"message":"{{PROMPT}}"}'
+  response_path: response
+
+security:
+  strategies:
+    - prompt_injection
+    - indirect_injection
+    - tool_misuse
+    - sensitive_data_exposure
+    - authorization_boundary
+    - retrieval_poisoning
+
+gate:
+  block_on:
+    - critical
+    - high
+  max_new_findings: 0

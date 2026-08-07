@@ -1,0 +1,28 @@
+name: Agent Canary release gate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  agent-canary:
+    # Forked pull requests never receive secrets. Configure these repository
+    # secrets to activate the gate on trusted pull requests.
+    env:
+      CANARY_API_URL: ${{ secrets.CANARY_API_URL }}
+      CANARY_API_TOKEN: ${{ secrets.CANARY_API_TOKEN }}
+      CANARY_PROJECT_ID: ${{ secrets.CANARY_PROJECT_ID }}
+    if: ${{ env.CANARY_API_URL != '' && env.CANARY_API_TOKEN != '' && env.CANARY_PROJECT_ID != '' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+      - name: Agent Canary
+        uses: ./action
+        with:
+          api-url: ${{ secrets.CANARY_API_URL }}
+          api-token: ${{ secrets.CANARY_API_TOKEN }}
+          project-id: ${{ secrets.CANARY_PROJECT_ID }}
+          commit-sha: ${{ github.event.pull_request.head.sha || github.sha }}
+          environment: preview
