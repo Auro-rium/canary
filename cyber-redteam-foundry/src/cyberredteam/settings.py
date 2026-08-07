@@ -29,6 +29,10 @@ class Settings(BaseSettings):
     # Must match the VITE_API_TOKEN configured in the frontend.
     api_secret_key: Optional[str] = None
 
+    # Comma-separated public dashboard origins. Keep this explicit in hosted
+    # deployments so the browser API is not open to arbitrary web origins.
+    frontend_origins: str = ""
+
     # Authorization scope: comma-separated list of target_ids a run may be
     # created against. When set, a run targeting anything else is rejected —
     # "attack only what you're allowed to" as a hard constraint. When empty,

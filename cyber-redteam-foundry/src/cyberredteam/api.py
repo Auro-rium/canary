@@ -2,28 +2,44 @@
 
 import json
 import logging
+import re
 import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import httpx
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from cyberredteam.langgraph.orchestrator import GraphOrchestrator
 from cyberredteam.schemas import RunConfig, StrategyType
 from cyberredteam.settings import get_settings
 from cyberredteam.storage.artifact_store import SQLiteStore
-from cyberredteam.storage.models import AttackRecord, RunRecord
+from cyberredteam.release_gate import (
+    DEFAULT_STRATEGIES,
+    create_project,
+    create_release,
+    finalise_release,
+    mark_release_failed,
+    project_payload,
+    release_payload,
+    validate_public_http_endpoint,
+)
+from cyberredteam.storage.models import AttackRecord, ProjectRecord, ReleaseRecord, RunRecord
 
 logger = logging.getLogger("cyberredteam.api")
 logging.basicConfig(level=logging.INFO)
 
 settings = get_settings()
+
+
+def _frontend_origins() -> list[str]:
+    return [origin.strip() for origin in settings.frontend_origins.split(",") if origin.strip()] or ["*"]
 
 
 def require_auth(authorization: Optional[str] = Header(None)) -> None:
@@ -53,11 +69,11 @@ app = FastAPI(
     dependencies=[Depends(require_auth)],
 )
 
-# Enable CORS for the React frontend. Auth is via bearer token (not cookies),
-# so credentials are not allowed and a wildcard origin is safe.
+# Enable CORS for the React frontend. Hosted deployments set FRONTEND_ORIGINS
+# explicitly; bearer authentication means cookies are never allowed.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Adjust in production
+    allow_origins=_frontend_origins(),
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -68,6 +84,47 @@ class RunRequest(BaseModel):
     target_id: str
     strategy: Optional[str] = None
     intensity: Optional[str] = "Medium"
+
+
+class ProjectCreateRequest(BaseModel):
+    name: str
+    endpoint: str
+    environment: str = "preview"
+    request_template: str = '{"message":"{{PROMPT}}"}'
+    response_path: Optional[str] = None
+    strategies: List[str] = Field(default_factory=list)
+    gate: Dict[str, object] = Field(default_factory=dict)
+
+
+class VerifyTargetRequest(BaseModel):
+    endpoint: str
+    request_template: str = '{"message":"{{PROMPT}}"}'
+    response_path: Optional[str] = None
+
+
+class ReleaseCreateRequest(BaseModel):
+    commit_sha: str
+    environment: Optional[str] = None
+
+
+def _validate_target_contract(endpoint: str, request_template: str) -> None:
+    validate_public_http_endpoint(endpoint)
+    try:
+        decoded = json.loads(request_template)
+    except (json.JSONDecodeError, TypeError) as error:
+        raise ValueError("Request template must be valid JSON") from error
+    if not isinstance(decoded, (dict, list)) or '"{{PROMPT}}"' not in request_template:
+        raise ValueError('Request template must contain the quoted "{{PROMPT}}" placeholder')
+
+
+def _release_strategies(values: List[str]) -> List[StrategyType]:
+    selected = []
+    for value in values:
+        try:
+            selected.append(StrategyType(value))
+        except ValueError:
+            continue
+    return selected or [StrategyType.PROMPT_INJECTION]
 
 
 # Active background runs cache to track running orchestrators
@@ -135,6 +192,38 @@ def run_orchestrator_thread(
             logger.error(f"[API] Failed to update failed status in DB: {dbe}")
 
 
+def run_release_orchestrator_thread(
+    release_id: str,
+    run_id: str,
+    project: ProjectRecord,
+    strategy_types: List[StrategyType],
+) -> None:
+    """Run a project release and persist its baseline comparison on completion."""
+    run_orchestrator_thread(
+        run_id,
+        project.endpoint,
+        strategy_types,
+        max_iterations=3,
+        max_attempts=max(4, len(strategy_types) * 2),
+        target_request_template=project.request_template,
+        target_response_path=project.response_path,
+    )
+    store = SQLiteStore(Path(settings.db_path))
+    try:
+        with store.SessionLocal() as session:
+            run = session.get(RunRecord, run_id)
+            if run and run.status == "completed":
+                finalise_release(session, release_id)
+            else:
+                mark_release_failed(session, release_id, "Red-team run failed before comparison")
+    except Exception as error:
+        logger.exception("[API] Failed to finalise release %s", release_id)
+        with store.SessionLocal() as session:
+            mark_release_failed(session, release_id, str(error))
+    finally:
+        store.close()
+
+
 @app.get("/api/status")
 def get_status():
     """Verify backend status."""
@@ -145,6 +234,179 @@ def get_status():
         "database_exists": db_exists,
         "report_directory": str(settings.report_output_dir),
     }
+
+
+# ── CUTC: projects, target contracts, and release gates ─────────────────────
+
+def _project_or_404(session, project_id: str) -> ProjectRecord:
+    project = session.get(ProjectRecord, project_id)
+    if project is None:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+@app.post("/api/projects", status_code=201)
+def create_project_endpoint(body: ProjectCreateRequest):
+    """Register a preview agent and its versioned target contract."""
+    if not body.name.strip():
+        raise HTTPException(status_code=422, detail="Project name is required")
+    try:
+        _validate_target_contract(body.endpoint, body.request_template)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error)) from error
+
+    store = SQLiteStore(Path(settings.db_path))
+    try:
+        with store.SessionLocal() as session:
+            project = create_project(
+                session,
+                {
+                    "name": body.name,
+                    "endpoint": body.endpoint,
+                    "environment": body.environment,
+                    "request_template": body.request_template,
+                    "response_path": body.response_path,
+                    "strategies": body.strategies or DEFAULT_STRATEGIES,
+                    "gate": body.gate,
+                },
+            )
+            return project_payload(project)
+    finally:
+        store.close()
+
+
+@app.get("/api/projects")
+def list_projects():
+    store = SQLiteStore(Path(settings.db_path))
+    try:
+        with store.SessionLocal() as session:
+            projects = session.scalars(select(ProjectRecord).order_by(ProjectRecord.created_at.desc())).all()
+            return [project_payload(project) for project in projects]
+    finally:
+        store.close()
+
+
+@app.get("/api/projects/{project_id}")
+def get_project(project_id: str):
+    store = SQLiteStore(Path(settings.db_path))
+    try:
+        with store.SessionLocal() as session:
+            return project_payload(_project_or_404(session, project_id))
+    finally:
+        store.close()
+
+
+@app.post("/api/projects/verify-target")
+def verify_target(body: VerifyTargetRequest):
+    """Safely probe a public preview agent before it is registered.
+
+    No response content is stored; the endpoint is only used to confirm the
+    contract can be reached and, when specified, that its response path exists.
+    """
+    try:
+        _validate_target_contract(body.endpoint, body.request_template)
+        payload = json.loads(body.request_template.replace('"{{PROMPT}}"', json.dumps("Canary connection verification.")))
+        response = httpx.post(body.endpoint, json=payload, timeout=10.0, follow_redirects=False)
+        response.raise_for_status()
+    except (ValueError, httpx.HTTPError) as error:
+        raise HTTPException(status_code=422, detail=f"Target verification failed: {error}") from error
+
+    response_path_detected = None
+    if body.response_path:
+        try:
+            data = response.json()
+            current = data
+            for segment in body.response_path.split("."):
+                current = current[int(segment)] if isinstance(current, list) else current[segment]
+            response_path_detected = isinstance(current, str)
+        except (ValueError, KeyError, IndexError, TypeError):
+            response_path_detected = False
+
+    return {
+        "reachable": True,
+        "status_code": response.status_code,
+        "response_path_detected": response_path_detected,
+    }
+
+
+@app.post("/api/projects/{project_id}/releases", status_code=202)
+def create_project_release(project_id: str, body: ReleaseCreateRequest):
+    """Attack one agent release, then compare it against the safe baseline."""
+    if not re.fullmatch(r"[A-Za-z0-9._/-]{4,128}", body.commit_sha):
+        raise HTTPException(status_code=422, detail="commit_sha contains unsupported characters")
+
+    with _active_runs_lock:
+        if _running_count() >= settings.max_concurrent_runs:
+            raise HTTPException(
+                status_code=429,
+                detail=f"Maximum concurrent runs ({settings.max_concurrent_runs}) reached. Try again once a run completes.",
+            )
+        run_id = uuid.uuid4().hex[:12]
+        active_runs[run_id] = "running"
+
+    store = SQLiteStore(Path(settings.db_path))
+    try:
+        with store.SessionLocal() as session:
+            project = _project_or_404(session, project_id)
+            release = create_release(session, project, body.commit_sha, body.environment or project.environment)
+            release.run_id = run_id
+            session.commit()
+            session.refresh(release)
+            store.save_run_start(run_id, project.endpoint)
+            snapshot = project_payload(project)
+            response_payload = release_payload(release)
+    except Exception:
+        active_runs.pop(run_id, None)
+        raise
+    finally:
+        store.close()
+
+    project_snapshot = ProjectRecord(
+        project_id=snapshot["project_id"],
+        name=snapshot["name"],
+        slug=snapshot["slug"],
+        environment=snapshot["environment"],
+        endpoint=snapshot["endpoint"],
+        request_template=snapshot["request_template"],
+        response_path=snapshot["response_path"],
+        strategies=snapshot["strategies"],
+        gate=snapshot["gate"],
+    )
+    threading.Thread(
+        target=run_release_orchestrator_thread,
+        args=(response_payload["release_id"], run_id, project_snapshot, _release_strategies(snapshot["strategies"])),
+        daemon=True,
+    ).start()
+    return response_payload
+
+
+@app.get("/api/projects/{project_id}/releases")
+def list_project_releases(project_id: str):
+    store = SQLiteStore(Path(settings.db_path))
+    try:
+        with store.SessionLocal() as session:
+            _project_or_404(session, project_id)
+            releases = session.scalars(
+                select(ReleaseRecord)
+                .where(ReleaseRecord.project_id == project_id)
+                .order_by(ReleaseRecord.created_at.desc())
+            ).all()
+            return [release_payload(release) for release in releases]
+    finally:
+        store.close()
+
+
+@app.get("/api/releases/{release_id}")
+def get_release(release_id: str):
+    store = SQLiteStore(Path(settings.db_path))
+    try:
+        with store.SessionLocal() as session:
+            release = session.get(ReleaseRecord, release_id)
+            if release is None:
+                raise HTTPException(status_code=404, detail="Release not found")
+            return release_payload(release)
+    finally:
+        store.close()
 
 
 @app.post("/api/runs")

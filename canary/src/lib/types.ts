@@ -36,3 +36,44 @@ export interface SSEEvent {
   type: string
   payload: unknown
 }
+
+export interface CanaryProject {
+  project_id: string
+  name: string
+  slug: string
+  environment: string
+  endpoint: string
+  request_template: string
+  response_path: string | null
+  strategies: string[]
+  gate: { block_on: string[]; max_new_findings: number }
+  created_at: string | null
+  updated_at: string | null
+}
+
+export interface CanaryRelease {
+  release_id: string
+  project_id: string
+  commit_sha: string
+  environment: string
+  run_id: string | null
+  status: 'running' | 'completed' | 'failed'
+  decision: 'pass' | 'warn' | 'block' | null
+  baseline_release_id: string | null
+  finding_ids: string[]
+  summary: {
+    total_findings?: number
+    coverage?: number
+    security_score?: number
+    severity_counts?: Record<string, number>
+    error?: string
+  }
+  comparison: {
+    new_finding_ids?: string[]
+    known_finding_ids?: string[]
+    resolved_finding_ids?: string[]
+    baseline_established?: boolean
+  }
+  created_at: string | null
+  completed_at: string | null
+}
