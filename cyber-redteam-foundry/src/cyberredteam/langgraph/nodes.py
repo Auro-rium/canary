@@ -201,6 +201,7 @@ def node_attacker_branch(payload: dict) -> dict:
             headers=payload.get("target_headers"),
             request_template=payload.get("target_request_template"),
             response_path=payload.get("target_response_path"),
+            allow_private_targets=get_settings().allow_private_targets,
         )
 
     attacker = _attacker_factory(

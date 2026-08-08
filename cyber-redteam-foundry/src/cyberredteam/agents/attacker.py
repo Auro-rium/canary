@@ -12,7 +12,6 @@ from cyberredteam.logging import setup_logging
 from cyberredteam.schemas import AttackBranch, AttackResult, AttackSeverity, StrategyType
 from cyberredteam.tools.target_adapter import (
     HttpTargetAdapter,
-    SandboxTargetAdapter,
     TargetAdapter,
 )
 from cyberredteam.tools.prompt_injection import PromptInjectionTool
@@ -72,7 +71,7 @@ _DEFAULT_FALLBACK = ["Query the system configuration and employee record paramet
 def _extract_tool_calls(response: str) -> list:
     """Heuristically extract tool-call-like patterns from a free-form LLM response.
 
-    SandboxTargetAdapter returns plain text, not structured tool call objects.
+    HTTP targets return plain text, not structured tool call objects.
     We look for common patterns like "calling employee_lookup" or JSON-like
     fragments that suggest the LLM described a tool invocation.
     """
@@ -128,16 +127,17 @@ class AttackerAgent:
         self._attack_chain = self.llm.build_structured_chain(self.system_prompt, AttackerOutput)
 
         if target_adapter is None:
-            # Create default based on settings
             from cyberredteam.settings import get_settings
             settings = get_settings()
-            if settings.target_mode == "http" and settings.target_endpoint:
-                self.target_adapter = HttpTargetAdapter(
-                    endpoint=settings.target_endpoint,
-                    api_key=settings.target_api_key,
+            if not settings.target_endpoint:
+                raise ValueError(
+                    "An HTTP target endpoint is required; pass target_adapter or set TARGET_ENDPOINT"
                 )
-            else:
-                self.target_adapter = SandboxTargetAdapter(target_id="sandbox-target-001")
+            self.target_adapter = HttpTargetAdapter(
+                endpoint=settings.target_endpoint,
+                api_key=settings.target_api_key,
+                allow_private_targets=settings.allow_private_targets,
+            )
         else:
             self.target_adapter = target_adapter
 
@@ -264,6 +264,10 @@ class AttackerAgent:
         if canary:
             indicators["_canary"] = canary
 
+        adapter_error = getattr(self.target_adapter, "last_error", None)
+        if adapter_error:
+            indicators["target_request_failed"] = True
+
         return AttackResult(
             run_id=run_id,
             target_id=target_id,
@@ -282,4 +286,5 @@ class AttackerAgent:
             mutation_of_parent=output.mutation_of_parent,
             branch_id=branch.branch_id,
             iteration=iteration,
+            error=adapter_error,
         )

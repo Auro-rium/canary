@@ -97,7 +97,7 @@ it is one finding seen multiple times — not multiple findings.
   "success_rate": <float>,
 
   "assumptions": [
-    "Target is sandbox or owned deployment.",
+    "Target is an independently deployed HTTP agent owned by the project.",
     "Attack traces stored at run_id level in object store.",
     "Evaluator verdicts are evidence-based. Inconclusive verdicts are not resolved automatically."
   ],

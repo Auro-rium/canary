@@ -1,6 +1,7 @@
 # Local Development Configuration
 
-target_mode: "sandbox"
+target_endpoint: "http://host.docker.internal:9000/chat"
+allow_private_targets: true
 max_retries: 3
 timeout_seconds: 30
 deterministic_seed: 42

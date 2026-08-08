@@ -45,8 +45,7 @@ class Settings(BaseSettings):
     # every hosted deployment so target registration cannot become SSRF.
     allow_private_targets: bool = False
 
-    # Target
-    target_mode: str = "sandbox"  # sandbox | http
+    # Target. Canary always attacks an independently deployed HTTP(S) agent.
     target_endpoint: Optional[str] = None
     target_api_key: Optional[str] = None
 

@@ -39,3 +39,14 @@ def _bypass_api_auth():
     app.dependency_overrides[require_auth] = lambda: None
     yield
     app.dependency_overrides.pop(require_auth, None)
+
+
+@pytest.fixture(autouse=True)
+def _mock_http_target_requests(monkeypatch):
+    """Keep graph tests offline while exercising the real HTTP adapter."""
+    from unittest.mock import MagicMock
+    response = MagicMock()
+    response.status_code = 200
+    response.json.return_value = {"response": "safe HTTP fixture response"}
+    response.raise_for_status.return_value = None
+    monkeypatch.setattr("requests.Session.post", lambda self, *args, **kwargs: response)

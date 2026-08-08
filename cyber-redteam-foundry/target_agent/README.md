@@ -1,4 +1,4 @@
-# Target Agent — Standalone ReAct Victim Sandbox 🛡️🎯
+# Target Agent — Standalone ReAct HTTP fixture 🛡️🎯
 
 [![LangChain](https://img.shields.io/badge/LangChain-Agent-2ea44f.svg)](https://python.langchain.com/)
 [![AWS Bedrock](https://img.shields.io/badge/AWS%20Bedrock-Nova%20Pro-orange.svg)](https://aws.amazon.com/bedrock/)

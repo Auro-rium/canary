@@ -100,7 +100,7 @@ class TestGraphInvocation:
 
         state: RedTeamState = {
             "run_id": "test",
-            "target_id": "sandbox",
+            "target_id": "https://agent.example.com/chat",
             "description": "test run",
             "seed": None,
             "status": "running",
@@ -192,7 +192,7 @@ class TestParallelFanOut:
 
         state: RedTeamState = {
             "run_id": "fanout1",
-            "target_id": "sandbox-target-001",
+            "target_id": "https://agent.example.com/chat",
             "description": "fan-out smoke target",
             "seed": None,
             "status": "running",

@@ -58,7 +58,7 @@ def init() -> None:
 
 @app.command()
 def run(
-    target_id: str = typer.Option("sandbox-target-001", help="Target ID"),
+    target_id: str = typer.Option(..., help="Verified HTTP(S) agent endpoint"),
     strategies: str = typer.Option(
         "prompt_injection,indirect_injection,tool_misuse",
         help="Attack strategies (comma-separated)",
@@ -89,6 +89,9 @@ def run(
         seed=seed,
         description=f"Attack on {target_id}",
     )
+
+    if not target_id.startswith(("http://", "https://")):
+        raise typer.BadParameter("target-id must be an http:// or https:// agent endpoint")
 
     logger.info(f"Starting run {run_id} against {target_id}")
 

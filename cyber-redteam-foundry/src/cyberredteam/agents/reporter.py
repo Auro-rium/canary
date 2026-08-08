@@ -14,7 +14,7 @@ logger = setup_logging()
 
 # Hardcoded per the reporter spec — must not be LLM-generated.
 _ASSUMPTIONS = [
-    "Target is sandbox or owned deployment.",
+    "Target is an independently deployed HTTP agent owned by the project.",
     "Attack traces stored at run_id level in object store.",
     "Evaluator verdicts are evidence-based. Inconclusive verdicts are not resolved automatically.",
 ]

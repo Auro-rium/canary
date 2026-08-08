@@ -2,7 +2,6 @@
 
 from cyberredteam.tools.target_adapter import (
     HttpTargetAdapter,
-    SandboxTargetAdapter,
     TargetAdapter,
 )
 from cyberredteam.tools.prompt_injection import (
@@ -72,7 +71,6 @@ ALL_RED_TEAM_TOOLS = [
 __all__ = [
     # Adapters
     "TargetAdapter",
-    "SandboxTargetAdapter",
     "HttpTargetAdapter",
     # Legacy class interfaces
     "PromptInjectionTool",

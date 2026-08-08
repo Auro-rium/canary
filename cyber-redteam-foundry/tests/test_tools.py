@@ -207,11 +207,12 @@ def test_extract_by_path():
 def test_http_adapter_default_contract_unchanged():
     """Regression: no template/response_path/headers → original {"message": ...} contract."""
     mock_resp = MagicMock()
+    mock_resp.status_code = 200
     mock_resp.json.return_value = {"response": "hello back"}
     mock_resp.raise_for_status.return_value = None
 
-    with patch("cyberredteam.tools.target_adapter.requests.post", return_value=mock_resp) as mock_post:
-        adapter = HttpTargetAdapter(endpoint="http://localhost:9000/chat")
+    with patch("cyberredteam.tools.target_adapter.requests.Session.post", return_value=mock_resp) as mock_post:
+        adapter = HttpTargetAdapter(endpoint="https://agent.example.com/chat")
         text, canary = adapter.execute_attack("hi", label="prompt_injection")
 
     assert text == "hello back"
@@ -225,10 +226,11 @@ def test_http_adapter_default_contract_unchanged():
 def test_http_adapter_custom_template_and_response_path():
     """A non-default schema (OpenAI-style) works via request_template + response_path."""
     mock_resp = MagicMock()
+    mock_resp.status_code = 200
     mock_resp.json.return_value = {"choices": [{"message": {"content": "the answer"}}]}
     mock_resp.raise_for_status.return_value = None
 
-    with patch("cyberredteam.tools.target_adapter.requests.post", return_value=mock_resp) as mock_post:
+    with patch("cyberredteam.tools.target_adapter.requests.Session.post", return_value=mock_resp) as mock_post:
         adapter = HttpTargetAdapter(
             endpoint="http://example.com/v1/chat/completions",
             request_template='{"messages": [{"role": "user", "content": "{{PROMPT}}"}]}',
@@ -244,12 +246,13 @@ def test_http_adapter_custom_template_and_response_path():
 def test_http_adapter_response_path_fallback_to_heuristic():
     """An unresolvable response_path falls back to the default key-guessing."""
     mock_resp = MagicMock()
+    mock_resp.status_code = 200
     mock_resp.json.return_value = {"output": "fallback text"}
     mock_resp.raise_for_status.return_value = None
 
-    with patch("cyberredteam.tools.target_adapter.requests.post", return_value=mock_resp):
+    with patch("cyberredteam.tools.target_adapter.requests.Session.post", return_value=mock_resp):
         adapter = HttpTargetAdapter(
-            endpoint="http://localhost:9000/chat",
+            endpoint="https://agent.example.com/chat",
             response_path="does.not.exist",
         )
         text, _ = adapter.execute_attack("hi", label="prompt_injection")
@@ -259,12 +262,13 @@ def test_http_adapter_response_path_fallback_to_heuristic():
 
 def test_http_adapter_custom_headers_merged_with_defaults():
     mock_resp = MagicMock()
+    mock_resp.status_code = 200
     mock_resp.json.return_value = {"response": "ok"}
     mock_resp.raise_for_status.return_value = None
 
-    with patch("cyberredteam.tools.target_adapter.requests.post", return_value=mock_resp) as mock_post:
+    with patch("cyberredteam.tools.target_adapter.requests.Session.post", return_value=mock_resp) as mock_post:
         adapter = HttpTargetAdapter(
-            endpoint="http://localhost:9000/chat",
+            endpoint="https://agent.example.com/chat",
             api_key="sk-test",
             headers={"X-API-Key": "custom-key", "Authorization": "Bearer override"},
         )
