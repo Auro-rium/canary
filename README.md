@@ -127,7 +127,7 @@ GitHub summary + release evidence dashboard
 
 The backend is FastAPI, SQLAlchemy, SQLite for local/demo deployments, and
 LangGraph. The frontend is React, TypeScript, Vite, Tailwind, and a same-origin
-server-side API proxy. Existing campaign, findings, console, SSE, and report
+server-side API proxy. Existing campaign, findings, SSE, and report
 capabilities remain available.
 
 ## API

@@ -55,25 +55,6 @@ Live incident feed and run detail panel.
 - Row click opens detail panel from `GET /api/runs/{run_id}`.
 - Attacks table with humanized strategy labels and finding IDs (linkable to FindingsPage).
 
-### Console — `/console`
-
-Chat command interface for driving campaigns and querying results, with live agent-graph visualization.
-
-- Three-panel layout: run history sidebar, chat panel, live agent graph.
-- Pattern-matched commands (no LLM):
-
-  | Command | Effect |
-  |---|---|
-  | `connect <url>` | Set target endpoint |
-  | `run <slug,slug>` \| `run all` | Launch campaign (SSE) |
-  | `show findings` \| `incidents` \| `coverage` \| `trends` \| `run <id>` | Query endpoints |
-  | `re-run last` | Replay previous campaign |
-  | `export` | Download report as JSON |
-  | `help` | List all commands |
-
-- Run history persisted to IndexedDB via `idb-keyval`.
-- State managed by `zustand` store (`src/store/useConsoleStore.ts`).
-
 ---
 
 ## Source Layout
@@ -88,23 +69,17 @@ canary/
 ├── package.json
 └── src/
     ├── main.tsx
-    ├── App.tsx              # View switch: home, audit, findings, redteam, console
+    ├── App.tsx              # View switch: home, audit, findings, redteam, projects
     ├── components/
     │   ├── Navbar.tsx
     │   ├── Hero.tsx
-    │   └── console/
-    │       ├── ConsoleLayout.tsx    # 3-panel shell
-    │       ├── Sidebar.tsx          # run history + nav
-    │       ├── ChatPanel.tsx        # command parsing + SSE dispatch
-    │       └── AgentGraphPanel.tsx  # shared agent topology SVG (also used by RunAuditPage)
+    │   └── AgentGraphPanel.tsx      # live agent topology SVG used by RunAuditPage
     ├── lib/
     │   ├── api.ts                  # single client for every backend endpoint
     │   ├── commands.ts             # chat command parser
     │   ├── db.ts                   # IndexedDB run history (idb-keyval)
     │   ├── techniques.ts           # attack technique catalogue
     │   └── types.ts                # shared domain types (Phase, FindingPayload, ...)
-    ├── store/
-    │   └── useConsoleStore.ts      # zustand store for Console state
     └── pages/
         ├── RunAuditPage.tsx
         ├── FindingsPage.tsx
@@ -121,8 +96,6 @@ canary/
 | Bundler | Vite 8 |
 | Styling | TailwindCSS 3 |
 | Typography | JetBrains Mono |
-| State (Console) | Zustand |
-| Persistence (Console) | IndexedDB via idb-keyval |
 | Linting | Oxlint |
 | Production server | nginx 1.25-alpine |
 
@@ -235,17 +208,11 @@ Vercel server-side environment variables only. Never prefix them with `VITE_`.
 | Method | Endpoint | Used by |
 |---|---|---|
 | `GET` | `/api/status` | health check |
-| `POST` | `/api/runs` | Console (`createRun`) |
-| `GET` | `/api/runs/{run_id}` | RedTeamPage, Console (`show run`) |
-| `GET` | `/api/runs/{run_id}/analysis-report` | Console (`getRunAnalysisReport`) |
+| `GET` | `/api/runs/{run_id}` | RedTeamPage |
 | `GET` | `/api/runs/{run_id}/report-markdown` | RunAuditPage |
-| `GET` | `/api/runs/{run_id}/findings` | Console (`getRunFindings`) |
-| `GET` | `/api/open-findings` | Console (`getOpenFindings`) |
-| `GET` | `/api/findings` | FindingsPage, Console (`show findings`) |
+| `GET` | `/api/findings` | FindingsPage |
 | `GET` | `/api/findings/{id}` | FindingsPage |
 | `GET` | `/api/findings/{id}/attempts` | FindingsPage |
 | `PUT` | `/api/findings/{id}/status` | FindingsPage |
-| `GET` | `/api/targets/{id}/coverage` | Console (`show coverage`) |
-| `GET` | `/api/targets/{id}/trends` | Console (`show trends`) |
-| `GET` | `/api/incidents` | RedTeamPage, Console (`show incidents`) |
-| `POST` | `/api/campaigns/run` (SSE) | RunAuditPage, Console (`run`) |
+| `GET` | `/api/incidents` | RedTeamPage |
+| `POST` | `/api/campaigns/run` (SSE) | RunAuditPage |

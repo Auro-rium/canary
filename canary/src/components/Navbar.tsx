@@ -12,7 +12,6 @@ const Logo = () => (
 
 const NAV_LINKS = [
   { label: 'Projects',  key: 'projects' },
-  { label: 'Console',   key: 'console'  },
   { label: 'Red Team',  key: 'redteam'  },
   { label: 'Findings',  key: 'findings' },
 ]
@@ -22,15 +21,14 @@ interface NavbarProps {
   onLogoClick?: () => void
   onRedTeam?: () => void
   onFindings?: () => void
-  onConsole?: () => void
   onProjects?: () => void
   user?: AuthUser | null
   onLogout?: () => void
 }
 
-export default function Navbar({ onRunAudit, onLogoClick, onRedTeam, onFindings, onConsole, onProjects, user, onLogout }: NavbarProps) {
+export default function Navbar({ onRunAudit, onLogoClick, onRedTeam, onFindings, onProjects, user, onLogout }: NavbarProps) {
   const handlers: Record<string, (() => void) | undefined> = {
-    projects: onProjects, console: onConsole, redteam: onRedTeam, findings: onFindings,
+    projects: onProjects, redteam: onRedTeam, findings: onFindings,
   }
   const [scrolled, setScrolled] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)

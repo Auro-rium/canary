@@ -125,7 +125,13 @@ export function getSession(req) {
 }
 
 export function authRequired() {
-  return process.env.AUTH_REQUIRED !== 'false'
+  // The bypass is intentionally limited to non-production runtimes. A stale
+  // AUTH_REQUIRED=false on a hosted deployment must never disable OAuth.
+  return !(process.env.AUTH_REQUIRED === 'false' && process.env.NODE_ENV !== 'production')
+}
+
+export function authBypassEnabled() {
+  return !authRequired()
 }
 
 export function isSameOriginRequest(req) {

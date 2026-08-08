@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { createSessionToken, getCookie, verifySessionToken } from '../src/server/auth.js'
+import { authRequired, createSessionToken, getCookie, verifySessionToken } from '../src/server/auth.js'
 import authHandler from '../api/auth/[...path].js'
 
 process.env.SESSION_SECRET = 'test-session-secret-that-is-at-least-32-chars'
@@ -29,4 +29,18 @@ test('session endpoint is anonymous until GitHub OAuth completes', async () => {
   await authHandler({ method: 'GET', query: { path: ['session'] }, headers: {} }, res)
   assert.equal(result.statusCode, 200)
   assert.deepEqual(result.body, { authenticated: false, user: null })
+})
+
+test('development bypass is explicit and production cannot inherit it', () => {
+  const previousRequired = process.env.AUTH_REQUIRED
+  const previousNodeEnv = process.env.NODE_ENV
+  process.env.AUTH_REQUIRED = 'false'
+  process.env.NODE_ENV = 'development'
+  assert.equal(authRequired(), false)
+  process.env.NODE_ENV = 'production'
+  assert.equal(authRequired(), true)
+  if (previousRequired === undefined) delete process.env.AUTH_REQUIRED
+  else process.env.AUTH_REQUIRED = previousRequired
+  if (previousNodeEnv === undefined) delete process.env.NODE_ENV
+  else process.env.NODE_ENV = previousNodeEnv
 })

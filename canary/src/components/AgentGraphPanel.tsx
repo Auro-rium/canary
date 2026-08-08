@@ -1,4 +1,4 @@
-import type { Phase, AgentStatus } from '../../lib/types'
+import type { Phase, AgentStatus } from '../lib/types'
 
 const NODE_R = 32
 

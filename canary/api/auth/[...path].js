@@ -1,6 +1,7 @@
 import {
   clearOAuthStateCookie,
   clearSessionCookie,
+  authBypassEnabled,
   getOAuthState,
   getSession,
   newOAuthState,
@@ -85,13 +86,13 @@ export default async function handler(req, res) {
 
   // Local development can intentionally bypass OAuth. Never enable this in
   // the hosted Vercel project; production defaults to AUTH_REQUIRED=true.
-  if (process.env.AUTH_REQUIRED === 'false' && route === 'session') {
+  if (authBypassEnabled() && route === 'session') {
     return json(res, 200, {
       authenticated: true,
       user: { id: 'local', login: 'local-development', name: 'Local development', avatar_url: null },
     })
   }
-  if (process.env.AUTH_REQUIRED === 'false' && route === 'logout') {
+  if (authBypassEnabled() && route === 'logout') {
     clearSessionCookie(res)
     return json(res, 200, { authenticated: false })
   }
