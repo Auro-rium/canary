@@ -1,6 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Navbar from '../components/Navbar'
-import AgentGraphPanel from '../components/console/AgentGraphPanel'
+import AgentGraphPanel from '../components/AgentGraphPanel'
 import { getRunReportMarkdown, runCampaignSSE } from '../lib/api'
 import { TECHNIQUES } from '../lib/techniques'
 import type { Phase, AgentStatus, LogEntry, FindingPayload, CompletePayload } from '../lib/types'
@@ -15,7 +15,7 @@ interface AgentDef {
   y: number
 }
 // Exported (not just const) so the canonical topology data stays defined here even though
-// the SVG view (AgentGraphPanel, in components/console) uses its own independent layout constants.
+// the SVG view uses its own independent layout constants.
 export const AGENTS: AgentDef[] = [
   { id: 'orchestrator', label: 'Orchestrator',  role: 'control',   x: 0.5,  y: 0.12 },
   { id: 'strategist',   label: 'Strategist',    role: 'control',   x: 0.2,  y: 0.12 },

@@ -43,12 +43,6 @@ export const getFindingAttempts = (findingId: string) => apiFetch<unknown[]>(`/a
 export const updateFindingStatus = (findingId: string, body: Record<string, string | boolean>) =>
   apiFetch<unknown>(`/api/findings/${findingId}/status`, { method: 'PUT', body: JSON.stringify(body) })
 
-// ─── Targets ────────────────────────────────────────────────────────────────
-export const getTargetCoverage = (targetId: string) =>
-  apiFetch<unknown>(`/api/targets/${encodeURIComponent(targetId)}/coverage`)
-export const getTargetTrends = (targetId: string, days = 30) =>
-  apiFetch<unknown>(`/api/targets/${encodeURIComponent(targetId)}/trends?days=${days}`)
-
 // ─── Incidents ──────────────────────────────────────────────────────────────
 export const getIncidents = () => apiFetch<unknown[]>('/api/incidents')
 

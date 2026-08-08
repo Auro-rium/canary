@@ -425,10 +425,9 @@ interface FindingsPageProps {
   onBack: () => void
   onRunAudit?: () => void
   onRedTeam?: () => void
-  onConsole?: () => void
 }
 
-export default function FindingsPage({ onBack, onRunAudit, onRedTeam, onConsole }: FindingsPageProps) {
+export default function FindingsPage({ onBack, onRunAudit, onRedTeam }: FindingsPageProps) {
   const [findings,     setFindings]     = useState<Finding[]>([])
   const [loading,      setLoading]      = useState(true)
   const [error,        setError]        = useState<string | null>(null)
@@ -496,7 +495,7 @@ export default function FindingsPage({ onBack, onRunAudit, onRedTeam, onConsole 
   // ── Render ──────────────────────────────────────────────────────────────────
   return (
     <div className="min-h-screen bg-black text-white font-mono">
-      <Navbar onLogoClick={onBack} onRunAudit={onRunAudit} onRedTeam={onRedTeam} onConsole={onConsole} />
+      <Navbar onLogoClick={onBack} onRunAudit={onRunAudit} onRedTeam={onRedTeam} />
       {/* ── HEADER ── */}
       <section className="px-6 sm:px-10 md:px-16 lg:px-20 pt-36 pb-8 border-b border-white/10">
         <p className="text-white/30 text-[10px] tracking-[0.3em] uppercase mb-6">
