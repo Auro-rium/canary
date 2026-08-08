@@ -45,6 +45,7 @@ The action is reusable from another repository:
     api-url: ${{ secrets.CANARY_API_URL }}
     api-token: ${{ secrets.CANARY_PROJECT_TOKEN }}
     target-url: ${{ steps.preview.outputs.url }}
+    target-verification-token: ${{ secrets.CANARY_TARGET_VERIFICATION_TOKEN }}
 ```
 
 Keep the token in GitHub Actions secrets. It is never bundled into the React

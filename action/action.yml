@@ -11,6 +11,10 @@ inputs:
     description: Public preview-agent chat endpoint. Overrides target.endpoint in canary.yaml.
     required: false
     default: ""
+  target-verification-token:
+    description: One-time token echoed by the preview agent to prove target ownership.
+    required: false
+    default: ""
   config-path:
     description: Path to the checked-in Canary configuration.
     required: false
@@ -87,6 +91,7 @@ runs:
         CANARY_API_URL: ${{ inputs.api-url }}
         CANARY_API_TOKEN: ${{ inputs.api-token }}
         CANARY_TARGET_URL: ${{ inputs.target-url }}
+        CANARY_TARGET_VERIFICATION_TOKEN: ${{ inputs.target-verification-token }}
         CANARY_CONFIG_PATH: ${{ inputs.config-path }}
         CANARY_START_COMMAND: ${{ inputs.start-command }}
         CANARY_HEALTH_URL: ${{ inputs.health-url }}
@@ -140,6 +145,8 @@ runs:
           strategies: (config.dig("security", "strategies") || []),
           gate: (config["gate"] || {})
         }
+        verification_token = ENV.fetch("CANARY_TARGET_VERIFICATION_TOKEN", "").strip
+        request[:verification_token] = verification_token unless verification_token.empty?
         report_dir = ENV.fetch("CANARY_REPORT_DIR")
         File.write(File.join(report_dir, "release-request.json"), JSON.pretty_generate(request))
         File.write(File.join(report_dir, ".health-url"), health) unless health.empty?

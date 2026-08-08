@@ -23,3 +23,4 @@ jobs:
           api-url: ${{ secrets.CANARY_API_URL }}
           api-token: ${{ secrets.CANARY_PROJECT_TOKEN }}
           target-url: ${{ vars.CANARY_TARGET_URL }}
+          target-verification-token: ${{ secrets.CANARY_TARGET_VERIFICATION_TOKEN }}

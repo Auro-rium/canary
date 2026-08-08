@@ -163,6 +163,7 @@ class CiReleaseRequest(BaseModel):
     response_path: Optional[str] = None
     strategies: List[str] = Field(default_factory=list)
     gate: Dict[str, object] = Field(default_factory=dict)
+    verification_token: Optional[str] = Field(default=None, min_length=16, max_length=256)
 
 
 def _validate_target_contract(endpoint: str, request_template: str) -> None:
@@ -178,6 +179,28 @@ def _validate_target_contract(endpoint: str, request_template: str) -> None:
         raise ValueError("Request template must be valid JSON") from error
     if not isinstance(decoded, (dict, list)) or '"{{PROMPT}}"' not in request_template:
         raise ValueError('Request template must contain the quoted "{{PROMPT}}" placeholder')
+
+
+def _verify_target_ownership(endpoint: str, request_template: str, token: str) -> None:
+    payload = json.loads(request_template.replace('"{{PROMPT}}"', json.dumps("Canary ownership verification.")))
+    response = httpx.post(
+        endpoint,
+        json=payload,
+        headers={"X-Canary-Verification": token},
+        timeout=httpx.Timeout(10.0, connect=5.0),
+        follow_redirects=False,
+        trust_env=False,
+    )
+    response.raise_for_status()
+    echoed = response.headers.get("X-Canary-Verification")
+    if not echoed:
+        try:
+            candidate = response.json()
+            echoed = candidate.get("canary_verification") if isinstance(candidate, dict) else None
+        except ValueError:
+            echoed = None
+    if echoed != token:
+        raise ValueError("Target did not prove ownership of the verification token")
 
 
 def _release_strategies(values: List[str]) -> List[StrategyType]:
@@ -369,6 +392,16 @@ def _start_release(
             project_in_session = session.get(ProjectRecord, project.project_id)
             if project_in_session is None:
                 raise HTTPException(status_code=404, detail="Project not found")
+            verified = session.scalar(
+                select(VerifiedTargetRecord).where(
+                    VerifiedTargetRecord.project_id == project_in_session.project_id,
+                    VerifiedTargetRecord.environment == environment,
+                    VerifiedTargetRecord.endpoint == project_in_session.endpoint,
+                    VerifiedTargetRecord.status == "verified",
+                )
+            )
+            if verified is None:
+                raise HTTPException(status_code=409, detail="Target ownership is not verified for this environment")
             release = create_release(
                 session,
                 project_in_session,
@@ -689,6 +722,24 @@ def create_ci_release(body: CiReleaseRequest, request: Request):
             scoped_project_id = getattr(request.state, "project_token_project_id", None)
             if scoped_project_id and scoped_project_id != project.project_id:
                 raise HTTPException(status_code=403, detail="Project token is not authorized for this repository")
+            if body.verification_token:
+                try:
+                    _verify_target_ownership(body.endpoint, body.request_template, body.verification_token)
+                except (ValueError, httpx.HTTPError) as error:
+                    raise HTTPException(status_code=422, detail=f"Target ownership verification failed: {error}") from error
+                session.add(
+                    VerifiedTargetRecord(
+                        target_id=uuid.uuid4().hex,
+                        project_id=project.project_id,
+                        environment=body.environment,
+                        origin=body.endpoint,
+                        endpoint=body.endpoint,
+                        verification_token_hash=hash_verification_token(body.verification_token),
+                        status="verified",
+                        verified_at=datetime.utcnow(),
+                    )
+                )
+                session.commit()
             snapshot = project_payload(project)
     finally:
         store.close()
