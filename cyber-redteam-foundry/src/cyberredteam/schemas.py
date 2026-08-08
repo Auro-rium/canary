@@ -48,7 +48,7 @@ class RunConfig(BaseModel):
     seed: Optional[int] = None
     description: str = ""
     # Generic HTTP target config — lets the run attack any HTTP JSON agent,
-    # not just the bundled target_agent stub's {"message": ...} contract.
+    # not just the default HTTP target's {"message": ...} contract.
     target_headers: Dict[str, str] = Field(default_factory=dict)
     target_request_template: Optional[str] = None
     target_response_path: Optional[str] = None

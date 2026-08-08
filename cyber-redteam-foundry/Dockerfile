@@ -12,7 +12,6 @@ COPY pyproject.toml ./
 COPY src ./src
 COPY configs ./configs
 COPY prompts ./prompts
-COPY target_agent ./target_agent
 
 # Pre-install CPU torch to avoid downloading the 4 GB CUDA wheel
 RUN pip install --no-cache-dir \
@@ -25,6 +24,5 @@ RUN pip install --no-cache-dir -e .
 ENV PYTHONPATH=/app:/app/src
 
 EXPOSE 8001
-EXPOSE 9000
 
 CMD ["uvicorn", "cyberredteam.api:app", "--host", "0.0.0.0", "--port", "8001"]

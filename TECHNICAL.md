@@ -238,10 +238,9 @@ are the list-index support called out in the task — `choices.0.message.content
 `api_key`, `headers`, `request_template`, and `response_path` all optional. When
 `request_template` is omitted, `execute_attack()` falls back to `{"message": prompt}`
 (target_adapter.py:138-140); when `response_path` is omitted or doesn't resolve, it falls back to
-key-guessing over `response`/`output`/`content`/`text`, finally `str(data)` (152-168). This means
-the original `target_agent` stub's `{"message": ...}` contract keeps working untouched even
-though the adapter now supports arbitrary schemas — no field is required to preserve old
-behavior. `execute_attack()` also detects Docker (`/.dockerenv` or `RUNNING_IN_DOCKER=true`) and
+key-guessing over `response`/`output`/`content`/`text`, finally `str(data)` (152-168). This keeps
+the default `{"message": ...}` contract supported while allowing arbitrary schemas.
+`execute_attack()` also detects Docker (`/.dockerenv` or `RUNNING_IN_DOCKER=true`) and
 rewrites `localhost:9000`/`127.0.0.1:9000` in the endpoint to `host.docker.internal:9000`
 (target_adapter.py:101-106) — the piece that connects to the Docker-topology decision in §8.
 
@@ -380,8 +379,7 @@ mid-stream corruption, not a defensive no-op.
 **`RunAuditPage.tsx`** (`canary/src/pages/RunAuditPage.tsx`) is the primary consumer:
 `runRealCampaign()` (lines 278-305) calls `runCampaignSSE()` with the campaign payload
 (target URL, selected techniques, optional headers/`request_template`/`response_path` — all
-omitted-if-blank, per the comment at lines 279-281, to keep the default `target_agent` stub
-contract untouched) and a `handleSSEEvent` dispatcher (lines 255-275) that switches on
+omitted-if-blank) and a `handleSSEEvent` dispatcher (lines 255-275) that switches on
 `event.type` (`agent_state`, `log`, `finding`, `campaign_complete`) to drive local component
 state (`updateAgent`, `fireEdge`, `appendLog`, `setReport`).
 
@@ -428,20 +426,12 @@ lines 9-11):
   publishes host port 8000 → container port 80 (nginx), and `depends_on: redteam-backend`
   (lines 55-56).
 
-**`target_agent` deliberately runs outside Docker**, as a bare host process:
-`PYTHONPATH=src python -m target_agent.server --port 9000` (comment at docker-compose.yml:6,
-also referenced at target_adapter.py comments). `redteam-backend` reaches it via
+**Owned HTTP targets may run outside Docker**, as host processes. `redteam-backend` reaches them via
 `extra_hosts: ["host.docker.internal:host-gateway"]` (lines 29-30), and
 `HttpTargetAdapter.__init__` rewrites any `localhost:9000`/`127.0.0.1:9000` endpoint string in
 the run config to `host.docker.internal:9000` when it detects it's running inside the container
 (target_adapter.py:101-106).
 
-**Why**: `target_agent` is only the bundled reference/stub target used for local demos and
-default runs — the entire point of the generic `HttpTargetAdapter` (§4) is that the backend can
-attack *any* HTTP JSON agent reachable from the host, including ones that are themselves running
-directly on the host machine (a locally-run LangChain/AutoGen agent under test, a service bound
-to `localhost`, etc.), not just a containerized version of the stub. Keeping `target_agent` as a
-bare host process — rather than adding it as a third container on `canary-net` — keeps the
-network topology honest: the backend reaches targets exactly the way it would reach any other
-host-network agent under test, via `host.docker.internal`, instead of via Docker-internal DNS that
-would only work for containerized targets.
+**Why**: the generic `HttpTargetAdapter` (§4) attacks *any* owned HTTP JSON agent reachable from
+the host, including a locally-run LangChain/AutoGen agent or a service bound to `localhost`.
+Canary does not provide a built-in target process.

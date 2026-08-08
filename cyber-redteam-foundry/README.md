@@ -51,7 +51,6 @@ cyber-redteam-foundry/
 │   ├── evaluator.md
 │   ├── reporter.md
 │   └── orchestrator.md
-├── target_agent/            # Demo victim agent — see target_agent/README.md
 ├── tests/
 ├── runs/                    # SQLite DBs, logs (git-ignored)
 ├── reports/                 # Generated reports (git-ignored)
@@ -417,11 +416,11 @@ API_SECRET_KEY=
 
 # Target allowlist — comma-separated endpoints this tool is permitted to attack.
 # Fails OPEN (any target accepted) if left empty — set this before exposing the API.
-ALLOWED_TARGETS=http://host.docker.internal:9000/chat,http://localhost:9000/chat
+ALLOWED_TARGETS=https://your-owned-agent.example/chat
 
 # Target
 TARGET_MODE=http                     # HTTP targets only
-TARGET_ENDPOINT=http://localhost:9000/chat
+TARGET_ENDPOINT=https://your-owned-agent.example/chat
 TARGET_API_KEY=                      # optional
 
 # Retry / concurrency
@@ -477,14 +476,8 @@ docker run -p 8001:8001 --env-file .env redteam-backend
 docker compose up -d redteam-backend
 ```
 
-Port `8001` (FastAPI) is exposed. **The demo target agent is not part of the Compose stack** — run it separately:
-
-```bash
-cd cyber-redteam-foundry
-PYTHONPATH=src python -m target_agent.server --port 9000
-```
-
-The backend reaches it via `host.docker.internal:9000` (`extra_hosts` in `docker-compose.yml`), keeping the target isolated by construction.
+Port `8001` (FastAPI) is exposed. Campaigns require an independently deployed,
+owned HTTP target; Canary does not bundle a victim or sandbox target.
 
 ---
 
@@ -494,4 +487,4 @@ The backend reaches it via `host.docker.internal:9000` (`extra_hosts` in `docker
 pytest tests/ -v --cov=src/cyberredteam --cov-report=term-missing
 ```
 
-111 tests, including a parallel-fan-out integration test (`TestParallelFanOut`) that exercises end-to-end random dispatch against mock LLMs — no AWS credentials required. Coverage report to terminal.
+The test suite includes unit and integration coverage for the orchestration, adapters, storage, and API layers. Production inference always uses the configured AWS Bedrock models.
