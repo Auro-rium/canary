@@ -1,6 +1,8 @@
 services:
   redteam-backend:
-    ports: []
-  canary-frontend:
     ports:
-      - "80:80"
+      - "80:8001"
+  canary-frontend:
+    profiles:
+      - local-ui
+    ports: []
