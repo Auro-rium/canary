@@ -21,9 +21,11 @@ interface NavbarProps {
   onRedTeam?: () => void
   onFindings?: () => void
   onConsole?: () => void
+  showConsole?: boolean
 }
 
-export default function Navbar({ onRunAudit, onLogoClick, onRedTeam, onFindings, onConsole }: NavbarProps) {
+export default function Navbar({ onRunAudit, onLogoClick, onRedTeam, onFindings, onConsole, showConsole = true }: NavbarProps) {
+  const visibleLinks = showConsole ? NAV_LINKS : NAV_LINKS.filter(({ key }) => key !== 'console')
   const handlers: Record<string, (() => void) | undefined> = {
     console: onConsole, redteam: onRedTeam, findings: onFindings,
   }
@@ -59,7 +61,7 @@ export default function Navbar({ onRunAudit, onLogoClick, onRedTeam, onFindings,
 
         {/* Desktop nav links */}
         <div className="hidden lg:flex items-center gap-8">
-          {NAV_LINKS.map(({ label, key }) => (
+          {visibleLinks.map(({ label, key }) => (
             <button
               key={key}
               onClick={handlers[key]}
@@ -111,7 +113,7 @@ export default function Navbar({ onRunAudit, onLogoClick, onRedTeam, onFindings,
         }`}
       >
         <div className="flex flex-col justify-center flex-1 px-6 sm:px-10 pt-20">
-          {NAV_LINKS.map(({ label, key }, i) => (
+          {visibleLinks.map(({ label, key }, i) => (
             <button
               key={key}
               onClick={() => { setMenuOpen(false); handlers[key]?.() }}

@@ -25,7 +25,7 @@ export default function App() {
         onRunAudit={nav('audit')}
         onFindings={nav('findings')}
         onRedTeam={nav('redteam')}
-        onConsole={nav('console')}
+        showConsole={false}
       />
       <Hero onRunAudit={nav('audit')} />
     </main>
