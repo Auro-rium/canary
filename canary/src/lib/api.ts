@@ -32,23 +32,11 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return res.json() as Promise<T>
 }
 
-// ─── Status ─────────────────────────────────────────────────────────────────
-export const getStatus = () => apiFetch<unknown>('/api/status')
-
 // ─── Runs ───────────────────────────────────────────────────────────────────
-export const createRun = (body: { target_id: string; strategy?: string; intensity?: string }) =>
-  apiFetch<{ run_id: string; status: string; target_id: string }>('/api/runs', {
-    method: 'POST',
-    body: JSON.stringify(body),
-  })
-
 export const getRun = (runId: string) => apiFetch<unknown>(`/api/runs/${runId}`)
-export const getRunAnalysisReport = (runId: string) => apiFetch<unknown>(`/api/runs/${runId}/analysis-report`)
 export const getRunReportMarkdown = (runId: string) => apiFetch<{ markdown: string }>(`/api/runs/${runId}/report-markdown`)
-export const getRunFindings = (runId: string) => apiFetch<unknown[]>(`/api/runs/${runId}/findings`)
 
 // ─── Findings ───────────────────────────────────────────────────────────────
-export const getOpenFindings = () => apiFetch<unknown[]>('/api/open-findings')
 export const getFindings = (query: string) => apiFetch<unknown[]>(`/api/findings?${query}`)
 export const getFinding = (findingId: string) => apiFetch<unknown>(`/api/findings/${findingId}`)
 export const getFindingAttempts = (findingId: string) => apiFetch<unknown[]>(`/api/findings/${findingId}/attempts`)
