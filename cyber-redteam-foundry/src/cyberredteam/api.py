@@ -831,6 +831,31 @@ async def campaign_run_sse(req: CampaignRunRequest):
                 "message": f"Display timeout reached ({max_wait}s) — the campaign is still running in the background and results may be incomplete. Check the full report later.",
             }})
 
+        # Never turn a failed or still-running backend run into a successful
+        # browser report. The real agent pipeline is authoritative; if it did
+        # not complete, the UI must receive an explicit failure event.
+        if current_status != "completed":
+            failed = current_status == "failed"
+            message = (
+                "Real agent pipeline failed; no report was generated."
+                if failed
+                else "Campaign is still running; no report is available yet."
+            )
+            yield sse({"type": "log", "payload": {
+                "level": "ERROR" if failed else "SYSTEM",
+                "message": message,
+            }})
+            yield sse({"type": "agent_state", "payload": {
+                "agent_id": "orchestrator", "status": "error" if failed else "processing",
+            }})
+            yield sse({"type": "campaign_failed", "payload": {
+                "campaign_id": campaign_id,
+                "run_id": run_id,
+                "status": current_status,
+                "message": message,
+            }})
+            return
+
         # ── Phase: completion ───────────────────────────────────────────────
         yield sse({"type": "agent_state", "payload": {
             "agent_id": "reporter", "status": "active", "active_edge": "evaluator->reporter",

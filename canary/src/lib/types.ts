@@ -1,4 +1,4 @@
-export type Phase = 'idle' | 'running' | 'complete'
+export type Phase = 'idle' | 'running' | 'complete' | 'failed'
 export type AgentStatus = 'idle' | 'active' | 'processing' | 'done' | 'error'
 
 export interface LogEntry {
@@ -30,6 +30,13 @@ export interface CompletePayload {
   high_count: number
   duration_seconds: number
   findings: FindingPayload[]
+}
+
+export interface FailedPayload {
+  campaign_id: string
+  run_id: string
+  status: string
+  message: string
 }
 
 export interface SSEEvent {
