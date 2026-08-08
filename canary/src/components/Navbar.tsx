@@ -10,7 +10,6 @@ const Logo = () => (
 )
 
 const NAV_LINKS = [
-  { label: 'Console',   key: 'console'  },
   { label: 'Red Team',  key: 'redteam'  },
   { label: 'Findings',  key: 'findings' },
 ]
@@ -20,14 +19,11 @@ interface NavbarProps {
   onLogoClick?: () => void
   onRedTeam?: () => void
   onFindings?: () => void
-  onConsole?: () => void
-  showConsole?: boolean
 }
 
-export default function Navbar({ onRunAudit, onLogoClick, onRedTeam, onFindings, onConsole, showConsole = true }: NavbarProps) {
-  const visibleLinks = showConsole ? NAV_LINKS : NAV_LINKS.filter(({ key }) => key !== 'console')
+export default function Navbar({ onRunAudit, onLogoClick, onRedTeam, onFindings }: NavbarProps) {
   const handlers: Record<string, (() => void) | undefined> = {
-    console: onConsole, redteam: onRedTeam, findings: onFindings,
+    redteam: onRedTeam, findings: onFindings,
   }
   const [scrolled, setScrolled] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -61,7 +57,7 @@ export default function Navbar({ onRunAudit, onLogoClick, onRedTeam, onFindings,
 
         {/* Desktop nav links */}
         <div className="hidden lg:flex items-center gap-8">
-          {visibleLinks.map(({ label, key }) => (
+          {NAV_LINKS.map(({ label, key }) => (
             <button
               key={key}
               onClick={handlers[key]}
@@ -113,7 +109,7 @@ export default function Navbar({ onRunAudit, onLogoClick, onRedTeam, onFindings,
         }`}
       >
         <div className="flex flex-col justify-center flex-1 px-6 sm:px-10 pt-20">
-          {visibleLinks.map(({ label, key }, i) => (
+          {NAV_LINKS.map(({ label, key }, i) => (
             <button
               key={key}
               onClick={() => { setMenuOpen(false); handlers[key]?.() }}
