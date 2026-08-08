@@ -99,13 +99,9 @@ class ReporterAgent:
             }
         except Exception as e:
             logger.error(f"Reporter agent failed to generate narratives: {e}")
-            narratives = {
-                "executive_summary": "Security assessment complete. Factual metrics are listed below.",
-                "attack_campaign": "Assessment of targeted strategies against the system.",
-                "vulnerabilities_found": "Vulnerabilities discovered and logged during testing.",
-                "evidence_summary": "Evidence gathered from agent outputs.",
-                "remaining_risks": "Residual risks based on remaining open findings.",
-            }
+            # Fail closed: never publish a report with fabricated narrative
+            # text when the real reporter model is unavailable.
+            raise RuntimeError(f"reporter model unavailable: {e}") from e
 
         recommendations = self._generate_recommendations(attack_results)
 

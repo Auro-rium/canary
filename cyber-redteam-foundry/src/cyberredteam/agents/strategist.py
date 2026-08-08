@@ -78,10 +78,8 @@ class StrategistAgent:
                 except ValueError:
                     logger.warning(f"Strategist recommended invalid strategy: {s}")
 
-            # Fallback if no valid strategies selected
             if not selected_types:
-                logger.warning("Strategist returned empty or invalid plan. Using fallbacks.")
-                selected_types = [StrategyType(c) for c in candidates[:count]]
+                raise RuntimeError("strategist returned no valid strategies")
 
             # Ensure we return at most `count` strategies
             selected_types = selected_types[:count]
@@ -91,8 +89,7 @@ class StrategistAgent:
 
         except Exception as e:
             logger.error(f"Strategist agent failed to select strategies: {e}")
-            # Fallback
-            return [StrategyType(c) for c in candidates[:count]]
+            raise RuntimeError(f"strategist model unavailable: {e}") from e
 
     def evaluate_coverage(self, executed_strategies: List[StrategyType]) -> dict:
         """Evaluate attack coverage across strategy families."""
