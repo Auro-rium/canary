@@ -1,13 +1,10 @@
-import type { SSEEvent } from './types'
+import type { CanaryProject, CanaryRelease, SSEEvent } from './types'
 
-// Backend connection — empty string = relative URL, handled by nginx proxy
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const _env = (import.meta as any).env as Record<string, string>
-export const API_BASE = _env.VITE_API_URL || ''
-export const API_TOKEN = _env.VITE_API_TOKEN || ''
+// The browser always talks to a same-origin, read-only proxy. The proxy holds
+// CANARY_API_TOKEN server-side; no bearer credential is bundled into Vite.
+export const API_BASE = ''
 
 export const authHeader = (): Record<string, string> => ({
-  'Authorization': `Bearer ${API_TOKEN}`,
   'Content-Type': 'application/json',
 })
 
@@ -34,6 +31,45 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
 
 // ─── Status ─────────────────────────────────────────────────────────────────
 export const getStatus = () => apiFetch<unknown>('/api/status')
+
+// ─── CUTC projects and release gates ───────────────────────────────────────
+export const getProjects = () => apiFetch<CanaryProject[]>('/api/projects')
+export const verifyTarget = (body: { endpoint: string; request_template: string; response_path?: string }) =>
+  apiFetch<{ reachable: boolean; status_code: number; response_path_detected: boolean | null }>('/api/projects/verify-target', {
+    method: 'POST',
+    body: JSON.stringify(body),
+  })
+export const createProject = (body: {
+  name: string
+  endpoint: string
+  environment: string
+  request_template: string
+  response_path?: string
+  strategies: string[]
+  gate: {
+    block_on: string[]
+    warn_on?: string[]
+    max_new_blocking_findings?: number | null
+    max_new_nonblocking_findings?: number | null
+  }
+}) => apiFetch<CanaryProject>('/api/projects', { method: 'POST', body: JSON.stringify(body) })
+
+export const getProjectReleases = (projectId: string) =>
+  apiFetch<CanaryRelease[]>(`/api/projects/${projectId}/releases`)
+
+export const getProjectBaselines = (projectId: string) =>
+  apiFetch<unknown[]>(`/api/projects/${projectId}/baselines`)
+
+export const acceptProjectBaseline = (projectId: string, releaseId: string, reason = '') =>
+  apiFetch<unknown>(`/api/projects/${projectId}/baselines/${releaseId}/accept?reason=${encodeURIComponent(reason)}`, {
+    method: 'POST',
+  })
+
+export const getReleaseRegressions = (releaseId: string) =>
+  apiFetch<unknown[]>(`/api/releases/${releaseId}/regressions`)
+
+export const createProjectRelease = (projectId: string, body: { commit_sha: string; environment?: string }) =>
+  apiFetch<CanaryRelease>(`/api/projects/${projectId}/releases`, { method: 'POST', body: JSON.stringify(body) })
 
 // ─── Runs ───────────────────────────────────────────────────────────────────
 export const createRun = (body: { target_id: string; strategy?: string; intensity?: string }) =>

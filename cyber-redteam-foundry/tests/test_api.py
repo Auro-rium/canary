@@ -221,3 +221,36 @@ def test_run_orchestrator_thread_passes_target_config_into_run_config():
     assert config.target_headers == {"X-API-Key": "secret"}
     assert config.target_request_template == '{"messages": [{"role": "user", "content": "{{PROMPT}}"}]}'
     assert config.target_response_path == "choices.0.message.content"
+
+
+def test_ci_release_auto_registers_repository_from_checked_in_config(mock_db, monkeypatch):
+    """The reusable Action must not require a dashboard project ID."""
+    captured = {}
+
+    def fake_start(project, **kwargs):
+        captured["project"] = project
+        captured.update(kwargs)
+        return {"release_id": "ci-release", "status": "running"}
+
+    monkeypatch.setattr("cyberredteam.api.validate_public_http_endpoint", lambda *args, **kwargs: None)
+    monkeypatch.setattr("cyberredteam.api._start_release", fake_start)
+    response = client.post(
+        "/api/ci/releases",
+        json={
+            "repository": "Auro-rium/canary-demo-agent",
+            "commit_sha": "deadbeef",
+            "ref": "feature/document-access",
+            "event_name": "pull_request",
+            "default_branch": "main",
+            "endpoint": "https://preview.example.test/chat",
+            "request_template": '{"message":"{{PROMPT}}"}',
+            "response_path": "response",
+            "strategies": ["prompt_injection", "sensitive_data_exposure"],
+            "gate": {"block_on": ["critical"], "max_new_findings": 0},
+        },
+    )
+    assert response.status_code == 202
+    assert response.json()["release_id"] == "ci-release"
+    assert captured["project"].repository == "auro-rium/canary-demo-agent"
+    assert captured["git_ref"] == "feature/document-access"
+    assert captured["default_branch"] == "main"

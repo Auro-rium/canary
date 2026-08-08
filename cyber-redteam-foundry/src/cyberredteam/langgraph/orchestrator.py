@@ -34,7 +34,7 @@ class GraphOrchestrator:
     def __init__(
         self,
         config: RunConfig,
-        db_path: Path,
+        db_path: Path | str,
         report_dir: Path,
         max_iterations: int = 3,
         checkpoint_db_path: Optional[str] = None,
@@ -43,14 +43,14 @@ class GraphOrchestrator:
 
         Args:
             config: ``RunConfig`` with attack parameters.
-            db_path: Path to the SQLite *artifact* database.
+            db_path: SQLite artifact path or SQLAlchemy database URL.
             report_dir: Directory for report output.
             max_iterations: Max strategist→attacker_branch→evaluator cycles.
             checkpoint_db_path: Path to the SQLite *checkpoint*
                 database.  Defaults to ``runs/checkpoints.db``.
         """
         self.config = config
-        self.db_path = Path(db_path)
+        self.db_path = db_path
         self.report_dir = Path(report_dir)
         self.max_iterations = max_iterations
 
@@ -100,6 +100,7 @@ class GraphOrchestrator:
                 "target_headers": self.config.target_headers,
                 "target_request_template": self.config.target_request_template,
                 "target_response_path": self.config.target_response_path,
+                "replay_cases": self.config.replay_cases,
                 "strategies": [s.value for s in self.config.strategy_types],
                 "max_iterations": self.max_iterations,
                 "max_attempts_per_strategy": self.config.max_attempts,

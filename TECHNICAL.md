@@ -1,5 +1,28 @@
 # Agent Canary — Technical Reference
 
+## CUTC release architecture
+
+The product path is `project -> release -> accepted baseline -> differential
+comparison -> policy gate`. A release stores its commit, environment, target
+snapshot, run status, scores, coverage, and decision. Baselines are explicit
+`AcceptedBaselineRecord` rows and are scoped by project and environment; the
+first completed assessment is never trusted automatically.
+
+After LangGraph persists candidate and baseline attack results, the release
+adapter creates stable `AttackCaseRecord` identities from project, strategy,
+technique, and payload. `finalise_differential_release()` converts both sides
+to typed evaluator executions, classifies each case as regression, known,
+resolved, clean, or indeterminate, persists `SecurityRegressionRecord`, and
+evaluates `block_on`, `warn_on`, and explicit threshold policy. Scores are
+diagnostic (100 minus severity deductions); the policy decision is authoritative.
+
+The GitHub Action keeps its bearer credential server-side, starts
+`POST /api/ci/releases`, polls the persisted release, writes a Job Summary,
+exports decision/score/regression/coverage outputs, and exits non-zero only for
+`BLOCK`. The current local adapter uses SQLite and a process thread for
+compatibility; `cyberredteam.canary.release_execution` provides the durable,
+idempotent lifecycle port for a queue/worker deployment.
+
 Agent Canary is a two-service system for automated red-teaming of LLM agents. The backend
 (`cyber-redteam-foundry/`, FastAPI + LangGraph, Python) runs adversarial campaigns against an
 arbitrary HTTP JSON agent using AWS Bedrock-hosted LLMs for the attacker/evaluator/strategist
@@ -28,9 +51,9 @@ strategist → (Send fan-out) → attacker_branch × ≤3 (parallel) → evaluat
   dispatch_attacker_branches)` (graph.py:78). This function does not return a routing string —
   it returns `List[Send]`, LangGraph's mechanism for dynamic parallel dispatch. It:
   1. Converts `state["strategies"]` to `StrategyType` enum members (nodes.py:107).
-  2. Calls `random.sample(candidates, min(MAX_PARALLEL_BRANCHES, len(candidates)))` where
-     `MAX_PARALLEL_BRANCHES = 3` (nodes.py:33, 110) — so **at most 3** strategies are sampled per
-     dispatch, chosen uniformly at random rather than ranked by an LLM.
+  2. Selects a deterministic slice of at most three strategies using the current iteration and
+     `MAX_PARALLEL_BRANCHES = 3`. Every configured strategy is therefore covered over bounded
+     iterations rather than being randomly sampled and potentially omitted.
   3. For each chosen strategy, resolves `(asi_class, _) = taxonomy.lookup(strategy.value, "")`
      and `spec = get_spec(asi_class)` (nodes.py:116-117) to build an `AttackBranch` — a plain
      dataclass (`schemas.py:100-119`), not part of `RedTeamState`, carrying `branch_id`,
@@ -85,10 +108,10 @@ return "strategist" if state["should_continue_iterating"] else "reporter"
 ```
 
 wired via `graph.add_conditional_edges("evaluator", should_iterate, {"strategist": "strategist",
-"reporter": "reporter"})` (graph.py:84-91). Looping back to `strategist` triggers a *fresh*
-`dispatch_attacker_branches` call — a new random sample of ≤3 strategies, new branch IDs, fresh
-`depth=0` budgets — not a continuation of the old branches. `max_iterations` is enforced purely
-by this counter check; there is no separate iteration-count node.
+"reporter": "reporter"})` (graph.py:84-91). Looping back to `strategist` triggers a fresh
+deterministic batch of ≤3 strategies and new branch IDs. `max_iterations` is bounded by the
+configured strategy count and the explicit iteration counter; there is no accidental random
+omission of later strategies.
 
 Checkpointing is SQLite-backed (`compile_graph()`, graph.py:104-134): `SqliteSaver` keyed by
 `thread_id = run_id` (orchestrator.py:121-126), so a run's state can be resumed via
@@ -333,14 +356,10 @@ app-level FastAPI dependency (`FastAPI(dependencies=[Depends(require_auth)])`, a
 so every route requires it. It fails closed: if `settings.api_secret_key` (i.e. `API_SECRET_KEY`
 env var, `settings.py:30`) isn't set, every request gets `503` rather than running open
 (api.py:36-40); otherwise it checks `Authorization: Bearer <token>` matches exactly
-(api.py:41-43). The frontend's `authHeader()` (`canary/src/lib/api.ts:9-12`) sends
-`Authorization: Bearer ${API_TOKEN}` where `API_TOKEN = import.meta.env.VITE_API_TOKEN` — i.e.
-the same shared secret, but **baked into the frontend bundle at Vite build time** (it's a
-`VITE_`-prefixed env var, inlined by Vite's build step, not read at runtime). `docker-compose.yml`
-wires this explicitly: the frontend build receives `VITE_API_TOKEN: "${VITE_API_TOKEN}"` as a
-build arg (docker-compose.yml:45-49) with a comment that it "Must match API_SECRET_KEY in
-cyber-redteam-foundry/.env" — there's no runtime handshake, just an operator-maintained shared
-value across two separately-built images.
+(api.py:41-43). The browser no longer receives that bearer credential. It calls a same-origin,
+read-only proxy: Vercel holds `CANARY_API_URL` and `CANARY_API_TOKEN` as server-only variables,
+while Docker nginx expands `API_SECRET_KEY` only in its upstream configuration. The GitHub Action
+uses its own repository secret. Thus a `VITE_*` build variable never carries a Canary API token.
 
 ---
 
@@ -425,10 +444,10 @@ lines 9-11):
   (`target_adapter.py:102`) to decide whether to rewrite `localhost:9000` endpoints. Port 8001
   is published to the host both for direct FastAPI inspection and because nginx proxies to it
   internally (comment at lines 1-3).
-- **`canary-frontend`** — built from `canary/Dockerfile`, receives `VITE_API_URL=""` (relative
-  URL, so nginx proxies `/api/*` to the backend) and `VITE_API_TOKEN` as build args (lines 45-49),
-  publishes host port 8000 → container port 80 (nginx), and `depends_on: redteam-backend`
-  (lines 55-56).
+- **`canary-frontend`** — built from `canary/Dockerfile`, publishes host port 8000 → container
+  port 80 (nginx), and `depends_on: redteam-backend`. nginx receives `API_SECRET_KEY` only as a
+  runtime environment variable and injects it into upstream API requests; the static bundle has
+  no API token.
 
 **`target_agent` deliberately runs outside Docker**, as a bare host process:
 `PYTHONPATH=src python -m target_agent.server --port 9000` (comment at docker-compose.yml:6,

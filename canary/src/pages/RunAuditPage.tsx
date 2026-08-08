@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import Navbar from '../components/Navbar'
 import AgentGraphPanel from '../components/console/AgentGraphPanel'
-import { API_TOKEN, getRunReportMarkdown, runCampaignSSE } from '../lib/api'
+import { getRunReportMarkdown, runCampaignSSE } from '../lib/api'
 import { TECHNIQUES } from '../lib/techniques'
 import type { Phase, AgentStatus, LogEntry, FindingPayload, CompletePayload } from '../lib/types'
 
@@ -374,6 +374,11 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
     }, totalMs)
   }, [selectedTechniques, campaignId, appendLog, updateAgent, fireEdge, scheduleMs])
 
+  // Retained as an offline development harness; production dashboard launches
+  // are intentionally CI-only (see startCampaign below).
+  void runRealCampaign
+  void runMockSimulation
+
   // ── Entry point ─────────────────────────────────────────────────────────────
   const startCampaign = useCallback(() => {
     if (!selectedTechniques.length) return
@@ -384,24 +389,11 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
     timerRefs.current.forEach(clearTimeout)
     timerRefs.current = []
 
-    if (API_TOKEN) {
-      // Try real backend first; fall back to simulation only when the
-      // backend is genuinely unreachable (network/CORS failure has no
-      // `.status`). An explicit HTTP rejection (401/403/429/...) means the
-      // backend answered — show that real reason instead of faking results.
-      runRealCampaign().catch((err: Error & { status?: number }) => {
-        if (err.status !== undefined) {
-          appendLog('ERROR', err.message)
-          setPhase('idle')
-          return
-        }
-        appendLog('ERROR', `Backend unavailable (${err.message}). Running simulation.`)
-        runMockSimulation()
-      })
-    } else {
-      runMockSimulation()
-    }
-  }, [selectedTechniques, runRealCampaign, runMockSimulation, appendLog])
+    // Public dashboard access is intentionally read-only. A browser is not a
+    // trusted place for a Canary API token; launch attacks through the Action.
+    appendLog('SYSTEM', 'Manual browser launches are disabled. Commit canary.yaml and run the GitHub Action to produce a signed CI release.')
+    setPhase('idle')
+  }, [selectedTechniques, appendLog])
 
   const exportJSON = () => {
     if (!report) return

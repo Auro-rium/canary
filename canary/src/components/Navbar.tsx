@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react'
+import type { AuthUser } from '../lib/auth'
 
 const Logo = () => (
   <svg xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 256 256" fill="none">
@@ -10,6 +11,7 @@ const Logo = () => (
 )
 
 const NAV_LINKS = [
+  { label: 'Projects',  key: 'projects' },
   { label: 'Console',   key: 'console'  },
   { label: 'Red Team',  key: 'redteam'  },
   { label: 'Findings',  key: 'findings' },
@@ -21,11 +23,14 @@ interface NavbarProps {
   onRedTeam?: () => void
   onFindings?: () => void
   onConsole?: () => void
+  onProjects?: () => void
+  user?: AuthUser | null
+  onLogout?: () => void
 }
 
-export default function Navbar({ onRunAudit, onLogoClick, onRedTeam, onFindings, onConsole }: NavbarProps) {
+export default function Navbar({ onRunAudit, onLogoClick, onRedTeam, onFindings, onConsole, onProjects, user, onLogout }: NavbarProps) {
   const handlers: Record<string, (() => void) | undefined> = {
-    console: onConsole, redteam: onRedTeam, findings: onFindings,
+    projects: onProjects, console: onConsole, redteam: onRedTeam, findings: onFindings,
   }
   const [scrolled, setScrolled] = useState(false)
   const [menuOpen, setMenuOpen] = useState(false)
@@ -72,6 +77,8 @@ export default function Navbar({ onRunAudit, onLogoClick, onRedTeam, onFindings,
 
         {/* Desktop CTAs */}
         <div className="hidden lg:flex items-center gap-3">
+          {user && <span className="max-w-32 truncate text-[10px] uppercase tracking-[0.12em] text-white/45">{user.login}</span>}
+          {onLogout && <button onClick={onLogout} className="px-3 py-2.5 text-[10px] uppercase tracking-[0.15em] text-white/45 hover:text-white">Sign out</button>}
           <button className="px-5 py-2.5 border border-white/30 text-white text-xs uppercase tracking-[0.15em] font-light hover:border-white/60 transition-all duration-200">
             Request Access
           </button>
@@ -146,6 +153,7 @@ export default function Navbar({ onRunAudit, onLogoClick, onRedTeam, onFindings,
               transform: menuOpen ? 'translateY(0)' : 'translateY(20px)',
             }}
           >
+            {user && <p className="mb-3 text-[10px] uppercase tracking-[0.15em] text-white/45">Signed in as {user.login}</p>}
             <button className="w-full py-4 border border-white/30 text-white text-xs uppercase tracking-[0.15em] font-light hover:border-white/60 transition-all duration-200">
               Request Access
             </button>
@@ -155,6 +163,7 @@ export default function Navbar({ onRunAudit, onLogoClick, onRedTeam, onFindings,
             >
               Run Audit
             </button>
+            {onLogout && <button onClick={() => { setMenuOpen(false); onLogout() }} className="w-full py-3 text-[10px] uppercase tracking-[0.15em] text-white/50 hover:text-white">Sign out</button>}
           </div>
         </div>
       </div>

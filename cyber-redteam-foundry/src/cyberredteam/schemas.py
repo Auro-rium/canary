@@ -52,6 +52,10 @@ class RunConfig(BaseModel):
     target_headers: Dict[str, str] = Field(default_factory=dict)
     target_request_template: Optional[str] = None
     target_response_path: Optional[str] = None
+    # Stable attack payloads replayed against a candidate release when a
+    # project has an accepted baseline. Each item has strategy, technique_id,
+    # and prompt keys. The evaluator still owns the verdict.
+    replay_cases: List[Dict[str, str]] = Field(default_factory=list)
 
 
 class AttackPrompt(BaseModel):

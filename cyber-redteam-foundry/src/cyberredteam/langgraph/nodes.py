@@ -10,7 +10,6 @@ Agent instances are created via a factory so they can be injected in
 tests.
 """
 
-import random
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -25,7 +24,7 @@ from cyberredteam.evaluation import taxonomy
 from cyberredteam.evaluation.technique_specs import get_spec
 from cyberredteam.langgraph.state import RedTeamState
 from cyberredteam.logging import setup_logging
-from cyberredteam.schemas import AttackBranch, StrategyType
+from cyberredteam.schemas import AttackBranch, AttackResult, AttackSeverity, StrategyType
 from cyberredteam.settings import get_settings
 from cyberredteam.storage.artifact_store import SQLiteStore
 
@@ -45,7 +44,7 @@ def get_node_store() -> SQLiteStore:
     global _store
     if _store is None:
         settings = get_settings()
-        _store = SQLiteStore(Path(settings.db_path))
+        _store = SQLiteStore(settings.database_location)
     return _store
 
 def _attacker_factory(**kwargs) -> AttackerAgent:
@@ -77,15 +76,13 @@ def set_reporter_factory(factory: Callable[..., ReporterAgent]) -> None:
 def node_strategist(state: RedTeamState) -> dict:
     """Log-only pass-through ahead of the random parallel dispatch.
 
-    The actual technique selection for fan-out is pure `random.sample` in
-    `dispatch_attacker_branches` (the conditional edge below) — no LLM call,
-    per design. `StrategistAgent.select_strategies()` (LLM-ranked) remains
-    available for callers that want ranked-not-random selection; it's simply
-    unused by this graph's default dispatch path.
+    The default dispatch is deterministic and coverage-oriented. Strategies
+    are consumed in configured order in batches of three so a clean early
+    result cannot silently skip most of the security surface.
     """
     logger.info(f"[Graph] Strategist node — Run {state['run_id']}")
     candidates = state["strategies"]
-    logger.info(f"[Graph] Strategist candidates for random dispatch: {candidates}")
+    logger.info(f"[Graph] Strategist candidates for coverage dispatch: {candidates}")
 
     return {
         "log_messages": [f"Strategist ready to dispatch from {len(candidates)} candidate technique(s)"],
@@ -97,7 +94,7 @@ def node_strategist(state: RedTeamState) -> dict:
 # ---------------------------------------------------------------------------
 
 def dispatch_attacker_branches(state: RedTeamState) -> List[Send]:
-    """Randomly select up to MAX_PARALLEL_BRANCHES techniques and fan out.
+    """Dispatch the next configured batch of techniques in stable order.
 
     Each selected technique becomes one independent AttackBranch (fresh
     depth=0, its own attempt budget) sent to `node_attacker_branch` as a
@@ -107,7 +104,10 @@ def dispatch_attacker_branches(state: RedTeamState) -> List[Send]:
     candidates = [StrategyType(s) for s in state["strategies"]]
     if not candidates:
         candidates = [StrategyType.PROMPT_INJECTION]
-    chosen = random.sample(candidates, min(MAX_PARALLEL_BRANCHES, len(candidates)))
+    offset = state.get("iteration", 0) * MAX_PARALLEL_BRANCHES
+    chosen = candidates[offset : offset + MAX_PARALLEL_BRANCHES]
+    if not chosen:
+        chosen = candidates[:MAX_PARALLEL_BRANCHES]
 
     logger.info(f"[Graph] Dispatching {len(chosen)} parallel attacker branch(es): {[c.value for c in chosen]}")
 
@@ -138,6 +138,37 @@ def dispatch_attacker_branches(state: RedTeamState) -> List[Send]:
             "target_request_template": state.get("target_request_template"),
             "target_response_path": state.get("target_response_path"),
         }))
+    # Replays are exact payloads from the accepted baseline. They run during
+    # the first dispatch and then flow through the same evaluator/reporter as
+    # generated attacks, making the differential comparison reproducible.
+    if state.get("iteration", 0) == 0:
+        for replay in state.get("replay_cases", []):
+            try:
+                strategy = StrategyType(str(replay["strategy"]))
+            except (KeyError, ValueError):
+                continue
+            asi_class, _ = taxonomy.lookup(strategy.value, "")
+            spec = get_spec(asi_class)
+            branch = AttackBranch(
+                branch_id=uuid.uuid4().hex,
+                capability_type=strategy.value,
+                technique_id=str(replay.get("technique_id") or asi_class),
+                technique_spec=spec["spec"],
+                target_metadata={"name": state["target_id"], "replay": True},
+                depth=0,
+                attempt_budget_remaining=1,
+                parent_evidence=None,
+            )
+            sends.append(Send("attacker_branch", {
+                "branch": branch,
+                "run_id": state["run_id"],
+                "target_id": state["target_id"],
+                "iteration": state["iteration"],
+                "replay_prompt": str(replay.get("prompt") or ""),
+                "target_headers": state.get("target_headers"),
+                "target_request_template": state.get("target_request_template"),
+                "target_response_path": state.get("target_response_path"),
+            }))
     return sends
 
 
@@ -177,7 +208,37 @@ def node_attacker_branch(payload: dict) -> dict:
         **({"target_adapter": target_adapter} if target_adapter else {}),
     )
 
-    result = attacker.attack_branch(
+    replay_prompt = payload.get("replay_prompt")
+    if replay_prompt:
+        response, canary = target_adapter.execute_attack(replay_prompt, label=branch.technique_id) if target_adapter else ("", None)
+        result = AttackResult(
+            run_id=run_id,
+            target_id=target_id,
+            attempt_number=1,
+            strategy_type=StrategyType(branch.capability_type),
+            prompt=replay_prompt,
+            response=response,
+            success=False,
+            severity=AttackSeverity.INFO,
+            score=0.0,
+            indicators={
+                "objective": "Replay the accepted-baseline attack case",
+                "expected_failure": "The candidate should preserve the baseline safe behavior",
+                "_canary": canary,
+                "replay": True,
+            },
+            technique_id=branch.technique_id,
+            capability_type=branch.capability_type,
+            branch_id=branch.branch_id,
+            iteration=iteration,
+        )
+        # The evaluator below is still the authority; the replay branch does
+        # not infer vulnerability from the response itself.
+        attacker_result = result
+    else:
+        attacker_result = None
+
+    result = attacker_result or attacker.attack_branch(
         branch=branch,
         run_id=run_id,
         target_id=target_id,
@@ -237,10 +298,11 @@ def node_evaluator(state: RedTeamState) -> dict:
     successful = [r for r in state["attack_results"] if r.success]
     vuln_found = len(successful) > 0
 
-    # Should we keep iterating? Re-dispatch another round of parallel branches
-    # (via strategist) while there's a confirmed vulnerability and budget left.
+    # Continue until every configured strategy has had a branch. This is
+    # coverage-driven; a vulnerability is not required to test later tactics.
     new_iteration = state["iteration"] + 1
-    can_iterate = new_iteration < state["max_iterations"] and vuln_found
+    required_iterations = (len(state["strategies"]) + MAX_PARALLEL_BRANCHES - 1) // MAX_PARALLEL_BRANCHES
+    can_iterate = new_iteration < state["max_iterations"] and new_iteration < required_iterations
 
     logger.info(
         f"[Graph] Evaluator: {len(successful)} successful attacks, "

@@ -1,4 +1,7 @@
 # Global ignores
+.env
+.env.*
+!.env.example
 .DS_Store
 *~
 *.swp

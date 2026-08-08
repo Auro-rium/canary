@@ -13,7 +13,7 @@ import sys
 from datetime import datetime
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 
@@ -103,7 +103,7 @@ def info() -> AgentInfo:
 
 
 @app.post("/chat", response_model=ChatResponse)
-def chat(req: ChatRequest):
+def chat(req: ChatRequest, request: Request, response: Response):
     """Send a message to the LangChain ReAct agent and get a response.
     
     This is the endpoint that the red-team attacker sends adversarial prompts to.
@@ -122,6 +122,9 @@ def chat(req: ChatRequest):
 
     logger.info(f"Response ({len(response_text)} chars): {response_text[:80]}...")
 
+    verification = request.headers.get("X-Canary-Verification")
+    if verification:
+        response.headers["X-Canary-Verification"] = verification
     return ChatResponse(
         response=response_text,
         timestamp=datetime.utcnow().isoformat(),

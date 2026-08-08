@@ -25,9 +25,14 @@ class Settings(BaseSettings):
     # bedrock:InvokeModel on the configured model/inference-profile ARNs.
     aws_region: Optional[str] = None
 
-    # API authentication — bearer token required on every API request.
-    # Must match the VITE_API_TOKEN configured in the frontend.
+    # API authentication — bearer token for server-side dashboard proxy and CI.
+    # Never expose this value through a VITE_* frontend variable.
     api_secret_key: Optional[str] = None
+    token_pepper: str = ""
+
+    # Comma-separated public dashboard origins. Keep this explicit in hosted
+    # deployments so the browser API is not open to arbitrary web origins.
+    frontend_origins: str = ""
 
     # Authorization scope: comma-separated list of target_ids a run may be
     # created against. When set, a run targeting anything else is rejected —
@@ -35,6 +40,10 @@ class Settings(BaseSettings):
     # no allowlist is enforced (a warning is logged; do not rely on this in
     # production).
     allowed_targets: str = ""
+
+    # Local Docker demos can opt into private-network targets. Keep false for
+    # every hosted deployment so target registration cannot become SSRF.
+    allow_private_targets: bool = False
 
     # Target
     target_mode: str = "sandbox"  # sandbox | http
@@ -45,8 +54,18 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_file: Path = Path("runs/cyber_redteam.log")
 
-    # Database
+    # Database. ``DATABASE_URL`` is used by hosted API/worker deployments
+    # (PostgreSQL on AWS); ``DB_PATH`` remains the backwards-compatible local
+    # SQLite default used by the CLI and test suite.
+    database_url: Optional[str] = None
     db_path: Path = Path("runs/redteam.db")
+
+    # Release execution. ``thread`` keeps the zero-infrastructure local
+    # workflow; ``rq`` moves release ownership to a durable Redis worker.
+    release_execution_mode: str = "thread"
+    redis_url: Optional[str] = None
+    release_queue_name: str = "canary-releases"
+    release_job_timeout_seconds: int = 3600
 
     # Report
     report_output_dir: Path = Path("reports")
@@ -59,6 +78,11 @@ class Settings(BaseSettings):
     max_concurrent_runs: int = 3
     timeout_seconds: int = 30
     deterministic_seed: int = 42
+
+    @property
+    def database_location(self) -> str | Path:
+        """Return the configured SQLAlchemy URL or local SQLite path."""
+        return self.database_url or self.db_path
 
     class Config:
         env_file = ".env"
