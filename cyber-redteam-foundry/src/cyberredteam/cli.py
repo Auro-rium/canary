@@ -58,7 +58,7 @@ def init() -> None:
 
 @app.command()
 def run(
-    target_id: str = typer.Option("sandbox-target-001", help="Target ID"),
+    target_id: str = typer.Option(..., help="HTTP AI-agent target URL"),
     strategies: str = typer.Option(
         "prompt_injection,indirect_injection,tool_misuse",
         help="Attack strategies (comma-separated)",

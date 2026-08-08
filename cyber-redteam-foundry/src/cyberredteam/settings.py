@@ -37,7 +37,7 @@ class Settings(BaseSettings):
     allowed_targets: str = ""
 
     # Target
-    target_mode: str = "sandbox"  # sandbox | http
+    target_mode: str = "http"
     target_endpoint: Optional[str] = None
     target_api_key: Optional[str] = None
 

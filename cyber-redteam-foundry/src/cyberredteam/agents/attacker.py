@@ -12,7 +12,6 @@ from cyberredteam.logging import setup_logging
 from cyberredteam.schemas import AttackBranch, AttackResult, AttackSeverity, StrategyType
 from cyberredteam.tools.target_adapter import (
     HttpTargetAdapter,
-    SandboxTargetAdapter,
     TargetAdapter,
 )
 from cyberredteam.tools.prompt_injection import PromptInjectionTool
@@ -131,13 +130,15 @@ class AttackerAgent:
             # Create default based on settings
             from cyberredteam.settings import get_settings
             settings = get_settings()
-            if settings.target_mode == "http" and settings.target_endpoint:
-                self.target_adapter = HttpTargetAdapter(
-                    endpoint=settings.target_endpoint,
-                    api_key=settings.target_api_key,
+            if settings.target_mode != "http" or not settings.target_endpoint:
+                raise RuntimeError(
+                    "An HTTP target is required. Set TARGET_MODE=http and "
+                    "TARGET_ENDPOINT to the owned AI agent chat URL."
                 )
-            else:
-                self.target_adapter = SandboxTargetAdapter(target_id="sandbox-target-001")
+            self.target_adapter = HttpTargetAdapter(
+                endpoint=settings.target_endpoint,
+                api_key=settings.target_api_key,
+            )
         else:
             self.target_adapter = target_adapter
 

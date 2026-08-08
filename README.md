@@ -242,7 +242,7 @@ API_SECRET_KEY="change-me"
 ALLOWED_TARGETS=""
 
 # Target configuration
-TARGET_MODE="sandbox"         # sandbox | http
+TARGET_MODE="http"
 TARGET_ENDPOINT=""            # e.g. http://localhost:9000/chat
 TARGET_API_KEY=""             # forwarded as Bearer token to target
 
