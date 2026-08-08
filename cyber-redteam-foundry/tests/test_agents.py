@@ -76,8 +76,28 @@ def test_attacker_agent():
     assert result.response != ""
 
 
+def test_attacker_does_not_fabricate_payload_when_model_unavailable():
+    """A model outage must produce no synthetic attack input."""
+    adapter = MagicMock(spec=HttpTargetAdapter)
+    failed_llm = MagicMock()
+    failed_llm.build_structured_chain.return_value = object()
+    failed_llm.invoke_chain.side_effect = RuntimeError("model unavailable")
+    agent = AttackerAgent(target_adapter=adapter, llm=failed_llm)
+
+    result = agent.attack_branch(
+        branch=_branch(StrategyType.PROMPT_INJECTION),
+        run_id="model_outage",
+        target_id="http-agent",
+    )
+
+    assert result.error.startswith("attacker model unavailable")
+    assert result.prompt == ""
+    assert result.response == ""
+    adapter.execute_attack.assert_not_called()
+
+
 def test_attacker_agent_jailbreak():
-    """Test attacker agent generates jailbreak attacks with fallback payloads."""
+    """Test attacker agent generates jailbreak attacks through the model."""
     adapter = HttpTargetAdapter("https://agent.example.com/chat")
     agent = AttackerAgent(target_adapter=adapter)
 

@@ -31,6 +31,21 @@ test('session endpoint is anonymous until GitHub OAuth completes', async () => {
   assert.deepEqual(result.body, { authenticated: false, user: null })
 })
 
+test('OAuth configuration fails closed without an allowed login list', async () => {
+  const previousLogins = process.env.GITHUB_ALLOWED_LOGINS
+  delete process.env.GITHUB_ALLOWED_LOGINS
+  const result = { statusCode: 0, headers: {}, body: null }
+  const res = {
+    status(code) { result.statusCode = code; return this },
+    setHeader(name, value) { result.headers[name] = value; return this },
+    json(body) { result.body = body; return this },
+  }
+  await authHandler({ method: 'GET', query: { path: ['github'] }, headers: { host: 'localhost:3000' } }, res)
+  assert.equal(result.statusCode, 503)
+  if (previousLogins === undefined) delete process.env.GITHUB_ALLOWED_LOGINS
+  else process.env.GITHUB_ALLOWED_LOGINS = previousLogins
+})
+
 test('development bypass is explicit and production cannot inherit it', () => {
   const previousRequired = process.env.AUTH_REQUIRED
   const previousNodeEnv = process.env.NODE_ENV

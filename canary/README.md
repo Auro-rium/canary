@@ -203,6 +203,22 @@ Configure the GitHub OAuth App callback as:
 https://<your-vercel-domain>/api/auth/callback
 ```
 
+For the separate hackathon dashboard, use
+`https://canary-cutc-2026-dashboard.vercel.app/api/auth/callback` (or the
+custom Vercel domain assigned to that project). In the Vercel project, add the
+following as server-side environment variables for the Production and Preview
+environments: `GITHUB_OAUTH_CLIENT_ID`, `GITHUB_OAUTH_CLIENT_SECRET`,
+`GITHUB_OAUTH_REDIRECT_URI`, `GITHUB_ALLOWED_LOGINS`, `SESSION_SECRET`, and
+`APP_URL`. `GITHUB_ALLOWED_LOGINS` is a comma-separated allowlist of GitHub
+login names; an empty allowlist intentionally fails closed. The OAuth client
+secret and session secret are never exposed to browser code.
+
+For local development, set `AUTH_REQUIRED=false`. The hosted hackathon demo
+also uses `AUTH_REQUIRED=false` plus `CANARY_DEV_BYPASS=true` explicitly; this
+returns a local development identity and must be removed before public
+production. Production should use `AUTH_REQUIRED=true` (the default) with the
+GitHub credentials and allowlist configured above.
+
 Keep `CANARY_API_TOKEN`, `GITHUB_OAUTH_CLIENT_SECRET`, and `SESSION_SECRET` in
 Vercel server-side environment variables only. Never prefix them with `VITE_`.
 

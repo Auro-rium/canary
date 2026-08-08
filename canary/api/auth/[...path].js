@@ -39,7 +39,9 @@ const json = (res, status, body) => {
 const configured = () => Boolean(
   process.env.GITHUB_OAUTH_CLIENT_ID &&
   process.env.GITHUB_OAUTH_CLIENT_SECRET &&
-  process.env.SESSION_SECRET
+  process.env.SESSION_SECRET &&
+  process.env.SESSION_SECRET.length >= 32 &&
+  (process.env.GITHUB_ALLOWED_LOGINS || '').split(',').some((value) => value.trim())
 )
 
 const allowedLogin = (login) => {
@@ -84,8 +86,9 @@ export default async function handler(req, res) {
     return
   }
 
-  // Local development can intentionally bypass OAuth. Never enable this in
-  // the hosted Vercel project; production defaults to AUTH_REQUIRED=true.
+  // Local development can intentionally bypass OAuth. A hosted deployment
+  // must keep AUTH_REQUIRED=true unless CANARY_DEV_BYPASS is explicitly set
+  // for a short-lived development/demo environment.
   if (authBypassEnabled() && route === 'session') {
     return json(res, 200, {
       authenticated: true,
@@ -97,7 +100,9 @@ export default async function handler(req, res) {
     return json(res, 200, { authenticated: false })
   }
 
-  if (!configured()) {
+  // Session and logout remain available when OAuth is not configured so the
+  // frontend can render a signed-out state instead of receiving a 503.
+  if (!configured() && !['session', 'logout'].includes(route)) {
     json(res, 503, { detail: 'GitHub authentication is not configured.' })
     return
   }
