@@ -17,6 +17,11 @@ const originFor = (req) => {
 const redirectUriFor = (req) => process.env.GITHUB_OAUTH_REDIRECT_URI || `${originFor(req)}/api/auth/callback`
 
 const routeName = (req) => {
+  const requestUrl = String(req.url || '').split('?')[0]
+  const marker = '/api/auth/'
+  if (requestUrl.includes(marker)) {
+    return requestUrl.slice(requestUrl.indexOf(marker) + marker.length).replace(/^\/+|\/+$/g, '')
+  }
   const path = Array.isArray(req.query?.path) ? req.query.path : [req.query?.path]
   const parts = path
     .filter(Boolean)
