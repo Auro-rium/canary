@@ -30,8 +30,16 @@ export default async function handler(req, res) {
     return
   }
 
-  const segments = Array.isArray(req.query.path) ? req.query.path : [req.query.path]
-  const path = segments.filter(Boolean).map(encodeURIComponent).join('/')
+  const requestPath = String(req.url || '').split('?')[0]
+  const marker = '/api/'
+  let path
+  if (requestPath.includes(marker)) {
+    path = requestPath.slice(requestPath.indexOf(marker) + marker.length)
+  } else {
+    const segments = Array.isArray(req.query.path) ? req.query.path : [req.query.path]
+    path = segments.filter(Boolean).join('/')
+  }
+  path = path.split('/').filter(Boolean).map(encodeURIComponent).join('/')
   if (!path || path.includes('..')) {
     res.status(400).json({ detail: 'Invalid API path.' })
     return
