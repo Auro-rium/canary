@@ -4,7 +4,7 @@ import { parseCommand, HELP_TEXT } from '../../lib/commands'
 import { saveRun } from '../../lib/db'
 import * as api from '../../lib/api'
 import { ApiError } from '../../lib/api'
-import type { AgentStatus, LogEntry, FindingPayload, CompletePayload, SSEEvent } from '../../lib/types'
+import type { AgentStatus, LogEntry, FindingPayload, CompletePayload, FailedPayload, SSEEvent } from '../../lib/types'
 
 function errorMessage(e: unknown): string {
   if (e instanceof ApiError) return e.message
@@ -81,6 +81,11 @@ export default function ChatPanel() {
           `Campaign complete — ${payload.total_findings} finding(s) ` +
           `(${payload.critical_count} critical, ${payload.high_count} high), ${payload.duration_seconds}s`,
         )
+      }
+      if (event.type === 'campaign_failed') {
+        const payload = event.payload as FailedPayload
+        store.setPhase('failed')
+        say('error', payload.message)
       }
     }
 
@@ -200,7 +205,7 @@ export default function ChatPanel() {
           <span className="text-white/25 text-[9px]">[{store.chatMessages.length}]</span>
           {store.phase === 'running' && <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse-red" />}
           <span className="text-white/30 text-[10px]">
-            {store.phase === 'running' ? 'LIVE' : store.phase === 'complete' ? 'DONE' : 'IDLE'}
+            {store.phase === 'running' ? 'LIVE' : store.phase === 'complete' ? 'DONE' : store.phase === 'failed' ? 'FAILED' : 'IDLE'}
           </span>
         </div>
       </div>

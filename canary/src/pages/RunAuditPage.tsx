@@ -156,6 +156,11 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
       setReport(event.payload as CompletePayload)
       setPhase('complete')
     }
+    if (event.type === 'campaign_failed') {
+      const p = event.payload as { message?: string }
+      appendLog('ERROR', p.message || 'Real agent pipeline failed. No report was generated.')
+      setPhase('failed')
+    }
   }, [appendLog, updateAgent, fireEdge])
 
   // ── Real backend via SSE ────────────────────────────────────────────────────
@@ -519,7 +524,7 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
               <div>
                 <div className="text-white/25 text-[9px] uppercase tracking-[0.2em] mb-1">Status</div>
                 <div className={`flex items-center gap-1.5 font-mono text-[10px] ${isRunning ? 'text-red-400' : 'text-white/40'}`}>
-                  {phase === 'running' ? 'RUNNING' : 'COMPLETE'}
+                  {phase === 'running' ? 'RUNNING' : phase === 'complete' ? 'COMPLETE' : phase === 'failed' ? 'FAILED' : 'IDLE'}
                   {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse-red shrink-0" />}
                 </div>
               </div>
@@ -542,7 +547,7 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
               <div className="flex items-center gap-2">
                 <span className="text-white/25 text-[9px]">[{logs.length}]</span>
                 {isRunning && <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse-red" />}
-                <span className="text-white/30 text-[10px]">{isRunning ? 'LIVE' : phase === 'complete' ? 'DONE' : 'IDLE'}</span>
+                <span className="text-white/30 text-[10px]">{isRunning ? 'LIVE' : phase === 'complete' ? 'DONE' : phase === 'failed' ? 'FAILED' : 'IDLE'}</span>
               </div>
             </div>
 
