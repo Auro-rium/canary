@@ -13,6 +13,7 @@ ALTER TABLE releases ADD COLUMN IF NOT EXISTS score_delta DOUBLE PRECISION;
 ALTER TABLE releases ADD COLUMN IF NOT EXISTS coverage JSONB;
 ALTER TABLE releases ADD COLUMN IF NOT EXISTS cancellation_requested BOOLEAN NOT NULL DEFAULT FALSE;
 ALTER TABLE releases ADD COLUMN IF NOT EXISTS failure_code TEXT;
+ALTER TABLE releases ADD COLUMN IF NOT EXISTS baseline_replay_run_id TEXT;
 
 CREATE TABLE IF NOT EXISTS accepted_baselines (
   baseline_id TEXT PRIMARY KEY,
@@ -80,5 +81,15 @@ CREATE TABLE IF NOT EXISTS security_regressions (
   candidate_evidence JSONB,
   severity TEXT,
   reason TEXT NOT NULL,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS release_events (
+  event_id TEXT PRIMARY KEY,
+  release_id TEXT NOT NULL,
+  sequence INTEGER NOT NULL,
+  stage TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  payload JSONB,
   created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
 );

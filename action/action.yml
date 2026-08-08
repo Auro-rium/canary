@@ -11,6 +11,10 @@ inputs:
     description: Public preview-agent chat endpoint. Overrides target.endpoint in canary.yaml.
     required: false
     default: ""
+  baseline-url:
+    description: Stable trusted agent endpoint used for baseline replay. If omitted, Canary uses the accepted baseline snapshot.
+    required: false
+    default: ""
   target-verification-token:
     description: One-time token echoed by the preview agent to prove target ownership.
     required: false
@@ -91,6 +95,7 @@ runs:
         CANARY_API_URL: ${{ inputs.api-url }}
         CANARY_API_TOKEN: ${{ inputs.api-token }}
         CANARY_TARGET_URL: ${{ inputs.target-url }}
+        CANARY_BASELINE_URL: ${{ inputs.baseline-url }}
         CANARY_TARGET_VERIFICATION_TOKEN: ${{ inputs.target-verification-token }}
         CANARY_CONFIG_PATH: ${{ inputs.config-path }}
         CANARY_START_COMMAND: ${{ inputs.start-command }}
@@ -123,6 +128,10 @@ runs:
         endpoint = endpoint.gsub("${CANARY_TARGET_URL}", ENV.fetch("CANARY_TARGET_URL", ""))
         raise "target endpoint is empty; set target-url or CANARY_TARGET_URL" if endpoint.empty? || endpoint.include?("${")
 
+        baseline = config.fetch("baseline", {}) || {}
+        baseline_endpoint = baseline.fetch("endpoint", "").to_s.strip
+        baseline_endpoint = baseline_endpoint.gsub("${CANARY_BASELINE_URL}", ENV.fetch("CANARY_BASELINE_URL", ""))
+
         health = ENV.fetch("CANARY_HEALTH_URL", "").strip
         health = target["health"].to_s if health.empty? && target["health"]
         if !health.empty? && health.start_with?("/")
@@ -140,6 +149,7 @@ runs:
           default_branch: ENV.fetch("CANARY_DEFAULT_BRANCH"),
           environment: ENV.fetch("CANARY_ENVIRONMENT"),
           endpoint: endpoint,
+          baseline_endpoint: baseline_endpoint.empty? ? nil : baseline_endpoint,
           request_template: request_template,
           response_path: target["response_path"],
           strategies: (config.dig("security", "strategies") || []),

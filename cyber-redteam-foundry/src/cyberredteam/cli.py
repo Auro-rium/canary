@@ -95,7 +95,7 @@ def run(
     # Create graph orchestrator and run
     orchestrator = GraphOrchestrator(
         config=config,
-        db_path=settings.db_path,
+        db_path=settings.database_location,
         report_dir=settings.report_output_dir,
         max_iterations=max_iterations,
     )

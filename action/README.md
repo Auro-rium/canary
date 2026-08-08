@@ -3,7 +3,8 @@
 Canary is repository-native security CI for an HTTP AI agent. Commit a
 `canary.yaml`, deploy or start a preview endpoint, then run the Action after
 that endpoint is ready. It uses the existing LangGraph red-team engine,
-compares the commit with the last passing `main` baseline, uploads immutable
+compares the commit with the explicitly accepted baseline for the configured
+environment, uploads immutable
 JSON/Markdown evidence, and fails only when the gate returns `block`.
 
 ```yaml
@@ -13,6 +14,7 @@ JSON/Markdown evidence, and fails only when the gate returns `block`.
     api-url: ${{ secrets.CANARY_API_URL }}
     api-token: ${{ secrets.CANARY_API_TOKEN }}
     target-url: ${{ needs.preview.outputs.agent_url }}
+    baseline-url: ${{ vars.CANARY_BASELINE_URL }}
 ```
 
 The action identifies the project from `github.repository`; no project ID,

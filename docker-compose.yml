@@ -12,6 +12,18 @@ networks:
 
 services:
 
+  # ── Internal: Redis queue for optional durable release workers ────────────
+  # Local users can leave RELEASE_EXECUTION_MODE=thread. Hosted deployments
+  # use the same contract with ElastiCache instead of this container.
+  canary-redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - canary-redis-data:/data
+    networks:
+      - canary-net
+    restart: unless-stopped
+
   # ── Internal: FastAPI red-team backend (port 8001) ───────────────────────
   redteam-backend:
     build:
@@ -26,6 +38,7 @@ services:
       - ./cyber-redteam-foundry/.env
     environment:
       - RUNNING_IN_DOCKER=true
+      - REDIS_URL=redis://canary-redis:6379/0
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -52,3 +65,26 @@ services:
     restart: unless-stopped
     depends_on:
       - redteam-backend
+
+  # ── Internal: durable release worker (enabled when mode=rq) ──────────────
+  redteam-worker:
+    build:
+      context: ./cyber-redteam-foundry
+      dockerfile: Dockerfile
+    command: canary-worker
+    env_file:
+      - ./cyber-redteam-foundry/.env
+    environment:
+      - RUNNING_IN_DOCKER=true
+      - REDIS_URL=redis://canary-redis:6379/0
+    volumes:
+      - ./runs:/app/runs
+      - ./reports:/app/reports
+    networks:
+      - canary-net
+    restart: unless-stopped
+    depends_on:
+      - canary-redis
+
+volumes:
+  canary-redis-data:

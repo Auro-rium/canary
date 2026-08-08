@@ -9,7 +9,7 @@ on:
 jobs:
   agent-canary:
     # This file is a copy-ready integration template. A target repository sets
-    # these two secrets and exposes its preview URL as a repository variable or
+    # the scoped token and exposes its preview URL as a repository variable or
     # replaces it with its deployment job output.
     if: ${{ secrets.CANARY_API_URL != '' && secrets.CANARY_PROJECT_TOKEN != '' && vars.CANARY_TARGET_URL != '' }}
     runs-on: ubuntu-latest
@@ -23,4 +23,5 @@ jobs:
           api-url: ${{ secrets.CANARY_API_URL }}
           api-token: ${{ secrets.CANARY_PROJECT_TOKEN }}
           target-url: ${{ vars.CANARY_TARGET_URL }}
+          baseline-url: ${{ vars.CANARY_BASELINE_URL }}
           target-verification-token: ${{ secrets.CANARY_TARGET_VERIFICATION_TOKEN }}

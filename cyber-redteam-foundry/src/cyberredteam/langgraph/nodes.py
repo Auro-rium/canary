@@ -44,7 +44,7 @@ def get_node_store() -> SQLiteStore:
     global _store
     if _store is None:
         settings = get_settings()
-        _store = SQLiteStore(Path(settings.db_path))
+        _store = SQLiteStore(settings.database_location)
     return _store
 
 def _attacker_factory(**kwargs) -> AttackerAgent:

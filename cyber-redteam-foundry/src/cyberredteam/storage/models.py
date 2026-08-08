@@ -168,6 +168,9 @@ class ReleaseRecord(Base):
     is_baseline = Column(Integer, nullable=False, default=0, index=True)
     environment = Column(String, nullable=False)
     run_id = Column(String, nullable=True, index=True)
+    # A differential release gets a fresh baseline replay run so the same
+    # attack cases are executed against the immutable accepted target.
+    baseline_replay_run_id = Column(String, nullable=True, index=True)
     status = Column(String, nullable=False, default="running")
     decision = Column(String, nullable=True)  # pass | warn | block
     baseline_release_id = Column(String, nullable=True)
@@ -308,8 +311,21 @@ class ReleaseEventRecord(Base):
 
 
 def get_engine(db_path: str):
-    """Create SQLAlchemy engine for the database."""
-    return create_engine(f"sqlite:///{db_path}")
+    """Create a SQLAlchemy engine for SQLite paths or database URLs.
+
+    Local callers historically pass a ``Path``/filename. Hosted API and
+    worker processes pass ``DATABASE_URL`` (normally PostgreSQL). Keeping the
+    compatibility branch here lets every existing store consumer migrate to
+    RDS without changing the domain models or the test fixtures.
+    """
+    location = str(db_path)
+    if "://" in location:
+        connect_args = {"check_same_thread": False} if location.startswith("sqlite") else {}
+        return create_engine(location, connect_args=connect_args, pool_pre_ping=True)
+    return create_engine(
+        f"sqlite:///{location}",
+        connect_args={"check_same_thread": False},
+    )
 
 
 def _migrate_columns(engine) -> None:
@@ -320,6 +336,13 @@ def _migrate_columns(engine) -> None:
     already present.  New tables are created by create_all(); this
     function only handles column additions to *existing* tables.
     """
+    # PostgreSQL migrations are applied by the deployment migration runner.
+    # The old PRAGMA/ALTER path is intentionally SQLite-only; PostgreSQL
+    # system catalogs and JSONB types need a real migration rather than a
+    # best-effort startup mutation.
+    if engine.dialect.name != "sqlite":
+        return
+
     migrations = {
         "attacks": [
             ("target_id",      "VARCHAR"),
@@ -355,6 +378,7 @@ def _migrate_columns(engine) -> None:
             ("coverage", "TEXT"),
             ("cancellation_requested", "INTEGER DEFAULT 0"),
             ("failure_code", "VARCHAR"),
+            ("baseline_replay_run_id", "VARCHAR"),
         ],
     }
     with engine.connect() as conn:

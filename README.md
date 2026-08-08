@@ -23,8 +23,16 @@ classification, policy gates, release evidence, and the GitHub Action.
 
 ## 30-second demo
 
-The demo target is the deliberately vulnerable CompanyBot in
-`cyber-redteam-foundry/target_agent`. Run the real API and target locally:
+The authoritative PR demo target is the separate
+[`Auro-rium/companybot-canary-demo`](https://github.com/Auro-rium/companybot-canary-demo)
+repository. It is a real LangChain + Amazon Bedrock agent deployed with
+Railway main and PR preview environments. The bundled
+`cyber-redteam-foundry/target_agent` remains available as a local fixture.
+
+For the hosted demo, configure the CompanyBot repository's Railway and Canary
+secrets, then open a PR there. The workflow resolves the Railway preview,
+waits for `/health`, and invokes this branch's reusable action. For local
+development, run the real API and bundled target:
 
 ```bash
 cp cyber-redteam-foundry/.env.example cyber-redteam-foundry/.env
@@ -45,6 +53,7 @@ The action is reusable from another repository:
     api-url: ${{ secrets.CANARY_API_URL }}
     api-token: ${{ secrets.CANARY_PROJECT_TOKEN }}
     target-url: ${{ steps.preview.outputs.url }}
+    baseline-url: ${{ vars.CANARY_BASELINE_URL }}
     target-verification-token: ${{ secrets.CANARY_TARGET_VERIFICATION_TOKEN }}
 ```
 
@@ -176,12 +185,10 @@ reserved, multicast, unspecified, metadata, userinfo, and redirect-bypass
 forms, and disables redirects during verification. Production deployments
 should additionally enforce outbound network egress controls.
 
-The checked-in local adapter still uses SQLite and an API process thread for
-compatibility with the original project. The release lifecycle is now modeled
-as a durable, idempotent job boundary and is ready for a queue/worker adapter;
-PostgreSQL/Redis deployment wiring remains a production follow-up. Dashboard
-read access is proxied server-side; CI credentials are separate from browser
-JavaScript.
+Local mode still defaults to SQLite and an API thread for compatibility. The
+AWS deployment uses PostgreSQL on RDS, Redis on ElastiCache, ECS API/worker
+services, and bounded RQ jobs. The Vercel dashboard uses GitHub OAuth sessions;
+the CI project token remains server-side and separate from browser JavaScript.
 
 ## CUTC 2026 build
 

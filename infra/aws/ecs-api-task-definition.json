@@ -1,0 +1,45 @@
+{
+  "family": "agent-canary-api",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "2048",
+  "memory": "4096",
+  "executionRoleArn": "${ECS_EXECUTION_ROLE_ARN}",
+  "taskRoleArn": "${CANARY_TASK_ROLE_ARN}",
+  "containerDefinitions": [
+    {
+      "name": "canary-api",
+      "image": "${ECR_IMAGE}",
+      "essential": true,
+      "portMappings": [{"containerPort": 8001, "protocol": "tcp"}],
+      "command": ["uvicorn", "cyberredteam.api:app", "--host", "0.0.0.0", "--port", "8001"],
+      "environment": [
+        {"name": "RELEASE_EXECUTION_MODE", "value": "rq"},
+        {"name": "RELEASE_QUEUE_NAME", "value": "canary-releases"},
+        {"name": "AWS_REGION", "value": "${AWS_REGION}"},
+        {"name": "FRONTEND_ORIGINS", "value": "${FRONTEND_ORIGINS}"}
+      ],
+      "secrets": [
+        {"name": "DATABASE_URL", "valueFrom": "${DATABASE_URL_SECRET_ARN}"},
+        {"name": "REDIS_URL", "valueFrom": "${REDIS_URL_SECRET_ARN}"},
+        {"name": "API_SECRET_KEY", "valueFrom": "${API_SECRET_KEY_SECRET_ARN}"},
+        {"name": "TOKEN_PEPPER", "valueFrom": "${TOKEN_PEPPER_SECRET_ARN}"}
+      ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -fsS http://127.0.0.1:8001/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      },
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/agent-canary",
+          "awslogs-region": "${AWS_REGION}",
+          "awslogs-stream-prefix": "api"
+        }
+      }
+    }
+  ]
+}

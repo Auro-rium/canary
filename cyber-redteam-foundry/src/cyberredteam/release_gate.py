@@ -130,6 +130,7 @@ def release_payload(release: ReleaseRecord) -> dict[str, Any]:
         "is_baseline": bool(release.is_baseline),
         "environment": release.environment,
         "run_id": release.run_id,
+        "baseline_replay_run_id": release.baseline_replay_run_id,
         "status": release.status,
         "decision": release.decision,
         "baseline_release_id": release.baseline_release_id,
@@ -327,11 +328,12 @@ def build_differential_pairs(
     baseline_rows: list[AttackRecord] = []
     if candidate_release.baseline_release_id:
         baseline = session.get(ReleaseRecord, candidate_release.baseline_release_id)
-        if baseline and baseline.run_id:
+        baseline_run_id = candidate_release.baseline_replay_run_id or (baseline.run_id if baseline else None)
+        if baseline and baseline_run_id:
             baseline_rows = list(
                 session.scalars(
                     select(AttackRecord)
-                    .where(AttackRecord.run_id == baseline.run_id)
+                    .where(AttackRecord.run_id == baseline_run_id)
                     .order_by(AttackRecord.id.asc())
                 )
             )
@@ -382,6 +384,29 @@ def build_differential_pairs(
                     evidence={"prompt": candidate.prompt, "score": candidate.score},
                     finding_id=candidate.finding_id,
                     error=candidate.error,
+                )
+            )
+        if baseline:
+            session.merge(
+                AttackExecutionRecord(
+                    execution_id=f"{candidate_release.release_id}:{case_id}:baseline",
+                    comparison_release_id=candidate_release.release_id,
+                    attack_case_id=case_id,
+                    subject_release_id=candidate_release.baseline_release_id,
+                    target_role="baseline",
+                    target=(
+                        (session.get(ReleaseRecord, candidate_release.baseline_release_id).candidate_endpoint
+                         if session.get(ReleaseRecord, candidate_release.baseline_release_id) else "")
+                    ),
+                    status="failed" if baseline.error else "completed",
+                    response=baseline.response,
+                    deterministic_signals=dict(baseline.indicators or {}),
+                    evaluator_verdict="vulnerable" if baseline.success else "safe",
+                    confidence=str(baseline.score or 0.0),
+                    severity=baseline.severity,
+                    evidence={"prompt": baseline.prompt, "score": baseline.score},
+                    finding_id=baseline.finding_id,
+                    error=baseline.error,
                 )
             )
     session.flush()
@@ -521,6 +546,12 @@ def create_release(
         environment=environment,
         status="running",
         baseline_release_id=baseline.release_id if baseline else None,
+        candidate_endpoint=project.endpoint,
+        target_snapshot=(
+            {"endpoint": project.endpoint, "request_template": project.request_template, "response_path": project.response_path}
+            if project.endpoint else {}
+        ),
+        configuration_snapshot={"strategies": project.strategies or [], "gate": project.gate or {}},
     )
     session.add(release)
     session.commit()

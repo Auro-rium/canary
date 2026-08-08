@@ -9,6 +9,12 @@ target:
   request_template: '{"message":"{{PROMPT}}"}'
   response_path: response
 
+# Optional trusted main deployment. On PRs the Action supplies the Railway
+# preview as target.endpoint and Canary replays the accepted attack cases
+# against this endpoint as the baseline assertion.
+baseline:
+  endpoint: ${CANARY_BASELINE_URL}
+
 security:
   strategies:
     - prompt_injection

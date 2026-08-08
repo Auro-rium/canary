@@ -1,4 +1,10 @@
-"""SQLite artifact storage."""
+"""SQLAlchemy artifact storage.
+
+The public ``SQLiteStore`` name is retained for compatibility with the
+original local Canary engine. It now accepts either a SQLite path or a
+SQLAlchemy database URL, allowing the same store implementation to run on
+RDS PostgreSQL in the API and worker containers.
+"""
 
 from datetime import datetime
 from pathlib import Path
@@ -25,20 +31,23 @@ logger = setup_logging()
 class SQLiteStore:
     """SQLite-backed storage for red team artifacts."""
 
-    def __init__(self, db_path: Path):
+    def __init__(self, db_path: Path | str):
         """
         Initialize storage.
 
         Args:
-            db_path: Path to SQLite database file
+            db_path: SQLite database path or SQLAlchemy database URL
         """
-        self.db_path = Path(db_path)
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self.location = str(db_path)
+        self.is_url = "://" in self.location
+        self.db_path = Path(db_path) if not self.is_url else None
+        if self.db_path is not None:
+            self.db_path.parent.mkdir(parents=True, exist_ok=True)
 
         # Initialize database
-        self.engine = init_db(str(self.db_path))
+        self.engine = init_db(self.location)
         self.SessionLocal = sessionmaker(bind=self.engine)
-        logger.info(f"Initialized SQLite store at {self.db_path}")
+        logger.info("Initialized artifact store at %s", self.location)
 
     def save_run_start(self, run_id: str, target_id: str) -> None:
         """Record the start of a run."""

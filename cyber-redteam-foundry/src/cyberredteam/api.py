@@ -70,13 +70,18 @@ def require_auth(request: Request, authorization: Optional[str] = Header(None)) 
     The token must equal the server-side ``API_SECRET_KEY``. Fails closed: if no key is configured the API
     refuses all requests rather than running wide open.
     """
+    # Load balancers and ECS container health checks need a minimal liveness
+    # probe. It returns no data and is intentionally outside the authenticated
+    # API namespace; every project/release/finding route remains protected.
+    if request.url.path == "/health":
+        return
     scheme, _, token = (authorization or "").partition(" ")
     if scheme == "Bearer" and settings.api_secret_key and token == settings.api_secret_key:
         return
     parsed = parse_project_token(token) if scheme == "Bearer" else None
     if parsed and request.url.path == "/api/ci/releases":
         lookup_prefix, _ = parsed
-        store = SQLiteStore(Path(settings.db_path))
+        store = SQLiteStore(settings.database_location)
         try:
             with store.SessionLocal() as session:
                 record = session.scalar(select(ProjectTokenRecord).where(ProjectTokenRecord.lookup_prefix == lookup_prefix))
@@ -159,6 +164,9 @@ class CiReleaseRequest(BaseModel):
     default_branch: str = Field(default="main", max_length=128)
     environment: str = Field(default="preview", max_length=64)
     endpoint: str
+    # Stable trusted target used for differential replay. This is normally
+    # the Railway main deployment while ``endpoint`` is the PR preview.
+    baseline_endpoint: Optional[str] = None
     request_template: str = '{"message":"{{PROMPT}}"}'
     response_path: Optional[str] = None
     strategies: List[str] = Field(default_factory=list)
@@ -256,7 +264,7 @@ def run_orchestrator_thread(
         )
         orchestrator = GraphOrchestrator(
             config=config,
-            db_path=settings.db_path,
+            db_path=settings.database_location,
             report_dir=settings.report_output_dir,
             max_iterations=max_iterations,
         )
@@ -268,7 +276,7 @@ def run_orchestrator_thread(
         active_runs[run_id] = "failed"
         # Update DB status to failed
         try:
-            store = SQLiteStore(Path(settings.db_path))
+            store = SQLiteStore(settings.database_location)
             with store.SessionLocal() as session:
                 stmt = select(RunRecord).where(RunRecord.run_id == run_id)
                 run = session.scalar(stmt)
@@ -289,12 +297,21 @@ def run_release_orchestrator_thread(
 ) -> None:
     """Run a project release and persist its baseline comparison on completion."""
     replay_cases: list[dict[str, str]] = []
-    pre_store = SQLiteStore(Path(settings.db_path))
+    baseline_endpoint: str | None = None
+    baseline_request_template: str | None = None
+    baseline_response_path: str | None = None
+    pre_store = SQLiteStore(settings.database_location)
     try:
         with pre_store.SessionLocal() as pre_session:
             candidate = pre_session.get(ReleaseRecord, release_id)
             if candidate and candidate.baseline_release_id:
                 baseline = pre_session.get(ReleaseRecord, candidate.baseline_release_id)
+                baseline_endpoint = (
+                    ((baseline.target_snapshot or {}).get("endpoint") if baseline else None)
+                    or (baseline.candidate_endpoint if baseline else None)
+                )
+                baseline_request_template = (baseline.target_snapshot or {}).get("request_template") if baseline else None
+                baseline_response_path = (baseline.target_snapshot or {}).get("response_path") if baseline else None
                 if baseline and baseline.run_id:
                     baseline_attacks = pre_session.scalars(
                         select(AttackRecord)
@@ -325,7 +342,30 @@ def run_release_orchestrator_thread(
         target_response_path=project.response_path,
         replay_cases=replay_cases,
     )
-    store = SQLiteStore(Path(settings.db_path))
+
+    if baseline_endpoint and replay_cases:
+        baseline_replay_run_id = f"{run_id}-baseline"
+        replay_store = SQLiteStore(settings.database_location)
+        try:
+            replay_store.save_run_start(baseline_replay_run_id, baseline_endpoint)
+            with replay_store.SessionLocal() as session:
+                release = session.get(ReleaseRecord, release_id)
+                if release:
+                    release.baseline_replay_run_id = baseline_replay_run_id
+                    session.commit()
+        finally:
+            replay_store.close()
+        run_orchestrator_thread(
+            baseline_replay_run_id,
+            baseline_endpoint,
+            strategy_types,
+            max_iterations=max(1, min(2, (len(strategy_types) + 2) // 3)),
+            max_attempts=max(2, len(replay_cases)),
+            target_request_template=baseline_request_template or project.request_template,
+            target_response_path=baseline_response_path or project.response_path,
+            replay_cases=replay_cases,
+        )
+    store = SQLiteStore(settings.database_location)
     try:
         with store.SessionLocal() as session:
             run = session.get(RunRecord, run_id)
@@ -349,13 +389,19 @@ def run_release_orchestrator_thread(
 @app.get("/api/status")
 def get_status():
     """Verify backend status."""
-    db_exists = Path(settings.db_path).exists()
+    db_exists = bool(settings.database_url) or Path(settings.db_path).exists()
     return {
         "status": "healthy",
-        "database": str(settings.db_path),
+        "database": str(settings.database_location),
         "database_exists": db_exists,
         "report_directory": str(settings.report_output_dir),
     }
+
+
+@app.get("/health")
+def health_probe():
+    """Unauthenticated liveness endpoint for ALB/ECS health checks."""
+    return {"status": "healthy", "service": "agent-canary-api"}
 
 
 # ── CUTC: projects, target contracts, and release gates ─────────────────────
@@ -386,7 +432,7 @@ def _start_release(
         run_id = uuid.uuid4().hex[:12]
         active_runs[run_id] = "running"
 
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     try:
         with store.SessionLocal() as session:
             project_in_session = session.get(ProjectRecord, project.project_id)
@@ -434,12 +480,30 @@ def _start_release(
         strategies=snapshot["strategies"],
         gate=snapshot["gate"],
     )
-    threading.Thread(
-        target=run_release_orchestrator_thread,
-        args=(response_payload["release_id"], run_id, project_snapshot, _release_strategies(snapshot["strategies"])),
-        kwargs={"default_branch": default_branch},
-        daemon=True,
-    ).start()
+    if settings.release_execution_mode.lower() == "rq":
+        # The release row is committed before queue delivery. RQ owns the
+        # lifecycle in hosted mode; the local default remains the historical
+        # thread runner so existing demos/tests need no Redis dependency.
+        try:
+            from cyberredteam.queue import enqueue_release
+
+            enqueue_release(response_payload["release_id"])
+        except Exception as error:
+            logger.exception("Failed to enqueue release %s", response_payload["release_id"])
+            store = SQLiteStore(settings.database_location)
+            try:
+                with store.SessionLocal() as session:
+                    mark_release_failed(session, response_payload["release_id"], f"Queue unavailable: {error}")
+            finally:
+                store.close()
+            raise HTTPException(status_code=503, detail="Release worker queue is unavailable") from error
+    else:
+        threading.Thread(
+            target=run_release_orchestrator_thread,
+            args=(response_payload["release_id"], run_id, project_snapshot, _release_strategies(snapshot["strategies"])),
+            kwargs={"default_branch": default_branch},
+            daemon=True,
+        ).start()
     return response_payload
 
 
@@ -453,7 +517,7 @@ def create_project_endpoint(body: ProjectCreateRequest):
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     try:
         with store.SessionLocal() as session:
             project = create_project(
@@ -475,7 +539,7 @@ def create_project_endpoint(body: ProjectCreateRequest):
 
 @app.get("/api/projects")
 def list_projects():
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     try:
         with store.SessionLocal() as session:
             projects = session.scalars(select(ProjectRecord).order_by(ProjectRecord.created_at.desc())).all()
@@ -486,7 +550,7 @@ def list_projects():
 
 @app.get("/api/projects/{project_id}")
 def get_project(project_id: str):
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     try:
         with store.SessionLocal() as session:
             return project_payload(_project_or_404(session, project_id))
@@ -496,7 +560,7 @@ def get_project(project_id: str):
 
 @app.get("/api/projects/{project_id}/baselines")
 def list_project_baselines(project_id: str):
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     try:
         with store.SessionLocal() as session:
             _project_or_404(session, project_id)
@@ -524,7 +588,7 @@ def list_project_baselines(project_id: str):
 @app.post("/api/projects/{project_id}/tokens", status_code=201)
 def create_project_token(project_id: str, body: ProjectTokenCreateRequest):
     """Issue a project-scoped CI credential; the raw value is returned once."""
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     try:
         with store.SessionLocal() as session:
             _project_or_404(session, project_id)
@@ -546,7 +610,7 @@ def create_project_token(project_id: str, body: ProjectTokenCreateRequest):
 @app.post("/api/projects/{project_id}/baselines/{release_id}/accept", status_code=201)
 def accept_project_baseline(project_id: str, release_id: str, reason: str = ""):
     """Explicitly promote one completed assessment; never auto-promote."""
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     try:
         with store.SessionLocal() as session:
             project = _project_or_404(session, project_id)
@@ -641,7 +705,7 @@ def verify_project_target(project_id: str, body: ProjectTargetVerifyRequest):
     if echoed != body.verification_token:
         raise HTTPException(status_code=422, detail="Target did not prove ownership of the verification token")
 
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     try:
         with store.SessionLocal() as session:
             project = _project_or_404(session, project_id)
@@ -671,7 +735,7 @@ def create_project_release(project_id: str, body: ReleaseCreateRequest):
     if not re.fullmatch(r"[A-Za-z0-9._/-]{4,128}", body.commit_sha):
         raise HTTPException(status_code=422, detail="commit_sha contains unsupported characters")
 
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     try:
         with store.SessionLocal() as session:
             project = _project_or_404(session, project_id)
@@ -703,7 +767,7 @@ def create_ci_release(body: CiReleaseRequest, request: Request):
     except ValueError as error:
         raise HTTPException(status_code=422, detail=str(error)) from error
 
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     try:
         with store.SessionLocal() as session:
             project = upsert_ci_project(
@@ -722,6 +786,27 @@ def create_ci_release(body: CiReleaseRequest, request: Request):
             scoped_project_id = getattr(request.state, "project_token_project_id", None)
             if scoped_project_id and scoped_project_id != project.project_id:
                 raise HTTPException(status_code=403, detail="Project token is not authorized for this repository")
+            if body.baseline_endpoint:
+                try:
+                    _validate_target_contract(body.baseline_endpoint, body.request_template)
+                except ValueError as error:
+                    raise HTTPException(status_code=422, detail=f"Invalid baseline endpoint: {error}") from error
+                accepted = session.scalar(
+                    select(AcceptedBaselineRecord)
+                    .where(
+                        AcceptedBaselineRecord.project_id == project.project_id,
+                        AcceptedBaselineRecord.environment == body.environment,
+                        AcceptedBaselineRecord.active.is_(True),
+                    )
+                    .order_by(AcceptedBaselineRecord.accepted_at.desc())
+                )
+                if accepted:
+                    stored_endpoint = (accepted.target_snapshot or {}).get("endpoint")
+                    if stored_endpoint and stored_endpoint.rstrip("/") != body.baseline_endpoint.rstrip("/"):
+                        raise HTTPException(
+                            status_code=409,
+                            detail="baseline_endpoint does not match the accepted baseline target for this environment",
+                        )
             if body.verification_token:
                 try:
                     _verify_target_ownership(body.endpoint, body.request_template, body.verification_token)
@@ -756,7 +841,7 @@ def create_ci_release(body: CiReleaseRequest, request: Request):
 
 @app.get("/api/projects/{project_id}/releases")
 def list_project_releases(project_id: str):
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     try:
         with store.SessionLocal() as session:
             _project_or_404(session, project_id)
@@ -772,7 +857,7 @@ def list_project_releases(project_id: str):
 
 @app.get("/api/releases/{release_id}")
 def get_release(release_id: str):
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     try:
         with store.SessionLocal() as session:
             release = session.get(ReleaseRecord, release_id)
@@ -785,7 +870,7 @@ def get_release(release_id: str):
 
 @app.get("/api/releases/{release_id}/regressions")
 def get_release_regressions(release_id: str):
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     try:
         with store.SessionLocal() as session:
             release = session.get(ReleaseRecord, release_id)
@@ -931,7 +1016,7 @@ def _release_markdown(payload: dict) -> str:
 @app.get("/api/releases/{release_id}/report")
 def get_release_report(release_id: str):
     """Return the artifact-ready, evidence-backed JSON report for one release."""
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     try:
         with store.SessionLocal() as session:
             release = session.get(ReleaseRecord, release_id)
@@ -1028,7 +1113,7 @@ def create_run(req: RunRequest, background_tasks: BackgroundTasks):
     max_iterations, max_attempts = intensity_mapping.get(req.intensity or "Medium", (2, 4))
 
     # Initialize SQLite store to record start of run
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     store.save_run_start(run_id, target_id)
     store.close()
 
@@ -1050,7 +1135,7 @@ def create_run(req: RunRequest, background_tasks: BackgroundTasks):
 @app.get("/api/runs/{run_id}")
 def get_run(run_id: str):
     """Retrieve detailed state of a specific run."""
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     with store.SessionLocal() as session:
         # Check run
         stmt = select(RunRecord).where(RunRecord.run_id == run_id)
@@ -1100,7 +1185,7 @@ def get_run(run_id: str):
 @app.get("/api/runs/{run_id}/analysis-report")
 def get_analysis_report(run_id: str):
     """Exposes the run as the structured AnalysisReport expected by the React frontend."""
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     with store.SessionLocal() as session:
         # Get run record
         stmt = select(RunRecord).where(RunRecord.run_id == run_id)
@@ -1219,7 +1304,7 @@ def get_report_markdown(run_id: str):
 @app.get("/api/open-findings")
 def get_open_findings(target_id: Optional[str] = None):
     """Return findings with no passing retest across all historical runs."""
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     findings = store.get_findings(status="open", target_id=target_id)
     store.close()
     return findings
@@ -1243,7 +1328,7 @@ def list_findings(
     page_size: int = 50,
 ):
     """Paginated findings list with optional filters."""
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     result = store.get_findings(
         target_id=target_id,
         asi_class=asi_class,
@@ -1259,7 +1344,7 @@ def list_findings(
 @app.get("/api/findings/{finding_id}")
 def get_finding(finding_id: str):
     """Single finding with its most recent evaluator verdict."""
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     result = store.get_finding(finding_id)
     store.close()
     if result is None:
@@ -1270,7 +1355,7 @@ def get_finding(finding_id: str):
 @app.get("/api/findings/{finding_id}/attempts")
 def get_finding_attempts(finding_id: str):
     """All attack records that contributed to a finding across all runs."""
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     result = store.get_finding_attempts(finding_id)
     store.close()
     return result
@@ -1283,7 +1368,7 @@ def update_finding_status(finding_id: str, body: FindingStatusUpdate):
     Enforces the transition rules defined in artifact_store.py.
     Returns 409 for illegal transitions.
     """
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     try:
         store.transition_finding_status(
             finding_id,
@@ -1303,7 +1388,7 @@ def update_finding_status(finding_id: str, body: FindingStatusUpdate):
 @app.get("/api/targets/{target_id}/coverage")
 def get_target_coverage(target_id: str):
     """Which ASI classes have been tested and which have open findings."""
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     result = store.get_target_coverage(target_id)
     store.close()
     return result
@@ -1312,7 +1397,7 @@ def get_target_coverage(target_id: str):
 @app.get("/api/targets/{target_id}/trends")
 def get_target_trends(target_id: str, days: int = 30):
     """Success rate per strategy per day for the last N days."""
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     result = store.get_target_trends(target_id, days=days)
     store.close()
     return result
@@ -1321,7 +1406,7 @@ def get_target_trends(target_id: str, days: int = 30):
 @app.get("/api/runs/{run_id}/findings")
 def get_run_findings(run_id: str):
     """All findings first seen or updated in this run."""
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     result = store.get_run_findings(run_id)
     store.close()
     return result
@@ -1330,7 +1415,7 @@ def get_run_findings(run_id: str):
 @app.get("/api/incidents")
 def get_incidents():
     """Retrieve all historical attacks to populate the live incident feed on the dashboard."""
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     incidents = []
     with store.SessionLocal() as session:
         # Query recent attacks across all runs
@@ -1512,7 +1597,7 @@ async def campaign_run_sse(req: CampaignRunRequest):
         run_id = uuid.uuid4().hex[:8]
         active_runs[run_id] = "running"
 
-    store = SQLiteStore(Path(settings.db_path))
+    store = SQLiteStore(settings.database_location)
     store.save_run_start(run_id, target_id)
     store.close()
 
@@ -1593,7 +1678,7 @@ async def campaign_run_sse(req: CampaignRunRequest):
 
             try:
                 def _read_db():
-                    s = SQLiteStore(Path(settings.db_path))
+                    s = SQLiteStore(settings.database_location)
                     with s.SessionLocal() as sess:
                         run_rec = sess.scalar(select(RunRecord).where(RunRecord.run_id == run_id))
                         atks = list(sess.scalars(select(AttackRecord).where(AttackRecord.run_id == run_id)).all())
@@ -1671,7 +1756,7 @@ async def campaign_run_sse(req: CampaignRunRequest):
         # Build final CompletePayload from DB
         try:
             def _final_read():
-                s = SQLiteStore(Path(settings.db_path))
+                s = SQLiteStore(settings.database_location)
                 with s.SessionLocal() as sess:
                     run_rec = sess.scalar(select(RunRecord).where(RunRecord.run_id == run_id))
                     all_atks = list(sess.scalars(select(AttackRecord).where(AttackRecord.run_id == run_id)).all())

@@ -54,8 +54,18 @@ class Settings(BaseSettings):
     log_level: str = "INFO"
     log_file: Path = Path("runs/cyber_redteam.log")
 
-    # Database
+    # Database. ``DATABASE_URL`` is used by hosted API/worker deployments
+    # (PostgreSQL on AWS); ``DB_PATH`` remains the backwards-compatible local
+    # SQLite default used by the CLI and test suite.
+    database_url: Optional[str] = None
     db_path: Path = Path("runs/redteam.db")
+
+    # Release execution. ``thread`` keeps the zero-infrastructure local
+    # workflow; ``rq`` moves release ownership to a durable Redis worker.
+    release_execution_mode: str = "thread"
+    redis_url: Optional[str] = None
+    release_queue_name: str = "canary-releases"
+    release_job_timeout_seconds: int = 3600
 
     # Report
     report_output_dir: Path = Path("reports")
@@ -68,6 +78,11 @@ class Settings(BaseSettings):
     max_concurrent_runs: int = 3
     timeout_seconds: int = 30
     deterministic_seed: int = 42
+
+    @property
+    def database_location(self) -> str | Path:
+        """Return the configured SQLAlchemy URL or local SQLite path."""
+        return self.database_url or self.db_path
 
     class Config:
         env_file = ".env"
