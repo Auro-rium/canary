@@ -18,7 +18,10 @@ const redirectUriFor = (req) => process.env.GITHUB_OAUTH_REDIRECT_URI || `${orig
 
 const routeName = (req) => {
   const path = Array.isArray(req.query?.path) ? req.query.path : [req.query?.path]
-  const parts = path.filter(Boolean)
+  const parts = path
+    .filter(Boolean)
+    .flatMap((value) => String(value).split('/'))
+    .filter(Boolean)
   if (parts[0] === 'auth') parts.shift()
   return parts.join('/')
 }
