@@ -34,3 +34,4 @@ canary/.env*
 # Root-level runtime artifacts
 runs/
 reports/
+.vercel
