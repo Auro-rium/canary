@@ -44,9 +44,10 @@ const configured = () => Boolean(
   (process.env.GITHUB_ALLOWED_LOGINS || '').split(',').some((value) => value.trim())
 )
 
-const allowedLogin = (login) => {
+export const allowedLogin = (login) => {
   const configuredLogins = (process.env.GITHUB_ALLOWED_LOGINS || '').split(',').map((value) => value.trim().toLowerCase()).filter(Boolean)
   if (!configuredLogins.length) return false
+  if (configuredLogins.includes('*')) return true
   return configuredLogins.includes(String(login).toLowerCase())
 }
 

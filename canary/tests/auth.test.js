@@ -1,7 +1,7 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
 import { authRequired, createSessionToken, getCookie, verifySessionToken } from '../src/server/auth.js'
-import authHandler from '../api/auth/[...path].js'
+import authHandler, { allowedLogin } from '../api/auth/[...path].js'
 
 process.env.SESSION_SECRET = 'test-session-secret-that-is-at-least-32-chars'
 process.env.GITHUB_OAUTH_CLIENT_ID = 'test-client'
@@ -42,6 +42,14 @@ test('OAuth configuration fails closed without an allowed login list', async () 
   }
   await authHandler({ method: 'GET', query: { path: ['github'] }, headers: { host: 'localhost:3000' } }, res)
   assert.equal(result.statusCode, 503)
+  if (previousLogins === undefined) delete process.env.GITHUB_ALLOWED_LOGINS
+  else process.env.GITHUB_ALLOWED_LOGINS = previousLogins
+})
+
+test('wildcard allowlist accepts any GitHub login', async () => {
+  const previousLogins = process.env.GITHUB_ALLOWED_LOGINS
+  process.env.GITHUB_ALLOWED_LOGINS = '*'
+  assert.equal(allowedLogin('any-github-user'), true)
   if (previousLogins === undefined) delete process.env.GITHUB_ALLOWED_LOGINS
   else process.env.GITHUB_ALLOWED_LOGINS = previousLogins
 })
