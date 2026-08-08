@@ -16,11 +16,24 @@ Full-length recording: [demo/demo.mp4](demo/demo.mp4)
 
 ---
 
+## Deployed Demo
+
+The production deployment is split into two services:
+
+- **Presentation:** [agent-canary-explainer.vercel.app](https://agent-canary-explainer.vercel.app/)
+- **Interactive dashboard:** [canary-coral.vercel.app](https://canary-coral.vercel.app/)
+- **AWS FastAPI backend:** [Swagger docs](http://3.108.23.172/docs)
+
+AWS exposes only FastAPI. The React dashboard runs on Vercel and reaches the backend through a server-side proxy; the API bearer token is never bundled into the browser. The AWS host root intentionally returns FastAPI `404 Not Found` because it is not a second frontend.
+
+---
+
 ## Repository Layout
 
 ```
 canary/
-├── docker-compose.yml             # Orchestrates all 3 services
+├── docker-compose.yml             # Local Docker stack: dashboard + backend
+├── docker-compose.aws.yml         # AWS override: backend only on port 80
 ├── canary/                        # React 19 + TypeScript + Vite 8 dashboard  → canary/README.md
 ├── cyber-redteam-foundry/         # FastAPI + LangGraph red-team engine        → cyber-redteam-foundry/README.md
 │   └── target_agent/              # LangChain ReAct victim agent (port 9000)   → cyber-redteam-foundry/target_agent/README.md
@@ -175,7 +188,7 @@ React 19 SPA served on port **8000**, four pages:
 
 ---
 
-## Quick Start (Docker)
+## Quick Start (Local Docker)
 
 **Prerequisites:** Docker Desktop (or Engine + Compose plugin), AWS account with Bedrock access enabled for Qwen3 models in your region.
 
@@ -187,14 +200,17 @@ git clone <repo-url> canary && cd canary
 cp cyber-redteam-foundry/.env.example cyber-redteam-foundry/.env
 # Edit cyber-redteam-foundry/.env — see Environment Variables section below
 
-# 3. Frontend token (must match API_SECRET_KEY above)
-echo 'VITE_API_TOKEN=your-api-secret-key' > .env
-
-# 4. Build and start
+# 3. Build and start
 docker compose up -d --build
 
-# 5. Open the dashboard
+# 4. Open the dashboard
 open http://localhost:8000
+```
+
+For an AWS backend-only deployment, use the AWS override instead:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.aws.yml up -d --build redteam-backend
 ```
 
 ### Docker services
@@ -247,12 +263,16 @@ TIMEOUT_SECONDS=30
 DETERMINISTIC_SEED=42
 ```
 
-### Root `.env` (frontend build arg)
+### Vercel production environment
+
+The Vercel dashboard uses server-only variables:
 
 ```env
-# Must match API_SECRET_KEY in cyber-redteam-foundry/.env
-VITE_API_TOKEN="change-me"
+CANARY_API_URL=http://<aws-elastic-ip>
+CANARY_API_TOKEN=<same value as API_SECRET_KEY>
 ```
+
+Do not commit a root `.env` or put an API token in a `VITE_*` variable.
 
 ---
 
@@ -274,7 +294,6 @@ cyber-rt server --port 8001
 ```bash
 cd canary
 npm install
-echo 'VITE_API_TOKEN=change-me' > .env
 npm run dev
 # → http://localhost:5173
 ```
