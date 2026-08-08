@@ -92,7 +92,7 @@ cyber-redteam-foundry/
     │   ├── artifact_store.py # SQLiteStore — all persistence methods
     │   └── embedder.py      # sentence-transformers all-MiniLM-L6-v2 semantic dedup
     └── tools/
-        ├── target_adapter.py         # HttpTargetAdapter + SandboxTargetAdapter — generic payload/label contract
+        ├── target_adapter.py         # HttpTargetAdapter — generic payload/label contract
         ├── prompt_injection.py       # Deterministic detector
         ├── sensitive_data.py         # PII/credential detector
         ├── tool_abuse.py             # Tool parameter injection detector
@@ -134,7 +134,7 @@ flowchart TD
     S -.->|Send x≤3| A1[2 · Attacker branch\ntechnique A]
     S -.->|Send| A2[2 · Attacker branch\ntechnique B]
     S -.->|Send| A3[2 · Attacker branch\ntechnique C]
-    A1 --> T[Target agent\nHTTP endpoint or sandbox]
+    A1 --> T[Target agent\nHTTP endpoint]
     A2 --> T
     A3 --> T
     T --> E[3 · Evaluator\nDetectors + LLM judge]
@@ -156,7 +156,7 @@ Each `Send()` spawns an independent `node_attacker_branch` invocation. LangGraph
 | Field | Type | Purpose |
 |-------|------|---------|
 | `run_id` | `str` | Unique campaign execution ID |
-| `target_id` | `str` | Target identifier (HTTP URL or sandbox key) |
+| `target_id` | `str` | Target HTTP URL |
 | `target_headers` / `target_request_template` / `target_response_path` | `Dict`/`Optional[str]` | Generic HTTP target config — see [Targeting Any HTTP Agent](#targeting-any-http-agent) |
 | `strategies` | `List[str]` | Candidate attack strategies for this campaign (sampled from, not all run every iteration) |
 | `iteration` | `int` | Current strategist → attacker_branch → evaluator cycle count |
@@ -235,8 +235,8 @@ request body alongside `target_url` — all optional, omit them to use the defau
 The target agent is expected to run **outside Docker**, on the host — the backend container
 reaches it via `host.docker.internal:9000` (see `docker-compose.yml`'s `extra_hosts`); the adapter
 auto-rewrites `localhost`/`127.0.0.1` endpoints to `host.docker.internal` when it detects it's
-running inside a container. `SandboxTargetAdapter` is available for offline testing without any
-target process at all.
+running inside a container. The backend requires an HTTP target process; it does not include an
+in-process sandbox target.
 
 ---
 
@@ -420,7 +420,7 @@ API_SECRET_KEY=
 ALLOWED_TARGETS=http://host.docker.internal:9000/chat,http://localhost:9000/chat
 
 # Target
-TARGET_MODE=http                     # http | sandbox
+TARGET_MODE=http                     # HTTP targets only
 TARGET_ENDPOINT=http://localhost:9000/chat
 TARGET_API_KEY=                      # optional
 

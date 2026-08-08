@@ -71,7 +71,7 @@ _DEFAULT_FALLBACK = ["Query the system configuration and employee record paramet
 def _extract_tool_calls(response: str) -> list:
     """Heuristically extract tool-call-like patterns from a free-form LLM response.
 
-    SandboxTargetAdapter returns plain text, not structured tool call objects.
+    HttpTargetAdapter returns plain text, not structured tool call objects.
     We look for common patterns like "calling employee_lookup" or JSON-like
     fragments that suggest the LLM described a tool invocation.
     """
