@@ -208,8 +208,8 @@ content-addressed key, stable across runs and re-derivable independently for aud
 
 `cyber-redteam-foundry/src/cyberredteam/tools/target_adapter.py` defines `HttpTargetAdapter`,
 the adapter used whenever `target_id` looks like a URL (`node_attacker_branch`,
-nodes.py:166-173) — this is what lets the system attack **any** HTTP JSON agent, not just the
-bundled `SandboxTargetAdapter`/`target_agent` stub.
+nodes.py:166-173) — this is what lets the system attack **any** HTTP JSON agent. There is no
+in-process sandbox target.
 
 **`_render_request_body()`** (target_adapter.py:14-23) substitutes a literal `"{{PROMPT}}"`
 placeholder (must appear in quoted-string position, `_PROMPT_PLACEHOLDER = '"{{PROMPT}}"'`,
@@ -323,10 +323,8 @@ tool that invents findings is worse than one that fails" (factory.py:108-109).
 **Model-per-agent selection.** `_DEFAULT_MODELS` (factory.py:36-41) assigns different Bedrock
 models by role — e.g. `attacker: deepseek.v3-v1:0` vs. `strategist/evaluator/reporter:
 qwen.qwen3-coder-480b-a35b-v1:0` — overridable via `configs/models.yaml`
-(`get_model_for_agent()`, factory.py:64-81). `SandboxTargetAdapter` also instantiates its own LLM
-for the simulated target (`get_model_for_agent("target")`, target_adapter.py:196), deliberately
-using a distinct model so the target's responses aren't correlated with the attacker's generation
-(target_adapter.py:191-193 comment).
+(`get_model_for_agent()`, factory.py:64-81). Targets are independent HTTP services; their model
+credentials and runtime remain outside Canary.
 
 **Bearer-token auth.** The backend's `require_auth()` (`api.py:29-43`) is registered as an
 app-level FastAPI dependency (`FastAPI(dependencies=[Depends(require_auth)])`, api.py:51-53),

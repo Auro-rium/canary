@@ -12,7 +12,6 @@ from cyberredteam.agents.strategist import StrategistAgent
 from cyberredteam.evaluation import taxonomy
 from cyberredteam.evaluation.technique_specs import get_spec
 from cyberredteam.schemas import AttackBranch, AttackResult, AttackSeverity, StrategyType
-from cyberredteam.tools.target_adapter import SandboxTargetAdapter
 
 
 def _branch(strategy: StrategyType, depth: int = 0, parent_evidence=None) -> AttackBranch:
@@ -23,7 +22,7 @@ def _branch(strategy: StrategyType, depth: int = 0, parent_evidence=None) -> Att
         capability_type=strategy.value,
         technique_id=asi_class,
         technique_spec=spec["spec"],
-        target_metadata={"name": "sandbox", "declared_purpose": "test target", "observability_level": "black_box"},
+        target_metadata={"name": "https://target.example/chat", "declared_purpose": "test target", "observability_level": "black_box"},
         depth=depth,
         attempt_budget_remaining=3 - depth,
         parent_evidence=parent_evidence,
@@ -34,7 +33,7 @@ def test_strategist_agent():
     """Test strategist agent strategy selection."""
     agent = StrategistAgent()
     selected = agent.select_strategies(
-        target_id="sandbox",
+        target_id="https://target.example/chat",
         risk_appetite="medium",
         count=2,
         previous_vulnerabilities=[],
@@ -42,84 +41,6 @@ def test_strategist_agent():
     )
     assert len(selected) > 0
     assert all(isinstance(s, StrategyType) for s in selected)
-
-
-def test_attacker_agent():
-    """Test attacker agent generates an attack and invokes target adapter."""
-    # Use standard SandboxTargetAdapter for target testing
-    adapter = SandboxTargetAdapter("sandbox-target-001")
-    agent = AttackerAgent(target_adapter=adapter)
-
-    result = agent.attack_branch(
-        branch=_branch(StrategyType.PROMPT_INJECTION),
-        run_id="test_run",
-        target_id="sandbox",
-    )
-
-    assert isinstance(result, AttackResult)
-    assert result.run_id == "test_run"
-    assert result.strategy_type == StrategyType.PROMPT_INJECTION
-    assert result.capability_type == StrategyType.PROMPT_INJECTION.value
-    # Verify it went through target execution
-    assert result.response != ""
-
-
-def test_attacker_agent_jailbreak():
-    """Test attacker agent generates jailbreak attacks with fallback payloads."""
-    adapter = SandboxTargetAdapter("sandbox-target-001")
-    agent = AttackerAgent(target_adapter=adapter)
-
-    result = agent.attack_branch(
-        branch=_branch(StrategyType.JAILBREAK),
-        run_id="test_run_jb",
-        target_id="sandbox",
-    )
-
-    assert result.strategy_type == StrategyType.JAILBREAK
-
-
-def test_attacker_agent_instruction_hierarchy():
-    """Test attacker agent generates instruction hierarchy attacks."""
-    adapter = SandboxTargetAdapter("sandbox-target-001")
-    agent = AttackerAgent(target_adapter=adapter)
-
-    result = agent.attack_branch(
-        branch=_branch(StrategyType.INSTRUCTION_HIERARCHY),
-        run_id="test_run_ih",
-        target_id="sandbox",
-    )
-
-    assert result.strategy_type == StrategyType.INSTRUCTION_HIERARCHY
-
-
-def test_attacker_agent_workflow_manipulation():
-    """Test attacker agent generates workflow manipulation attacks."""
-    adapter = SandboxTargetAdapter("sandbox-target-001")
-    agent = AttackerAgent(target_adapter=adapter)
-
-    result = agent.attack_branch(
-        branch=_branch(StrategyType.WORKFLOW_MANIPULATION),
-        run_id="test_run_wm",
-        target_id="sandbox",
-    )
-
-    assert result.strategy_type == StrategyType.WORKFLOW_MANIPULATION
-
-
-def test_attacker_agent_depth_mutation():
-    """Test attacker agent threads depth/parent_evidence for a depth>0 retry."""
-    adapter = SandboxTargetAdapter("sandbox-target-001")
-    agent = AttackerAgent(target_adapter=adapter)
-
-    branch = _branch(
-        StrategyType.PROMPT_INJECTION,
-        depth=1,
-        parent_evidence={"target_response": "I cannot help with that.", "evaluator_reasoning": "clean refusal"},
-    )
-    result = agent.attack_branch(branch=branch, run_id="test_run_depth", target_id="sandbox")
-
-    assert result.depth == 1
-    assert result.branch_id == branch.branch_id
 
 
 def test_attacker_agent_refusal_short_circuits_target():
@@ -142,7 +63,7 @@ def test_attacker_agent_refusal_short_circuits_target():
         refusal_reason="mass_casualty_content",
     )
 
-    result = agent.attack_branch(branch=_branch(StrategyType.PROMPT_INJECTION), run_id="r", target_id="sandbox")
+    result = agent.attack_branch(branch=_branch(StrategyType.PROMPT_INJECTION), run_id="r", target_id="https://target.example/chat")
 
     adapter.execute_attack.assert_not_called()
     assert result.success is False
@@ -183,7 +104,7 @@ def test_evaluator_agent_jailbreak_detection():
     raw_results = [
         AttackResult(
             run_id="test_run_jb",
-            target_id="sandbox",
+            target_id="https://target.example/chat",
             attempt_number=1,
             strategy_type=StrategyType.JAILBREAK,
             prompt="test jailbreak",
@@ -208,7 +129,7 @@ def test_evaluator_agent_instruction_hierarchy_detection():
     raw_results = [
         AttackResult(
             run_id="test_run_ih",
-            target_id="sandbox",
+            target_id="https://target.example/chat",
             attempt_number=1,
             strategy_type=StrategyType.INSTRUCTION_HIERARCHY,
             prompt="test hijack",
@@ -232,7 +153,7 @@ def test_evaluator_agent_workflow_manipulation_detection():
     raw_results = [
         AttackResult(
             run_id="test_run_wm",
-            target_id="sandbox",
+            target_id="https://target.example/chat",
             attempt_number=1,
             strategy_type=StrategyType.WORKFLOW_MANIPULATION,
             prompt="test dos",
@@ -260,7 +181,7 @@ def test_reporter_agent():
 
         report = agent.generate_report(
             run_id="test_run",
-            target_id="sandbox",
+            target_id="https://target.example/chat",
             attack_results=[],
             start_time=start,
             end_time=end,

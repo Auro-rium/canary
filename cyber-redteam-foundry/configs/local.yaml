@@ -1,6 +1,6 @@
 # Local Development Configuration
 
-target_mode: "sandbox"
+target_mode: "http"
 max_retries: 3
 timeout_seconds: 30
 deterministic_seed: 42
