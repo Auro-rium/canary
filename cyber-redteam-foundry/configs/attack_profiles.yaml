@@ -5,7 +5,7 @@ profiles:
     description: "Light reconnaissance"
     strategies:
       - prompt_injection
-      - leakage
+      - sensitive_data_exposure
     max_attempts: 2
     timeout_seconds: 15
 
@@ -15,7 +15,7 @@ profiles:
       - prompt_injection
       - indirect_injection
       - tool_misuse
-      - leakage
+      - sensitive_data_exposure
     max_attempts: 5
     timeout_seconds: 30
 
@@ -27,6 +27,6 @@ profiles:
       - tool_misuse
       - retrieval_poisoning
       - jailbreak
-      - leakage
+      - sensitive_data_exposure
     max_attempts: 10
     timeout_seconds: 60

@@ -27,7 +27,7 @@ Agent Canary is a two-service system for automated red-teaming of LLM agents. Th
 (`cyber-redteam-foundry/`, FastAPI + LangGraph, Python) runs adversarial campaigns against an
 arbitrary HTTP JSON agent using AWS Bedrock-hosted LLMs for the attacker/evaluator/strategist
 roles, and persists findings to SQLite. The frontend (`canary/`, React 19 + Vite + TypeScript)
-is a dashboard/console that drives campaigns over Server-Sent Events and browses stored findings.
+is a release-security dashboard that drives campaigns over Server-Sent Events and browses stored findings.
 
 This document assumes familiarity with LangGraph, FastAPI, and React, and cites concrete
 file:line locations throughout so claims can be checked against the code directly.
@@ -406,29 +406,11 @@ contract untouched) and a `handleSSEEvent` dispatcher (lines 255-275) that switc
 `event.type` (`agent_state`, `log`, `finding`, `campaign_complete`) to drive local component
 state (`updateAgent`, `fireEdge`, `appendLog`, `setReport`).
 
-**Console feature.** `canary/src/components/console/` (`ConsoleLayout.tsx`, `ChatPanel.tsx`,
-`AgentGraphPanel.tsx`, `Sidebar.tsx`) is a chat-command interface layered over the same
-campaign/SSE machinery. User input is parsed by `parseCommand()`
-(`canary/src/lib/commands.ts:31-68`) into a small discriminated union (`CONNECT`, `RUN`,
-`SHOW_FINDINGS`, `SHOW_COVERAGE`, `RERUN_LAST`, `EXPORT`, `HELP`, `UNKNOWN`, ...) — e.g. `run
-prompt_injection,jailbreak` splits on commas and partitions tokens into valid vs. `invalid`
-technique IDs against the static `TECHNIQUE_IDS` list (commands.ts:43-47). `ChatPanel.tsx`
-dispatches on the parsed `Command` (line 99) and falls through to
-`say('error', 'Unrecognized command...')` for `UNKNOWN` (line 176).
-
-State is centralized in **`canary/src/store/useConsoleStore.ts`**, a `zustand` store
-(`create<ConsoleStore>(...)`, line 46) holding `targetUrl`, `selectedTechniques`, `campaignId`,
-`phase`, `agentStatuses`, `logs`, `findings`, `report`, `chatMessages`, and `runHistory`. Actions
-are plain `set()` calls — e.g. `appendLog` (lines 78-81) appends a timestamped entry, `fireEdge`
-(69-76) flashes `activeEdge` for 1200ms via a module-level timer, `addRunHistory` (106) dedupes by
-`campaign_id` on insert.
-
-**IndexedDB run history.** `canary/src/lib/db.ts` wraps `idb-keyval` (`get`/`set`/`del`/`keys`)
-with a `canary-run:` key prefix (db.ts:4): `saveRun()` (6-8) persists a completed campaign's
-`CompletePayload` keyed by `campaign_id`; `loadRunHistory()` (10-15) filters all IndexedDB keys by
-that prefix and loads them back for `Sidebar.tsx`'s history list. `ChatPanel.tsx:78` calls
-`saveRun(payload).catch(() => {/* IndexedDB unavailable — history just won't persist */})` — a
-save failure (private browsing, quota) degrades gracefully rather than blocking the chat flow.
+**Release dashboard.** The frontend is centered on Projects, Releases, and Findings.
+`RunAuditPage.tsx` consumes the campaign SSE stream and renders strategist, parallel
+attacker, evaluator, and reporter state directly. Release detail views present persisted
+evidence and the differential gate decision; there is no separate chat-console surface
+or console-specific state store.
 
 ---
 

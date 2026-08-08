@@ -58,7 +58,7 @@ def test_strategist_agent():
 
 def test_attacker_agent():
     """Test attacker agent generates an attack and invokes target adapter."""
-    # Use standard SandboxTargetAdapter for target testing
+    # Use the HTTP target adapter; production attacks are always remote HTTP.
     adapter = HttpTargetAdapter("https://agent.example.com/chat")
     agent = AttackerAgent(target_adapter=adapter)
 
