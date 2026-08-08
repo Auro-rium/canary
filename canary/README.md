@@ -21,7 +21,7 @@ Campaign launch and live monitoring.
 - Opens SSE stream for live events; renders 4-node agent topology with animated edges.
 - Three phases: **CONFIG → RUNNING → REPORT**.
 - Final report: campaign_id, run_id, finding counts (by severity), duration, target.
-- Mock simulation mode when `VITE_API_TOKEN` is not set.
+- Requires the authenticated backend; failed requests are shown as errors and never replaced with fabricated findings.
 
 **SSE event types** emitted by `POST /api/campaigns/run`:
 
@@ -159,7 +159,7 @@ npm install
 npm run dev        # http://localhost:5173
 ```
 
-Create `.env.local` with `VITE_API_TOKEN` to authenticate against a running backend. Without it, pages default to built-in mock simulation.
+Create `.env.local` with `VITE_API_TOKEN` only when connecting directly to a development backend. Production uses the server-side Vercel proxy.
 
 ---
 

@@ -2,9 +2,8 @@
 #   nginx reverse-proxies /api/* to redteam-backend:8001 internally.
 #   8001 is also mapped to the host for direct FastAPI/uvicorn inspection.
 #
-# The target agent (sandbox LLM under test) runs OUTSIDE Docker on the host:
-#   cd cyber-redteam-foundry && PYTHONPATH=src python -m target_agent.server --port 9000
-# The backend reaches it via host.docker.internal:9000 (extra_hosts below).
+# Owned HTTP targets may run outside Docker on the host. The backend reaches
+# localhost targets through host.docker.internal (extra_hosts below).
 
 networks:
   canary-net:

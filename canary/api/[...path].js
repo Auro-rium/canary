@@ -2,12 +2,13 @@
  * Vercel server-side proxy for the public, read-only dashboard.
  *
  * CANARY_API_URL and CANARY_API_TOKEN are server-only environment variables.
- * This intentionally permits GET/HEAD only: running attacks and registering
- * targets belongs to the GitHub Action, not an unauthenticated browser.
+ * Requests are authenticated server-side with the configured backend token;
+ * the browser never receives that token.
  */
 export default async function handler(req, res) {
-  if (!['GET', 'HEAD'].includes(req.method || '')) {
-    res.status(405).json({ detail: 'Dashboard proxy is read-only. Run Canary from GitHub Actions.' })
+  const method = req.method || 'GET'
+  if (!['GET', 'HEAD', 'POST', 'PUT'].includes(method)) {
+    res.status(405).json({ detail: 'Method is not supported by the dashboard proxy.' })
     return
   }
 
@@ -33,14 +34,29 @@ export default async function handler(req, res) {
   const upstreamUrl = `${upstream.replace(/\/$/, '')}/api/${path}${query}`
 
   try {
-    const response = await fetch(upstreamUrl, {
-      headers: { Authorization: `Bearer ${token}` },
-    })
+    const headers = { Authorization: `Bearer ${token}` }
+    if (req.headers['content-type']) headers['Content-Type'] = req.headers['content-type']
+    const body = ['GET', 'HEAD'].includes(method)
+      ? undefined
+      : typeof req.body === 'string'
+        ? req.body
+        : JSON.stringify(req.body ?? {})
+    const response = await fetch(upstreamUrl, { method, headers, body })
     res.status(response.status)
     const contentType = response.headers.get('content-type')
     if (contentType) res.setHeader('content-type', contentType)
     res.setHeader('cache-control', 'no-store')
-    res.send(Buffer.from(await response.arrayBuffer()))
+    if (!response.body) {
+      res.end()
+      return
+    }
+    const reader = response.body.getReader()
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      res.write(Buffer.from(value))
+    }
+    res.end()
   } catch {
     res.status(502).json({ detail: 'Canary backend is unavailable.' })
   }

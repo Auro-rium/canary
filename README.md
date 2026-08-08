@@ -36,7 +36,7 @@ canary/
 ├── docker-compose.aws.yml         # AWS override: backend only on port 80
 ├── canary/                        # React 19 + TypeScript + Vite 8 dashboard  → canary/README.md
 ├── cyber-redteam-foundry/         # FastAPI + LangGraph red-team engine        → cyber-redteam-foundry/README.md
-│   └── target_agent/              # LangChain ReAct victim agent (port 9000)   → cyber-redteam-foundry/target_agent/README.md
+│   └── src/                       # Backend package; targets are external HTTP agents
 ├── runs/                          # SQLite DBs, logs (git-ignored)
 └── reports/                       # Generated audit reports (git-ignored)
 ```
@@ -243,7 +243,7 @@ ALLOWED_TARGETS=""
 
 # Target configuration
 TARGET_MODE="http"
-TARGET_ENDPOINT=""            # e.g. http://localhost:9000/chat
+TARGET_ENDPOINT=""            # e.g. https://your-owned-agent.example/chat
 TARGET_API_KEY=""             # forwarded as Bearer token to target
 
 # Logging
@@ -298,22 +298,15 @@ npm run dev
 # → http://localhost:5173
 ```
 
-**Target agent (optional — for testing against CompanyBot)**
-
-```bash
-cd cyber-redteam-foundry && source .venv/bin/activate
-python -m target_agent.server --host 0.0.0.0 --port 9000
-```
-
 **Run a campaign from the CLI**
 
 ```bash
 # Single strategy
-cyber-rt run --target-id http://localhost:9000/chat --strategies prompt_injection
+cyber-rt run --target-id https://your-owned-agent.example/chat --strategies prompt_injection
 
 # Multi-strategy
 cyber-rt run \
-  --target-id http://localhost:9000/chat \
+  --target-id https://your-owned-agent.example/chat \
   --strategies prompt_injection,tool_misuse,retrieval_poisoning \
   --max-attempts 5 \
   --max-iterations 3
@@ -331,7 +324,6 @@ cyber-rt graph           # print Mermaid diagram of the LangGraph workflow
 
 - [`canary/README.md`](canary/README.md) — React dashboard: component map, Vite config, nginx proxy setup
 - [`cyber-redteam-foundry/README.md`](cyber-redteam-foundry/README.md) — Backend engine: LangGraph state machine, agent implementations, CLI reference, API detail
-- [`cyber-redteam-foundry/target_agent/README.md`](cyber-redteam-foundry/target_agent/README.md) — CompanyBot victim agent: tools, endpoints, configuration
 
 ---
 
