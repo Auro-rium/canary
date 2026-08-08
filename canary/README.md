@@ -115,7 +115,8 @@ No external UI component library. All UI is hand-built with Tailwind utility cla
 | `GITHUB_ALLOWED_LOGINS` | Comma-separated GitHub logins allowed into the dashboard | Required; fail closed |
 | `SESSION_SECRET` | At least 32 random characters for signing sessions | — |
 | `APP_URL` | Canonical Vercel dashboard URL | Request origin |
-| `AUTH_REQUIRED` | Keep `true` in deployments; `false` is local-only bypass | `true` |
+| `AUTH_REQUIRED` | Keep `true` in deployments; `false` enables bypass only in non-production or when the explicit development flag is set | `true` |
+| `CANARY_DEV_BYPASS` | Set to `true` only for the temporary hosted hackathon development bypass; never use for a public production deployment | `false` |
 
 The browser always requests its same-origin `/api/*` path. Vercel's authenticated proxy injects the server-side token and forwards typed dashboard management requests; Docker nginx injects `API_SECRET_KEY` into its upstream request.
 
