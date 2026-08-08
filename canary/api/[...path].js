@@ -22,7 +22,12 @@ export default async function handler(req, res) {
   // Vercel's Node runtime normally exposes catch-all segments as `query.path`,
   // but deployments rooted at a nested directory can omit that field. Keep
   // the proxy working in both shapes by deriving the path from the URL.
-  const rawPath = req.query.path ?? req.url.split('?')[0].replace(/^\/api\/?/, '')
+  const queryPath = req.query.path
+  const hasQueryPath = (Array.isArray(queryPath) && queryPath.length > 0)
+    || (typeof queryPath === 'string' && queryPath.length > 0)
+  const rawPath = hasQueryPath
+    ? queryPath
+    : req.url.split('?')[0].startsWith('/api/') ? req.url.split('?')[0].slice(5) : ''
   const segments = Array.isArray(rawPath) ? rawPath : String(rawPath).split('/')
   const path = segments.filter(Boolean).map(encodeURIComponent).join('/')
   if (!path || path.includes('..')) {
