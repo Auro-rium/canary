@@ -44,6 +44,8 @@ interface RunAuditPageProps {
   onBack: () => void
 }
 
+const makeCampaignId = () => `RX-${Math.floor(Math.random() * 900000 + 100000)}`
+
 export default function RunAuditPage({ onBack }: RunAuditPageProps) {
   const [phase, setPhase] = useState<Phase>('idle')
   const [targetUrl, setTargetUrl] = useState('')
@@ -52,7 +54,7 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
   const [targetRequestTemplate, setTargetRequestTemplate] = useState('')
   const [targetResponsePath, setTargetResponsePath] = useState('')
   const [selectedTechniques, setSelectedTechniques] = useState<string[]>([])
-  const [campaignId] = useState(() => `RX-${Math.floor(Math.random() * 900000 + 100000)}`)
+  const [campaignId, setCampaignId] = useState(makeCampaignId)
   const [agentStatuses, setAgentStatuses] = useState<Record<string, AgentStatus>>({})
   const [activeEdge, setActiveEdge] = useState<string | null>(null)
   const [logs, setLogs] = useState<LogEntry[]>([])
@@ -164,7 +166,7 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
   }, [appendLog, updateAgent, fireEdge])
 
   // ── Real backend via SSE ────────────────────────────────────────────────────
-  const runRealCampaign = useCallback(async () => {
+  const runRealCampaign = useCallback(async (activeCampaignId: string) => {
     // Optional fields are forwarded only when explicitly configured.
     let parsedHeaders: Record<string, string> = {}
     if (targetHeaders.trim()) {
@@ -180,7 +182,7 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
     // rather than hiding an explicit backend rejection.
     await runCampaignSSE(
       {
-        campaign_id: campaignId,
+        campaign_id: activeCampaignId,
         target_url: targetUrl.trim(),
         techniques: selectedTechniques,
         headers: parsedHeaders,
@@ -189,7 +191,7 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
       },
       handleSSEEvent,
     )
-  }, [campaignId, targetUrl, targetHeaders, targetRequestTemplate, targetResponsePath, selectedTechniques, handleSSEEvent, appendLog])
+  }, [targetUrl, targetHeaders, targetRequestTemplate, targetResponsePath, selectedTechniques, handleSSEEvent, appendLog])
 
   // ── Entry point ─────────────────────────────────────────────────────────────
   const startCampaign = useCallback(() => {
@@ -199,6 +201,8 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
     }
     if (!selectedTechniques.length) return
 
+    const nextCampaignId = makeCampaignId()
+    setCampaignId(nextCampaignId)
     setPhase('running')
     setLogs([])
     setReport(null)
@@ -206,7 +210,7 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
     setAgentStatuses({})
     activeEdgesRef.current.clear()
 
-    runRealCampaign().catch((err: Error & { status?: number }) => {
+    runRealCampaign(nextCampaignId).catch((err: Error & { status?: number }) => {
       appendLog('ERROR', err.status !== undefined
         ? err.message
         : `Backend unavailable (${err.message}). No report was generated.`)
