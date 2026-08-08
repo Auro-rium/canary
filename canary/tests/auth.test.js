@@ -34,13 +34,19 @@ test('session endpoint is anonymous until GitHub OAuth completes', async () => {
 test('development bypass is explicit and production cannot inherit it', () => {
   const previousRequired = process.env.AUTH_REQUIRED
   const previousNodeEnv = process.env.NODE_ENV
+  const previousDevBypass = process.env.CANARY_DEV_BYPASS
+  delete process.env.CANARY_DEV_BYPASS
   process.env.AUTH_REQUIRED = 'false'
   process.env.NODE_ENV = 'development'
   assert.equal(authRequired(), false)
   process.env.NODE_ENV = 'production'
   assert.equal(authRequired(), true)
+  process.env.CANARY_DEV_BYPASS = 'true'
+  assert.equal(authRequired(), false)
   if (previousRequired === undefined) delete process.env.AUTH_REQUIRED
   else process.env.AUTH_REQUIRED = previousRequired
   if (previousNodeEnv === undefined) delete process.env.NODE_ENV
   else process.env.NODE_ENV = previousNodeEnv
+  if (previousDevBypass === undefined) delete process.env.CANARY_DEV_BYPASS
+  else process.env.CANARY_DEV_BYPASS = previousDevBypass
 })
