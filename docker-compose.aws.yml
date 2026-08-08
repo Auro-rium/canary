@@ -1,0 +1,6 @@
+services:
+  redteam-backend:
+    ports: []
+  canary-frontend:
+    ports:
+      - "80:80"
