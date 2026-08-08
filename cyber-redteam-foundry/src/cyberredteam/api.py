@@ -1512,7 +1512,10 @@ _VERDICT_PATH_NORM: Dict[str, str] = {
 
 
 class CampaignRunRequest(BaseModel):
-    campaign_id: str
+    # Optional client label is accepted for backwards compatibility, but the
+    # server always mints the canonical campaign id. This prevents a browser
+    # retry or reused form value from attaching events to an old campaign.
+    campaign_id: Optional[str] = None
     target_url: str = ""
     techniques: List[str]
     # Generic HTTP target config — see HttpTargetAdapter for the contract.
@@ -1619,7 +1622,7 @@ async def campaign_run_sse(req: CampaignRunRequest):
             data.setdefault("timestamp", datetime.utcnow().isoformat())
             return f"data: {json.dumps(data)}\n\n"
 
-        campaign_id = req.campaign_id
+        campaign_id = f"campaign-{uuid.uuid4().hex}"
 
         # ── Phase: startup ────────────────────────────────────────────────────
         yield sse({"type": "log", "payload": {

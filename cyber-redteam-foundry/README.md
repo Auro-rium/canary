@@ -493,3 +493,16 @@ pytest tests/ -v --cov=src/cyberredteam --cov-report=term-missing
 ```
 
 111 tests, including a parallel-fan-out integration test (`TestParallelFanOut`) that exercises end-to-end random dispatch against mock LLMs — no AWS credentials required. Coverage report to terminal.
+# Runtime workflow
+
+Canary is an HTTP-based security CI system. A PR exposes a verified preview
+agent; the GitHub Action creates a release and the API starts a durable run.
+The LangGraph pipeline is real: **Strategist → parallel Attackers → Evaluator
+→ Reporter**. Attackers send adversarial HTTP requests to the target and never
+declare findings. The Evaluator combines deterministic detector signals with
+the configured semantic judge, and the Reporter persists evidence. For a
+release with an accepted baseline, Canary replays equivalent attack cases
+against both baseline and candidate, classifies clean/known/resolved/regression
+behavior, then applies the gate policy and returns PASS, WARN, or BLOCK to the
+PR check. Missing model credentials, unreachable targets, or failed graph
+nodes are recorded as failed runs; they are not reported as successful scans.
