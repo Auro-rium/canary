@@ -11,7 +11,7 @@ jobs:
     # This file is a copy-ready integration template. A target repository sets
     # these two secrets and exposes its preview URL as a repository variable or
     # replaces it with its deployment job output.
-    if: ${{ secrets.CANARY_API_URL != '' && secrets.CANARY_API_TOKEN != '' && vars.CANARY_TARGET_URL != '' }}
+    if: ${{ secrets.CANARY_API_URL != '' && secrets.CANARY_PROJECT_TOKEN != '' && vars.CANARY_TARGET_URL != '' }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -21,5 +21,5 @@ jobs:
         uses: ./action
         with:
           api-url: ${{ secrets.CANARY_API_URL }}
-          api-token: ${{ secrets.CANARY_API_TOKEN }}
+          api-token: ${{ secrets.CANARY_PROJECT_TOKEN }}
           target-url: ${{ vars.CANARY_TARGET_URL }}

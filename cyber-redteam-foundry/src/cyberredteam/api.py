@@ -10,35 +10,48 @@ from pathlib import Path
 from typing import Dict, List, Optional
 
 import httpx
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import select
 
 from cyberredteam.langgraph.orchestrator import GraphOrchestrator
-from cyberredteam.schemas import RunConfig, StrategyType
-from cyberredteam.settings import get_settings
-from cyberredteam.storage.artifact_store import SQLiteStore
 from cyberredteam.release_gate import (
     DEFAULT_STRATEGIES,
+    accept_baseline,
+    build_differential_pairs,
     create_project,
     create_release,
-    finalise_release,
+    finalise_differential_release,
     mark_release_failed,
     project_payload,
     release_payload,
     upsert_ci_project,
     validate_public_http_endpoint,
 )
+from cyberredteam.schemas import RunConfig, StrategyType
+from cyberredteam.security.target import TargetValidationError, validate_target_url
+from cyberredteam.security.tokens import (
+    hash_verification_token,
+    issue_project_token,
+    parse_project_token,
+    verify_project_token,
+)
+from cyberredteam.settings import get_settings
+from cyberredteam.storage.artifact_store import SQLiteStore
 from cyberredteam.storage.models import (
+    AcceptedBaselineRecord,
     AttackRecord,
     FindingRecord,
     ProjectRecord,
+    ProjectTokenRecord,
     ReleaseRecord,
     RunRecord,
+    SecurityRegressionRecord,
     TraceRecord,
     VerdictRecord,
+    VerifiedTargetRecord,
 )
 
 logger = logging.getLogger("cyberredteam.api")
@@ -51,21 +64,31 @@ def _frontend_origins() -> list[str]:
     return [origin.strip() for origin in settings.frontend_origins.split(",") if origin.strip()] or ["*"]
 
 
-def require_auth(authorization: Optional[str] = Header(None)) -> None:
+def require_auth(request: Request, authorization: Optional[str] = Header(None)) -> None:
     """Require a valid bearer token on every request.
 
-    The token must equal ``API_SECRET_KEY`` (matched to the frontend's
-    ``VITE_API_TOKEN``). Fails closed: if no key is configured the API
+    The token must equal the server-side ``API_SECRET_KEY``. Fails closed: if no key is configured the API
     refuses all requests rather than running wide open.
     """
-    if not settings.api_secret_key:
-        raise HTTPException(
-            status_code=503,
-            detail="API authentication is not configured (set API_SECRET_KEY).",
-        )
     scheme, _, token = (authorization or "").partition(" ")
-    if scheme != "Bearer" or token != settings.api_secret_key:
-        raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
+    if scheme == "Bearer" and settings.api_secret_key and token == settings.api_secret_key:
+        return
+    parsed = parse_project_token(token) if scheme == "Bearer" else None
+    if parsed and request.url.path == "/api/ci/releases":
+        lookup_prefix, _ = parsed
+        store = SQLiteStore(Path(settings.db_path))
+        try:
+            with store.SessionLocal() as session:
+                record = session.scalar(select(ProjectTokenRecord).where(ProjectTokenRecord.lookup_prefix == lookup_prefix))
+                expired = record.expires_at is not None and record.expires_at <= datetime.utcnow() if record else True
+                if record and record.revoked_at is None and not expired and verify_project_token(token, record.token_hash, pepper=settings.token_pepper):
+                    request.state.project_token_project_id = record.project_id
+                    return
+        finally:
+            store.close()
+    if not settings.api_secret_key:
+        raise HTTPException(status_code=503, detail="API authentication is not configured (set API_SECRET_KEY).")
+    raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
 
 
 def _authorized_targets() -> list[str]:
@@ -105,10 +128,20 @@ class ProjectCreateRequest(BaseModel):
     gate: Dict[str, object] = Field(default_factory=dict)
 
 
+class ProjectTokenCreateRequest(BaseModel):
+    scopes: List[str] = Field(default_factory=lambda: ["release:create", "release:read"])
+
+
 class VerifyTargetRequest(BaseModel):
     endpoint: str
     request_template: str = '{"message":"{{PROMPT}}"}'
     response_path: Optional[str] = None
+
+
+class ProjectTargetVerifyRequest(VerifyTargetRequest):
+    """Ownership proof supplied by the target deployment."""
+
+    verification_token: str = Field(min_length=16, max_length=256)
 
 
 class ReleaseCreateRequest(BaseModel):
@@ -133,6 +166,11 @@ class CiReleaseRequest(BaseModel):
 
 
 def _validate_target_contract(endpoint: str, request_template: str) -> None:
+    if not settings.allow_private_targets:
+        try:
+            validate_target_url(endpoint)
+        except TargetValidationError as error:
+            raise ValueError(str(error)) from error
     validate_public_http_endpoint(endpoint, allow_private=settings.allow_private_targets)
     try:
         decoded = json.loads(request_template)
@@ -177,6 +215,7 @@ def run_orchestrator_thread(
     target_headers: Optional[Dict[str, str]] = None,
     target_request_template: Optional[str] = None,
     target_response_path: Optional[str] = None,
+    replay_cases: Optional[List[Dict[str, str]]] = None,
 ):
     """Run the LangGraph workflow in a background thread."""
     try:
@@ -190,6 +229,7 @@ def run_orchestrator_thread(
             target_headers=target_headers or {},
             target_request_template=target_request_template,
             target_response_path=target_response_path,
+            replay_cases=replay_cases or [],
         )
         orchestrator = GraphOrchestrator(
             config=config,
@@ -225,21 +265,54 @@ def run_release_orchestrator_thread(
     default_branch: str = "main",
 ) -> None:
     """Run a project release and persist its baseline comparison on completion."""
+    replay_cases: list[dict[str, str]] = []
+    pre_store = SQLiteStore(Path(settings.db_path))
+    try:
+        with pre_store.SessionLocal() as pre_session:
+            candidate = pre_session.get(ReleaseRecord, release_id)
+            if candidate and candidate.baseline_release_id:
+                baseline = pre_session.get(ReleaseRecord, candidate.baseline_release_id)
+                if baseline and baseline.run_id:
+                    baseline_attacks = pre_session.scalars(
+                        select(AttackRecord)
+                        .where(AttackRecord.run_id == baseline.run_id)
+                        .order_by(AttackRecord.id.asc())
+                    ).all()
+                    seen: set[tuple[str, str, str]] = set()
+                    for attack in baseline_attacks:
+                        case = (
+                            str(attack.strategy_type or "prompt_injection"),
+                            str(attack.technique_id or attack.strategy_type or ""),
+                            str(attack.prompt or ""),
+                        )
+                        if case in seen or not case[2]:
+                            continue
+                        seen.add(case)
+                        replay_cases.append({"strategy": case[0], "technique_id": case[1], "prompt": case[2]})
+    finally:
+        pre_store.close()
+
     run_orchestrator_thread(
         run_id,
         project.endpoint,
         strategy_types,
-        max_iterations=3,
+        max_iterations=max(3, (len(strategy_types) + 2) // 3),
         max_attempts=max(4, len(strategy_types) * 2),
         target_request_template=project.request_template,
         target_response_path=project.response_path,
+        replay_cases=replay_cases,
     )
     store = SQLiteStore(Path(settings.db_path))
     try:
         with store.SessionLocal() as session:
             run = session.get(RunRecord, run_id)
             if run and run.status == "completed":
-                finalise_release(session, release_id, default_branch=default_branch)
+                release = session.get(ReleaseRecord, release_id)
+                project_record = session.get(ProjectRecord, release.project_id) if release else None
+                if release is None or project_record is None:
+                    raise ValueError("Release or project disappeared before comparison")
+                pairs, execution_statuses = build_differential_pairs(session, project_record, release)
+                finalise_differential_release(session, release, project_record, pairs, execution_statuses)
             else:
                 mark_release_failed(session, release_id, "Red-team run failed before comparison")
     except Exception as error:
@@ -388,6 +461,81 @@ def get_project(project_id: str):
         store.close()
 
 
+@app.get("/api/projects/{project_id}/baselines")
+def list_project_baselines(project_id: str):
+    store = SQLiteStore(Path(settings.db_path))
+    try:
+        with store.SessionLocal() as session:
+            _project_or_404(session, project_id)
+            rows = session.scalars(
+                select(AcceptedBaselineRecord)
+                .where(AcceptedBaselineRecord.project_id == project_id)
+                .order_by(AcceptedBaselineRecord.accepted_at.desc())
+            ).all()
+            return [
+                {
+                    "baseline_id": row.baseline_id,
+                    "project_id": row.project_id,
+                    "environment": row.environment,
+                    "release_id": row.release_id,
+                    "accepted_by": row.accepted_by,
+                    "accepted_at": row.accepted_at.isoformat() if row.accepted_at else None,
+                    "active": bool(row.active),
+                }
+                for row in rows
+            ]
+    finally:
+        store.close()
+
+
+@app.post("/api/projects/{project_id}/tokens", status_code=201)
+def create_project_token(project_id: str, body: ProjectTokenCreateRequest):
+    """Issue a project-scoped CI credential; the raw value is returned once."""
+    store = SQLiteStore(Path(settings.db_path))
+    try:
+        with store.SessionLocal() as session:
+            _project_or_404(session, project_id)
+            issued = issue_project_token(pepper=settings.token_pepper)
+            record = ProjectTokenRecord(
+                token_id=uuid.uuid4().hex,
+                project_id=project_id,
+                lookup_prefix=issued.lookup_prefix,
+                token_hash=issued.token_hash,
+                scopes=sorted(set(body.scopes)),
+            )
+            session.add(record)
+            session.commit()
+            return {"token": issued.token, "token_id": record.token_id, "project_id": project_id, "scopes": record.scopes}
+    finally:
+        store.close()
+
+
+@app.post("/api/projects/{project_id}/baselines/{release_id}/accept", status_code=201)
+def accept_project_baseline(project_id: str, release_id: str, reason: str = ""):
+    """Explicitly promote one completed assessment; never auto-promote."""
+    store = SQLiteStore(Path(settings.db_path))
+    try:
+        with store.SessionLocal() as session:
+            project = _project_or_404(session, project_id)
+            release = session.get(ReleaseRecord, release_id)
+            if release is None or release.project_id != project.project_id:
+                raise HTTPException(status_code=404, detail="Release not found")
+            try:
+                baseline = accept_baseline(session, release_id, "dashboard-admin", reason or None)
+            except ValueError as error:
+                raise HTTPException(status_code=409, detail=str(error)) from error
+            return {
+                "baseline_id": baseline.baseline_id,
+                "project_id": baseline.project_id,
+                "environment": baseline.environment,
+                "release_id": baseline.release_id,
+                "accepted_by": baseline.accepted_by,
+                "accepted_at": baseline.accepted_at.isoformat() if baseline.accepted_at else None,
+            }
+    finally:
+        store.close()
+
+
 @app.post("/api/projects/verify-target")
 def verify_target(body: VerifyTargetRequest):
     """Safely probe a public preview agent before it is registered.
@@ -398,7 +546,13 @@ def verify_target(body: VerifyTargetRequest):
     try:
         _validate_target_contract(body.endpoint, body.request_template)
         payload = json.loads(body.request_template.replace('"{{PROMPT}}"', json.dumps("Canary connection verification.")))
-        response = httpx.post(body.endpoint, json=payload, timeout=10.0, follow_redirects=False)
+        response = httpx.post(
+            body.endpoint,
+            json=payload,
+            timeout=httpx.Timeout(10.0, connect=5.0),
+            follow_redirects=False,
+            trust_env=False,
+        )
         response.raise_for_status()
     except (ValueError, httpx.HTTPError) as error:
         raise HTTPException(status_code=422, detail=f"Target verification failed: {error}") from error
@@ -419,6 +573,63 @@ def verify_target(body: VerifyTargetRequest):
         "status_code": response.status_code,
         "response_path_detected": response_path_detected,
     }
+
+
+@app.post("/api/projects/{project_id}/target/verify")
+def verify_project_target(project_id: str, body: ProjectTargetVerifyRequest):
+    """Verify target ownership with a one-time echoed challenge.
+
+    The target must return the same token in either the
+    ``X-Canary-Verification`` response header or a JSON
+    ``canary_verification`` field. Only the hash is persisted.
+    """
+    try:
+        _validate_target_contract(body.endpoint, body.request_template)
+        payload = json.loads(body.request_template.replace('"{{PROMPT}}"', json.dumps("Canary ownership verification.")))
+        response = httpx.post(
+            body.endpoint,
+            json=payload,
+            headers={"X-Canary-Verification": body.verification_token},
+            timeout=httpx.Timeout(10.0, connect=5.0),
+            follow_redirects=False,
+            trust_env=False,
+        )
+        response.raise_for_status()
+    except (ValueError, httpx.HTTPError) as error:
+        raise HTTPException(status_code=422, detail=f"Target verification failed: {error}") from error
+
+    echoed = response.headers.get("X-Canary-Verification")
+    if not echoed:
+        try:
+            candidate = response.json()
+            echoed = candidate.get("canary_verification") if isinstance(candidate, dict) else None
+        except ValueError:
+            echoed = None
+    if echoed != body.verification_token:
+        raise HTTPException(status_code=422, detail="Target did not prove ownership of the verification token")
+
+    store = SQLiteStore(Path(settings.db_path))
+    try:
+        with store.SessionLocal() as session:
+            project = _project_or_404(session, project_id)
+            target = VerifiedTargetRecord(
+                target_id=uuid.uuid4().hex,
+                project_id=project.project_id,
+                environment=project.environment,
+                origin=body.endpoint,
+                endpoint=body.endpoint,
+                verification_token_hash=hash_verification_token(body.verification_token),
+                status="verified",
+                verified_at=datetime.utcnow(),
+            )
+            project.endpoint = body.endpoint
+            project.request_template = body.request_template
+            project.response_path = body.response_path
+            session.add(target)
+            session.commit()
+            return {"verified": True, "target_id": target.target_id, "project_id": project.project_id, "environment": project.environment}
+    finally:
+        store.close()
 
 
 @app.post("/api/projects/{project_id}/releases", status_code=202)
@@ -443,7 +654,7 @@ def create_project_release(project_id: str, body: ReleaseCreateRequest):
 
 
 @app.post("/api/ci/releases", status_code=202)
-def create_ci_release(body: CiReleaseRequest):
+def create_ci_release(body: CiReleaseRequest, request: Request):
     """Start a release from a checked-in ``canary.yaml`` configuration.
 
     This is the only endpoint the reusable GitHub Action needs. It upserts the
@@ -475,6 +686,9 @@ def create_ci_release(body: CiReleaseRequest):
                     "gate": body.gate,
                 },
             )
+            scoped_project_id = getattr(request.state, "project_token_project_id", None)
+            if scoped_project_id and scoped_project_id != project.project_id:
+                raise HTTPException(status_code=403, detail="Project token is not authorized for this repository")
             snapshot = project_payload(project)
     finally:
         store.close()
@@ -514,6 +728,38 @@ def get_release(release_id: str):
             if release is None:
                 raise HTTPException(status_code=404, detail="Release not found")
             return release_payload(release)
+    finally:
+        store.close()
+
+
+@app.get("/api/releases/{release_id}/regressions")
+def get_release_regressions(release_id: str):
+    store = SQLiteStore(Path(settings.db_path))
+    try:
+        with store.SessionLocal() as session:
+            release = session.get(ReleaseRecord, release_id)
+            if release is None:
+                raise HTTPException(status_code=404, detail="Release not found")
+            rows = session.scalars(
+                select(SecurityRegressionRecord)
+                .where(SecurityRegressionRecord.candidate_release_id == release_id)
+                .order_by(SecurityRegressionRecord.created_at.asc(), SecurityRegressionRecord.regression_id.asc())
+            ).all()
+            return [
+                {
+                    "regression_id": row.regression_id,
+                    "attack_case_id": row.attack_case_id,
+                    "finding_id": row.finding_id,
+                    "classification": row.classification,
+                    "severity": row.severity,
+                    "baseline_verdict": row.baseline_verdict,
+                    "candidate_verdict": row.candidate_verdict,
+                    "baseline_evidence": row.baseline_evidence or {},
+                    "candidate_evidence": row.candidate_evidence or {},
+                    "reason": row.reason,
+                }
+                for row in rows
+            ]
     finally:
         store.close()
 
@@ -572,6 +818,8 @@ def _release_markdown(payload: dict) -> str:
     release = payload["release"]
     comparison = release["comparison"]
     summary = release["summary"]
+    coverage = release.get("coverage") or {}
+    regressions = payload.get("regressions") or []
     lines = [
         "# Agent Canary security report",
         "",
@@ -581,13 +829,28 @@ def _release_markdown(payload: dict) -> str:
         f"- Commit: `{release['commit_sha']}`",
         f"- Ref: `{release.get('ref') or 'unknown'}`",
         f"- Baseline: `{comparison.get('baseline_release_id') or 'not established'}`",
-        f"- New findings: {len(comparison.get('new_finding_ids', []))}",
-        f"- Known findings: {len(comparison.get('known_finding_ids', []))}",
-        f"- Coverage: {summary.get('coverage', 0)}%",
+        f"- Baseline score: `{release.get('baseline_score') if release.get('baseline_score') is not None else 'n/a'}`",
+        f"- Candidate score: `{release.get('candidate_score') if release.get('candidate_score') is not None else summary.get('security_score', 'n/a')}`",
+        f"- Score delta: `{release.get('score_delta') if release.get('score_delta') is not None else 'n/a'}`",
+        f"- New regressions: {len(comparison.get('new_regression_ids', []))}",
+        f"- Known findings: {comparison.get('known', len(comparison.get('known_finding_ids', [])))}",
+        f"- Resolved findings: {comparison.get('resolved', len(comparison.get('resolved_finding_ids', [])))}",
+        f"- Coverage: {coverage.get('percentage', summary.get('coverage', 0))}%",
         "",
         "## Evidence",
         "",
     ]
+    if regressions:
+        lines.extend(["## Differential classifications", ""])
+        for item in regressions:
+            lines.extend([
+                f"### {str(item.get('classification', 'indeterminate')).upper()} — {item.get('severity') or 'unclassified'}",
+                f"- Attack case: `{item.get('attack_case_id')}`",
+                f"- Reason: {item.get('reason') or 'No reason recorded.'}",
+                f"- Baseline verdict: `{item.get('baseline_verdict') or 'not executed'}`",
+                f"- Candidate verdict: `{item.get('candidate_verdict') or 'not executed'}`",
+                "",
+            ])
     if not payload["findings"]:
         lines.append("No confirmed findings were observed in this release.")
     for finding in payload["findings"]:
@@ -624,10 +887,29 @@ def get_release_report(release_id: str):
             if release is None:
                 raise HTTPException(status_code=404, detail="Release not found")
             project = _project_or_404(session, release.project_id)
+            regressions = session.scalars(
+                select(SecurityRegressionRecord)
+                .where(SecurityRegressionRecord.candidate_release_id == release_id)
+                .order_by(SecurityRegressionRecord.created_at.asc(), SecurityRegressionRecord.regression_id.asc())
+            ).all()
             return {
                 "release": release_payload(release),
                 "project": project_payload(project),
                 "findings": _release_evidence(session, release),
+                "regressions": [
+                    {
+                        "regression_id": item.regression_id,
+                        "attack_case_id": item.attack_case_id,
+                        "classification": item.classification,
+                        "severity": item.severity,
+                        "baseline_verdict": item.baseline_verdict,
+                        "candidate_verdict": item.candidate_verdict,
+                        "baseline_evidence": item.baseline_evidence or {},
+                        "candidate_evidence": item.candidate_evidence or {},
+                        "reason": item.reason,
+                    }
+                    for item in regressions
+                ],
             }
     finally:
         store.close()

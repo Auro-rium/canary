@@ -25,9 +25,10 @@ class Settings(BaseSettings):
     # bedrock:InvokeModel on the configured model/inference-profile ARNs.
     aws_region: Optional[str] = None
 
-    # API authentication — bearer token required on every API request.
-    # Must match the VITE_API_TOKEN configured in the frontend.
+    # API authentication — bearer token for server-side dashboard proxy and CI.
+    # Never expose this value through a VITE_* frontend variable.
     api_secret_key: Optional[str] = None
+    token_pepper: str = ""
 
     # Comma-separated public dashboard origins. Keep this explicit in hosted
     # deployments so the browser API is not open to arbitrary web origins.

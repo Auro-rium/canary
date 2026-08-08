@@ -31,6 +31,7 @@ class RedTeamState(TypedDict):
     target_headers: Dict[str, str]
     target_request_template: Optional[str]
     target_response_path: Optional[str]
+    replay_cases: List[Dict[str, str]]
 
     # ── Attack configuration ─────────────────────────────────────
     strategies: List[str]

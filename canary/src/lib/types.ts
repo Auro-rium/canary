@@ -47,7 +47,7 @@ export interface CanaryProject {
   request_template: string
   response_path: string | null
   strategies: string[]
-  gate: { block_on: string[]; max_new_findings: number }
+  gate: { block_on: string[]; warn_on?: string[]; max_new_blocking_findings?: number | null; max_new_nonblocking_findings?: number | null; max_new_findings?: number }
   created_at: string | null
   updated_at: string | null
 }
@@ -61,9 +61,13 @@ export interface CanaryRelease {
   is_baseline?: boolean
   environment: string
   run_id: string | null
-  status: 'running' | 'completed' | 'failed'
+  status: 'queued' | 'running' | 'completed' | 'failed' | 'cancelled'
   decision: 'pass' | 'warn' | 'block' | null
   baseline_release_id: string | null
+  baseline_score?: number | null
+  candidate_score?: number | null
+  score_delta?: number | null
+  coverage?: Record<string, number>
   finding_ids: string[]
   summary: {
     total_findings?: number
@@ -71,10 +75,17 @@ export interface CanaryRelease {
     security_score?: number
     severity_counts?: Record<string, number>
     error?: string
+    decision_reasons?: string[]
+    regression_counts?: Record<string, number>
   }
   comparison: {
     new_finding_ids?: string[]
+    new_regression_ids?: string[]
     known_finding_ids?: string[]
+    known?: number
+    resolved?: number
+    clean?: number
+    indeterminate?: number
     resolved_finding_ids?: string[]
     baseline_established?: boolean
     baseline_missing?: boolean

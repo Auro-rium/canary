@@ -5,7 +5,7 @@ inputs:
     description: Base URL for the hosted Canary API.
     required: true
   api-token:
-    description: Canary API bearer token. Keep this in GitHub Actions secrets.
+    description: Scoped Canary project token. Keep this in GitHub Actions secrets.
     required: true
   target-url:
     description: Public preview-agent chat endpoint. Overrides target.endpoint in canary.yaml.
@@ -57,6 +57,27 @@ outputs:
   report-dir:
     description: Directory containing report.json and report.md.
     value: ${{ steps.execute.outputs.report_dir }}
+  security-score:
+    description: Candidate security score.
+    value: ${{ steps.execute.outputs.security_score }}
+  baseline-score:
+    description: Accepted baseline security score.
+    value: ${{ steps.execute.outputs.baseline_score }}
+  score-delta:
+    description: Candidate minus baseline score.
+    value: ${{ steps.execute.outputs.score_delta }}
+  new-regressions:
+    description: Number of newly introduced regressions.
+    value: ${{ steps.execute.outputs.new_regressions }}
+  known-findings:
+    description: Number of known baseline findings.
+    value: ${{ steps.execute.outputs.known_findings }}
+  resolved-findings:
+    description: Number of resolved baseline findings.
+    value: ${{ steps.execute.outputs.resolved_findings }}
+  coverage:
+    description: Executed configured security surface percentage.
+    value: ${{ steps.execute.outputs.coverage }}
 runs:
   using: composite
   steps:
@@ -184,6 +205,36 @@ runs:
           > "$CANARY_REPORT_DIR/report.md"
         echo "decision=$decision" >> "$GITHUB_OUTPUT"
         echo "report_dir=$CANARY_REPORT_DIR" >> "$GITHUB_OUTPUT"
+        coverage="$(jq -r '.coverage.percentage // .summary.coverage // 0' <<<"$release")"
+        candidate_score="$(jq -r '.candidate_score // .summary.security_score // 0' <<<"$release")"
+        baseline_score="$(jq -r '.baseline_score // ""' <<<"$release")"
+        score_delta="$(jq -r '.score_delta // ""' <<<"$release")"
+        new_regressions="$(jq -r '(.comparison.new_regression_ids // []) | length' <<<"$release")"
+        known_findings="$(jq -r '.comparison.known // 0' <<<"$release")"
+        resolved_findings="$(jq -r '.comparison.resolved // 0' <<<"$release")"
+        echo "security_score=$candidate_score" >> "$GITHUB_OUTPUT"
+        echo "baseline_score=$baseline_score" >> "$GITHUB_OUTPUT"
+        echo "score_delta=$score_delta" >> "$GITHUB_OUTPUT"
+        echo "new_regressions=$new_regressions" >> "$GITHUB_OUTPUT"
+        echo "known_findings=$known_findings" >> "$GITHUB_OUTPUT"
+        echo "resolved_findings=$resolved_findings" >> "$GITHUB_OUTPUT"
+        echo "coverage=$coverage" >> "$GITHUB_OUTPUT"
+        {
+          echo "## Agent Canary Security Gate"
+          echo
+          echo "**Decision:** ${decision^^}"
+          echo
+          echo "| Metric | Value |"
+          echo "|---|---:|"
+          echo "| Baseline score | ${baseline_score:-n/a} |"
+          echo "| Candidate score | $candidate_score |"
+          echo "| Score delta | ${score_delta:-n/a} |"
+          echo "| New regressions | $new_regressions |"
+          echo "| Known findings | $known_findings |"
+          echo "| Resolved findings | $resolved_findings |"
+          echo "| Coverage | ${coverage}% |"
+          echo
+        } >> "$GITHUB_STEP_SUMMARY"
         cat "$CANARY_REPORT_DIR/report.md" >> "$GITHUB_STEP_SUMMARY"
 
     - name: Upload Canary evidence

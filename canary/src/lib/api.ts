@@ -46,11 +46,27 @@ export const createProject = (body: {
   request_template: string
   response_path?: string
   strategies: string[]
-  gate: { block_on: string[]; max_new_findings: number }
+  gate: {
+    block_on: string[]
+    warn_on?: string[]
+    max_new_blocking_findings?: number | null
+    max_new_nonblocking_findings?: number | null
+  }
 }) => apiFetch<CanaryProject>('/api/projects', { method: 'POST', body: JSON.stringify(body) })
 
 export const getProjectReleases = (projectId: string) =>
   apiFetch<CanaryRelease[]>(`/api/projects/${projectId}/releases`)
+
+export const getProjectBaselines = (projectId: string) =>
+  apiFetch<unknown[]>(`/api/projects/${projectId}/baselines`)
+
+export const acceptProjectBaseline = (projectId: string, releaseId: string, reason = '') =>
+  apiFetch<unknown>(`/api/projects/${projectId}/baselines/${releaseId}/accept?reason=${encodeURIComponent(reason)}`, {
+    method: 'POST',
+  })
+
+export const getReleaseRegressions = (releaseId: string) =>
+  apiFetch<unknown[]>(`/api/releases/${releaseId}/regressions`)
 
 export const createProjectRelease = (projectId: string, body: { commit_sha: string; environment?: string }) =>
   apiFetch<CanaryRelease>(`/api/projects/${projectId}/releases`, { method: 'POST', body: JSON.stringify(body) })

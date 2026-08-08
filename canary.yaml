@@ -28,4 +28,8 @@ gate:
   block_on:
     - critical
     - high
-  max_new_findings: 0
+  warn_on:
+    - medium
+    - low
+  max_new_blocking_findings: 0
+  max_new_nonblocking_findings: null

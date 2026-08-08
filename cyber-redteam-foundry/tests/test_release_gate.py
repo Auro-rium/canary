@@ -3,6 +3,7 @@ import pytest
 from cyberredteam.release_gate import (
     create_project,
     create_release,
+    accept_baseline,
     finalise_release,
     upsert_ci_project,
     validate_public_http_endpoint,
@@ -43,6 +44,7 @@ def test_release_comparison_distinguishes_known_and_new_findings(tmp_path):
             )
             session.commit()
             finalise_release(session, baseline.release_id)
+            accept_baseline(session, baseline.release_id, "test-admin")
 
             current = create_release(session, project, "def456", "preview")
             current.run_id = "run-current"
@@ -100,6 +102,7 @@ def test_ci_uses_last_passing_main_release_not_a_pr_as_baseline(tmp_path):
             safe = finalise_release(session, safe.release_id, default_branch="main")
             assert safe.decision == "pass"
             assert safe.is_baseline == 1
+            accept_baseline(session, safe.release_id, "test-admin")
 
             pr = create_release(session, project, "pr-head", "preview", git_ref="feature/docs", event_name="pull_request")
             pr.run_id = "pr-run"

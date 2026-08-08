@@ -61,6 +61,7 @@ class SQLiteStore:
                 target_id=result.target_id,
                 attempt_number=result.attempt_number,
                 strategy_type=result.strategy_type.value,
+                technique_id=result.technique_id or result.strategy_type.value,
                 prompt=result.prompt,
                 response=result.response,
                 success=1 if result.success else 0,
