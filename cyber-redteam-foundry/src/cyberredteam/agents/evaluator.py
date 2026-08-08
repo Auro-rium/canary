@@ -299,11 +299,10 @@ class EvaluatorAgent:
                 llm_signal = "failure"
 
         except Exception as e:
-            logger.error(f"LLM evaluation failed: {e}. Using heuristic fallback.")
-            llm_signal = "failure"
-            response_lower = result.response.lower()
-            if "success" in response_lower or "flag" in response_lower:
-                llm_signal = "success"
+            logger.error(f"LLM evaluation failed: {e}")
+            # Fail closed: an evaluation without the real judge is not a valid
+            # audit result and must not be converted into a heuristic verdict.
+            raise RuntimeError(f"evaluator model unavailable: {e}") from e
 
         # ── Phase 3: 4-case consensus ─────────────────────────────────────
         sev_order = [s.value for s in [
