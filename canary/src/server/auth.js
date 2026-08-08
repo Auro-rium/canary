@@ -12,7 +12,7 @@ const OAUTH_STATE_MAX_AGE = 10 * 60
 const base64url = (value) => Buffer.from(value).toString('base64url')
 
 const secret = () => {
-  const value = process.env.SESSION_SECRET
+  const value = String(process.env.SESSION_SECRET || '').trim()
   if (!value || value.length < 32) return null
   return value
 }

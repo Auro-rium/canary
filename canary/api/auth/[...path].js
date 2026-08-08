@@ -15,7 +15,7 @@ const originFor = (req) => {
   return process.env.APP_URL?.replace(/\/$/, '') || `${forwardedProto}://${req.headers.host}`
 }
 
-const redirectUriFor = (req) => process.env.GITHUB_OAUTH_REDIRECT_URI || `${originFor(req)}/api/auth/callback`
+const redirectUriFor = (req) => envValue('GITHUB_OAUTH_REDIRECT_URI') || `${originFor(req)}/api/auth/callback`
 
 const routeName = (req) => {
   const requestUrl = String(req.url || '').split('?')[0]
@@ -36,16 +36,17 @@ const json = (res, status, body) => {
   res.status(status).setHeader('cache-control', 'no-store').json(body)
 }
 
+const envValue = (name) => String(process.env[name] || '').trim()
+
 const configured = () => Boolean(
-  process.env.GITHUB_OAUTH_CLIENT_ID &&
-  process.env.GITHUB_OAUTH_CLIENT_SECRET &&
-  process.env.SESSION_SECRET &&
-  process.env.SESSION_SECRET.length >= 32 &&
-  (process.env.GITHUB_ALLOWED_LOGINS || '').split(',').some((value) => value.trim())
+  envValue('GITHUB_OAUTH_CLIENT_ID') &&
+  envValue('GITHUB_OAUTH_CLIENT_SECRET') &&
+  envValue('SESSION_SECRET').length >= 32 &&
+  envValue('GITHUB_ALLOWED_LOGINS').split(',').some((value) => value.trim())
 )
 
 export const allowedLogin = (login) => {
-  const configuredLogins = (process.env.GITHUB_ALLOWED_LOGINS || '').split(',').map((value) => value.trim().toLowerCase()).filter(Boolean)
+  const configuredLogins = envValue('GITHUB_ALLOWED_LOGINS').split(',').map((value) => value.trim().toLowerCase()).filter(Boolean)
   if (!configuredLogins.length) return false
   if (configuredLogins.includes('*')) return true
   return configuredLogins.includes(String(login).toLowerCase())
@@ -56,8 +57,8 @@ const exchangeCode = async (req, code) => {
     method: 'POST',
     headers: { Accept: 'application/json', 'Content-Type': 'application/json' },
     body: JSON.stringify({
-      client_id: process.env.GITHUB_OAUTH_CLIENT_ID,
-      client_secret: process.env.GITHUB_OAUTH_CLIENT_SECRET,
+      client_id: envValue('GITHUB_OAUTH_CLIENT_ID'),
+      client_secret: envValue('GITHUB_OAUTH_CLIENT_SECRET'),
       code,
       redirect_uri: redirectUriFor(req),
     }),
@@ -113,7 +114,7 @@ export default async function handler(req, res) {
     const state = newOAuthState()
     setOAuthStateCookie(res, state)
     const params = new URLSearchParams({
-      client_id: process.env.GITHUB_OAUTH_CLIENT_ID,
+      client_id: envValue('GITHUB_OAUTH_CLIENT_ID'),
       redirect_uri: redirectUriFor(req),
       scope: 'read:user',
       state,
