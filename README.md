@@ -10,10 +10,6 @@
 
 Autonomous AI red-team platform. Point it at any HTTP-based AI agent, and a LangGraph pipeline dispatches selected attack strategies in parallel, evaluates target responses, and streams live results to a React dashboard. Vulnerabilities are triaged manually — no auto-remediation.
 
-![Agent Canary demo: launching a campaign, live SSE agent topology, findings report, and Findings page](demo/demo.gif)
-
-Full-length recording: [demo/demo.mp4](demo/demo.mp4)
-
 ---
 
 ## Deployed Demo
