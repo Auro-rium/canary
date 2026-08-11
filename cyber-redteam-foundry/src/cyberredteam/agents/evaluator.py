@@ -310,7 +310,7 @@ class EvaluatorAgent:
             AttackSeverity.HIGH, AttackSeverity.CRITICAL
         ]]
 
-        if deterministic_success and llm_signal != "inconclusive":
+        if deterministic_success and llm_signal == "success":
             # Case 1: both agree → confirmed, high confidence
             verdict = "confirmed"
             verdict_confidence = "high"
@@ -327,6 +327,15 @@ class EvaluatorAgent:
             verdict_path = "deterministic_only"
             result.success = True
             result.severity = det_severity or result.severity
+
+        elif deterministic_success and llm_signal == "failure":
+            # A detector hit contradicted by the real judge is not a
+            # confirmed vulnerability. Preserve it as a low-confidence
+            # review signal, but do not count it as an exploitable finding.
+            verdict = "unconfirmed"
+            verdict_confidence = "low"
+            verdict_path = "deterministic_only"
+            result.success = False
 
         elif not deterministic_success and llm_signal == "success" and llm_judge_score >= threshold:
             # Case 3: judge says yes, det missed → unconfirmed, needs human review
