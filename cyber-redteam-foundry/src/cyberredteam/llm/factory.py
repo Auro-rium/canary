@@ -120,7 +120,9 @@ def get_llm(
         api_key=settings.nvidia_api_key,
         base_url=settings.nvidia_base_url,
         temperature=0.7,
-        max_tokens=4096,
+        # Nemotron may include reasoning before its structured response. Keep
+        # enough completion headroom so the JSON object is not truncated.
+        max_tokens=8192,
     )
 
     logger.info(f"Created NVIDIA ChatOpenAI client for {agent_name} (model={model})")
