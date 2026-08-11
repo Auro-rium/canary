@@ -31,7 +31,7 @@ Authorized HTTP target configuration and live execution.
 
 - Submits `POST /api/campaigns/run` and consumes its SSE stream.
 - Validates HTTP(S) URLs, optional JSON headers, request templates, and response paths before launch.
-- Supports every currently exposed attack strategy; no frontend cap silently drops a selected strategy.
+- Supports all eight currently exposed attack strategies; the backend preserves explicit selections and supports up to 12 parallel branches.
 - Clears entered target headers after launch and warns that server checkpoints may contain them.
 
 ### Campaign detail — `/campaigns/:runId`

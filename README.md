@@ -99,7 +99,9 @@ No SDK changes required. Any agent that accepts a POST with a `message` field an
 
 ## Attack Strategies
 
-12 strategies, each mapped to ASI and MITRE ATLAS taxonomy via `configs/asi_taxonomy.yaml`:
+The engine registry contains 12 strategies, each mapped to ASI and MITRE ATLAS taxonomy via
+`configs/asi_taxonomy.yaml`. The current dashboard exposes eight selectable techniques; the
+backend supports up to 12 parallel branches for explicit selections:
 
 | Strategy | Description |
 |---|---|
@@ -116,7 +118,7 @@ No SDK changes required. Any agent that accepts a POST with a `message` field an
 | `instruction_hierarchy` | Overrides developer system instructions with user-level input |
 | `context_isolation` | Breaches document context to access unauthorized files |
 
-**Taxonomy mapping:** ASI01–ASI10 (AI Security Intelligence classes) and ATLAS techniques (e.g. `AML.T0051.002`). Lookup table: `configs/asi_taxonomy.yaml`. Per-class confidence thresholds: `configs/thresholds.yaml`.
+**Taxonomy mapping:** ASI01–ASI10 classes and ATLAS techniques (e.g. `AML.T0051.002`). Lookup table: `configs/asi_taxonomy.yaml`. Per-class confidence thresholds: `configs/thresholds.yaml`.
 
 ---
 
@@ -180,13 +182,15 @@ Swagger UI: `http://localhost:8001/docs` (or via nginx proxy at `http://localhos
 
 ## Dashboard
 
-React 19 SPA served on port **8000**, four pages:
+React 19 SPA served on port **8000** with campaign, findings, and target evidence routes:
 
 | Page | Description |
 |---|---|
-| Run Audit | Configure and launch campaigns. Live SSE stream with agent topology diagram. |
-| Findings | Paginated findings table with verdict badges, severity, status lifecycle controls. |
-| Red Team | Live incident feed, run detail, target observations, and strategy labels. |
+| Campaigns | Persisted campaign history, filters, token totals, and links to evidence. |
+| New campaign | Configure an authorized HTTP target, select techniques, and watch the SSE run. |
+| Campaign detail | Raw prompts, target replies, HTTP observations, evaluator evidence, reports, and LLM telemetry. |
+| Findings | Paginated findings table with verdict badges, severity, and manual lifecycle controls. |
+| Targets | Target portfolio, ASI coverage, strategy trends, and recent campaigns. |
 
 ---
 
@@ -221,7 +225,7 @@ docker compose -f docker-compose.yml -f docker-compose.aws.yml up -d --build red
 |---|---|---|
 | `canary-frontend` | 8000 | nginx serving React SPA; proxies `/api/*` to the backend |
 | `redteam-backend` | 8001 | FastAPI + LangGraph orchestrator |
-| `target-agent` | 9000 | CompanyBot — LangChain ReAct agent for testing |
+| External target | — | An independently deployed, authorized HTTP agent such as [CompanyAgent Canary Demo](https://github.com/Auro-rium/companybot-canary-demo) |
 
 ---
 

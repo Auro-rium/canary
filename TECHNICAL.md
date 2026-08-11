@@ -139,8 +139,8 @@ structured-output mode, never free-text parsing:
   (schemas.py:49-56).
 - `mutation_of_parent` — required to describe what changed vs. the parent attempt when
   `depth > 0`, null at depth 0 (schemas.py:62-66) — this is how the system's depth-based
-  mutation lineage is tracked (though the default 3-node graph only ever dispatches at
-  `depth=0`; `mutation_of_parent`/`parent_evidence` plumbing exists for deeper recursive attack
+  mutation lineage is tracked (the default graph dispatches at `depth=0`;
+  `mutation_of_parent`/`parent_evidence` plumbing exists for deeper recursive attack
   trees built by other callers of `attack_branch`).
 
 **Hard-refusal short-circuit.** If `output.status == "ATTACKER_REFUSED"` (attacker.py:213-234),
