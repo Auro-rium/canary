@@ -24,6 +24,10 @@ The production deployment is split into two services:
 - **Interactive dashboard:** [canary-coral.vercel.app](https://canary-coral.vercel.app/)
 - **AWS FastAPI backend:** [Swagger docs](http://3.108.23.172/docs)
 
+### Demo target agent
+
+[CompanyAgent Canary Demo](https://github.com/Auro-rium/companybot-canary-demo) is the separate, real HTTP target used for the demonstration. It is a LangChain tool-calling agent backed by Backboard; Canary assesses it over its `/chat` API and preserves the target's real responses as campaign evidence. The target has its own repository and deployment lifecycle—Canary never embeds, mocks, or modifies it. Run assessments only with authorization.
+
 AWS exposes only FastAPI. The React dashboard runs on Vercel and reaches the backend through a server-side proxy; the API bearer token is never bundled into the production browser build. The AWS host root intentionally returns FastAPI `404 Not Found` because it is not a second frontend.
 
 ---
