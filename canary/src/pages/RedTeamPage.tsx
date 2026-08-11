@@ -50,6 +50,13 @@ interface RunDetail {
   success_rate: number
   error?: string | null
   attacks: Attack[]
+  llm_stats?: {
+    calls: number
+    prompt_tokens: number
+    completion_tokens: number
+    total_tokens: number
+    latency_ms: number
+  }
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -138,6 +145,19 @@ function RunDetailPanel({ detail }: { detail: RunDetail }) {
           <span className="text-white/60 text-xs font-mono">{detail.total_attacks - detail.successful_attacks}</span>
         </div>
       </div>
+
+      {detail.llm_stats && (
+        <div className="border border-white/10 bg-white/[0.02] px-4 py-3 mb-6">
+          <div className="text-white/20 text-[9px] uppercase tracking-wider mb-2">LLM Telemetry</div>
+          <div className="grid grid-cols-2 sm:grid-cols-5 gap-4 text-[10px] font-mono text-white/60">
+            <span>CALLS {detail.llm_stats.calls}</span>
+            <span>PROMPT TOKENS {detail.llm_stats.prompt_tokens}</span>
+            <span>COMPLETION TOKENS {detail.llm_stats.completion_tokens}</span>
+            <span>TOTAL TOKENS {detail.llm_stats.total_tokens}</span>
+            <span>LATENCY {detail.llm_stats.latency_ms}ms</span>
+          </div>
+        </div>
+      )}
 
       {/* Attacks table */}
       {detail.attacks.length > 0 && (

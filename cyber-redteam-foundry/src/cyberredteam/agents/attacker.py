@@ -108,7 +108,7 @@ class AttackerAgent:
 
         try:
             output: AttackerOutput = self.llm.invoke_chain(
-                self._attack_chain, user_message, system_context=self.system_prompt
+                self._attack_chain, user_message, system_context=self.system_prompt, run_id=run_id
             )
             # Force the echo fields — the attacker must not drift from its assignment.
             output.capability_type = branch.capability_type

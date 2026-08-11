@@ -18,7 +18,7 @@ from cyberredteam.langgraph.orchestrator import GraphOrchestrator
 from cyberredteam.schemas import RunConfig, StrategyType
 from cyberredteam.settings import get_settings
 from cyberredteam.storage.artifact_store import SQLiteStore
-from cyberredteam.storage.models import AttackRecord, RunRecord
+from cyberredteam.storage.models import AttackRecord, LLMCallRecord, RunRecord
 from cyberredteam.logging import setup_logging
 
 logger = logging.getLogger("cyberredteam.api")
@@ -92,8 +92,32 @@ _active_runs_lock = threading.Lock()
 
 
 def _running_count() -> int:
-    """Count the number of runs currently in 'running' state."""
-    return sum(1 for v in active_runs.values() if v == "running")
+    """Count running runs from SQLite so restarts do not lose lifecycle state."""
+    try:
+        store = SQLiteStore(Path(settings.db_path))
+        with store.SessionLocal() as session:
+            count = len(session.scalars(select(RunRecord).where(RunRecord.status == "running")).all())
+        store.close()
+        return count
+    except Exception as exc:
+        logger.warning("Could not read persisted run count: %s", exc)
+        return sum(1 for v in active_runs.values() if v == "running")
+
+
+@app.on_event("startup")
+def recover_interrupted_runs() -> None:
+    """Mark runs interrupted by an API restart instead of leaving them hanging."""
+    store = SQLiteStore(Path(settings.db_path))
+    with store.SessionLocal() as session:
+        stale = session.scalars(select(RunRecord).where(RunRecord.status == "running")).all()
+        for run in stale:
+            run.status = "failed"
+            run.error = "API process restarted while this run was active."
+            run.end_time = datetime.utcnow()
+        if stale:
+            session.commit()
+            logger.warning("Marked %d interrupted run(s) as failed after restart", len(stale))
+    store.close()
 
 
 def run_orchestrator_thread(
@@ -142,6 +166,7 @@ def run_orchestrator_thread(
                 if run:
                     run.status = "failed"
                     run.error = str(e)
+                    run.end_time = datetime.utcnow()
                     session.commit()
             store.close()
         except Exception as dbe:
@@ -257,6 +282,24 @@ def get_run(run_id: str):
         # Get attacks
         stmt_attacks = select(AttackRecord).where(AttackRecord.run_id == run_id)
         attacks = session.scalars(stmt_attacks).all()
+        llm_calls = session.scalars(
+            select(LLMCallRecord).where(LLMCallRecord.run_id == run_id)
+        ).all()
+        llm_telemetry = [
+            {
+                "id": c.id,
+                "agent": c.agent_name,
+                "model": c.deployment,
+                "latency_ms": round((c.latency or 0) * 1000, 2),
+                "prompt_tokens": c.prompt_tokens or 0,
+                "completion_tokens": c.completion_tokens or 0,
+                "total_tokens": (c.prompt_tokens or 0) + (c.completion_tokens or 0),
+                "input_hash": c.input_hash,
+                "output_hash": c.output_hash,
+                "timestamp": c.timestamp.isoformat() if c.timestamp else None,
+            }
+            for c in llm_calls
+        ]
 
         # Build response
         result = {
@@ -269,6 +312,14 @@ def get_run(run_id: str):
             "total_attacks": run.total_attacks,
             "successful_attacks": run.successful_attacks,
             "success_rate": run.success_rate,
+            "llm_calls": llm_telemetry,
+            "llm_stats": {
+                "calls": len(llm_telemetry),
+                "prompt_tokens": sum(c["prompt_tokens"] for c in llm_telemetry),
+                "completion_tokens": sum(c["completion_tokens"] for c in llm_telemetry),
+                "total_tokens": sum(c["total_tokens"] for c in llm_telemetry),
+                "latency_ms": round(sum(c["latency_ms"] for c in llm_telemetry), 2),
+            },
             "attacks": [
                 {
                     "id": a.id,

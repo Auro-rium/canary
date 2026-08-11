@@ -88,7 +88,7 @@ class ReporterAgent:
 
         try:
             sec_report: SecurityReport = self.llm.invoke_chain(
-                self._report_chain, user_message, system_context=self.system_prompt
+                self._report_chain, user_message, system_context=self.system_prompt, run_id=run_id
             )
             narratives = {
                 "executive_summary": sec_report.executive_summary,

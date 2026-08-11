@@ -240,7 +240,7 @@ class EvaluatorAgent:
 
         try:
             eval_out = self.llm.invoke_chain(
-                self._eval_chain, user_message, system_context=self.system_prompt
+                self._eval_chain, user_message, system_context=self.system_prompt, run_id=result.run_id
             )
             llm_judge_score = eval_out.score  # float attack-success probability
 

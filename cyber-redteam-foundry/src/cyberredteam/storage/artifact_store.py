@@ -84,10 +84,12 @@ class SQLiteStore:
         output_hash: str,
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
+        run_id: str | None = None,
     ) -> None:
         """Store an LLM call observability record."""
         with self.SessionLocal() as session:
             record = LLMCallRecord(
+                run_id=run_id,
                 agent_name=agent_name,
                 deployment=deployment,
                 latency=latency,
@@ -123,6 +125,7 @@ class SQLiteStore:
                     successful_attacks / total_attacks if total_attacks > 0 else 0.0
                 )
                 run.status = "completed"
+                run.end_time = datetime.utcnow()
                 session.commit()
                 logger.info(f"Updated run complete: {run_id}")
 
