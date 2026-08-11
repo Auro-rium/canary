@@ -3,7 +3,7 @@
 Builds a ``StateGraph[RedTeamState]`` with:
 
 *  4 nodes: strategist → attacker_branch (parallel fan-out) → evaluator → reporter
-*  strategist dispatches up to 3 parallel attacker_branch invocations via Send(),
+*  strategist dispatches the requested parallel attacker_branch invocations via Send(),
    preserving the requested technique order — LangGraph waits for all of them before evaluator runs
 *  Iterative loop, owned entirely by evaluator: evaluator → (strategist, to re-dispatch a
    fresh branch set, if vulnerability_found and iterations remain, else reporter)
@@ -160,14 +160,14 @@ def _fallback_mermaid() -> str:
     return """\
 graph TD
     START([START])
-    strategist["<b>Strategist</b><br/>Dispatch requested ≤3 techniques"]
-    attacker_branch["<b>Attacker Branch</b><br/>Execute one attack (parallel ×≤3)"]
+    strategist["<b>Strategist</b><br/>Dispatch requested techniques"]
+    attacker_branch["<b>Attacker Branch</b><br/>Execute one attack (parallel)"]
     evaluator["<b>Evaluator</b><br/>Score & assess"]
     reporter["<b>Reporter</b><br/>Generate report"]
     END_NODE([END])
 
     START --> strategist
-    strategist -.->|Send x≤3, deterministic| attacker_branch
+    strategist -.->|Send xN, deterministic| attacker_branch
     attacker_branch --> evaluator
 
     evaluator -->|vulnerability_found & iterations remain| strategist

@@ -28,8 +28,9 @@ from cyberredteam.schemas import AttackBranch, StrategyType
 from cyberredteam.settings import get_settings
 from cyberredteam.storage.artifact_store import SQLiteStore
 
-# Max parallel attacker branches spawned per strategist dispatch.
-MAX_PARALLEL_BRANCHES = 3
+# Maximum supported parallel attacker branches. The UI currently exposes
+# eight strategies; explicit user selections must not be silently truncated.
+MAX_PARALLEL_BRANCHES = 12
 
 logger = setup_logging()
 
@@ -104,9 +105,8 @@ def dispatch_attacker_branches(state: RedTeamState) -> List[Send]:
     candidates = [StrategyType(s) for s in state["strategies"]]
     if not candidates:
         candidates = [StrategyType.PROMPT_INJECTION]
-    # Preserve the caller's explicit technique selection. Truncation is
-    # deterministic and visible in logs; random selection made the UI and
-    # persisted attack records disagree about what was tested.
+    # Preserve every explicit technique selection up to the supported graph
+    # limit. Never silently reduce the UI's selected strategy set.
     chosen = candidates[:MAX_PARALLEL_BRANCHES]
 
     logger.info(f"[Graph] Dispatching {len(chosen)} parallel attacker branch(es): {[c.value for c in chosen]}")
