@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 from cyberredteam.api import app, settings, CampaignRunRequest, run_orchestrator_thread
 from cyberredteam.schemas import StrategyType
 from cyberredteam.storage.artifact_store import SQLiteStore
-from cyberredteam.storage.models import RunRecord, AttackRecord
+from cyberredteam.storage.models import AttackRecord, FindingRecord, LLMCallRecord, RunRecord
 from pathlib import Path
 from datetime import datetime
 
@@ -51,6 +51,24 @@ def mock_db(tmp_path):
             indicators={"test": True},
         )
         session.add(attack)
+        session.add(LLMCallRecord(
+            run_id="testrun123",
+            agent_name="attacker",
+            deployment="nvidia/nemotron-test",
+            latency=1.25,
+            input_hash="input",
+            output_hash="output",
+            prompt_tokens=100,
+            completion_tokens=25,
+        ))
+        session.add(FindingRecord(
+            finding_id="finding123",
+            target_id="Finance Agent",
+            strategy="prompt_injection",
+            asi_class="ASI01",
+            severity="high",
+            status="open",
+        ))
         session.commit()
     
     yield store
@@ -89,10 +107,37 @@ def test_get_run_details(mock_db):
     assert data["target_id"] == "Finance Agent"
     assert data["status"] == "completed"
     assert len(data["attacks"]) == 1
+    assert data["llm_stats"]["total_tokens"] == 125
 
     # Test invalid run
     response_invalid = client.get("/api/runs/nonexistent")
     assert response_invalid.status_code == 404
+
+
+def test_dashboard_overview_and_campaign_history(mock_db):
+    """Dashboard summary/list endpoints expose persisted facts without raw evidence."""
+    overview = client.get("/api/dashboard/overview")
+    assert overview.status_code == 200
+    assert overview.json()["campaigns"]["total"] == 1
+    assert overview.json()["open_findings"]["by_severity"]["high"] == 1
+    assert overview.json()["llm_stats"]["total_tokens"] == 125
+
+    runs = client.get("/api/runs?page=1&page_size=25&target_id=Finance%20Agent")
+    assert runs.status_code == 200
+    payload = runs.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["run_id"] == "testrun123"
+    assert payload["items"][0]["llm_stats"]["total_tokens"] == 125
+    assert "attacks" not in payload["items"][0]
+
+
+def test_target_portfolio(mock_db):
+    response = client.get("/api/targets")
+    assert response.status_code == 200
+    target = response.json()["items"][0]
+    assert target["target_id"] == "Finance Agent"
+    assert target["campaign_count"] == 1
+    assert target["open_findings"] == 1
 
 
 def test_get_analysis_report(mock_db):
@@ -124,27 +169,25 @@ def test_create_run_endpoint(mock_db):
 
 def test_create_run_concurrency_cap_rejects_when_full(mock_db, monkeypatch):
     """Test that POST /api/runs returns 429 when concurrent cap is reached."""
-    from cyberredteam.api import active_runs
-
     # Monkeypatch max_concurrent_runs to 1 for this test
     monkeypatch.setattr(settings, "max_concurrent_runs", 1)
+    # The production guard reads persisted state, so the test must create a
+    # persisted running row rather than relying on process-local cache state.
+    with mock_db.SessionLocal() as session:
+        session.add(RunRecord(
+            run_id="existing-run",
+            target_id="http://host.docker.internal:9000/chat",
+            status="running",
+        ))
+        session.commit()
 
-    # Pre-populate active_runs with a "running" entry to hit the cap
-    active_runs["existing-run"] = "running"
-
-    try:
-        # Attempt to create a new run when cap is reached
-        response = client.post(
-            "/api/runs",
-            json={"target_id": "http://host.docker.internal:9000/chat", "strategy": "Prompt Injection", "intensity": "Low"},
-        )
-        assert response.status_code == 429
-        data = response.json()
-        assert "concurrent" in data["detail"].lower()
-    finally:
-        # Clean up: remove the test-inserted key
-        if "existing-run" in active_runs:
-            del active_runs["existing-run"]
+    response = client.post(
+        "/api/runs",
+        json={"target_id": "http://host.docker.internal:9000/chat", "strategy": "Prompt Injection", "intensity": "Low"},
+    )
+    assert response.status_code == 429
+    data = response.json()
+    assert "concurrent" in data["detail"].lower()
 
 
 def test_create_run_concurrency_cap_ignores_non_running(mock_db, monkeypatch):

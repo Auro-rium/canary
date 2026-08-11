@@ -1,95 +1,86 @@
-import type { SSEEvent } from './types'
+import type {
+  CampaignRunPayload, DashboardOverview, Finding, FindingAttempt, PaginatedRuns,
+  RunDetail, TargetCoverage, TargetTrend, TargetsResponse, SseEvent,
+} from './types'
 
-// Backend connection — empty string = relative URL, handled by nginx proxy
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-const _env = (import.meta as any).env as Record<string, string>
-export const API_BASE = _env.VITE_API_URL || ''
-export const API_TOKEN = _env.VITE_API_TOKEN || ''
+const env = import.meta.env as Record<string, string | undefined>
+export const API_BASE = env.VITE_API_URL ?? ''
+const localApiToken = env.VITE_API_TOKEN
 
-export const authHeader = (): Record<string, string> => ({
-  'Authorization': `Bearer ${API_TOKEN}`,
-  'Content-Type': 'application/json',
-})
+function requestHeaders(init?: HeadersInit): HeadersInit {
+  return {
+    'Content-Type': 'application/json',
+    ...(localApiToken ? { Authorization: `Bearer ${localApiToken}` } : {}),
+    ...(init ?? {}),
+  }
+}
 
 export class ApiError extends Error {
-  status?: number
+  readonly status?: number
   constructor(message: string, status?: number) {
     super(message)
+    this.name = 'ApiError'
     this.status = status
   }
 }
 
 async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const response = await fetch(`${API_BASE}${path}`, {
     ...init,
-    headers: { ...authHeader(), ...(init?.headers ?? {}) },
+    headers: requestHeaders(init?.headers),
   })
-  if (!res.ok) {
+  if (!response.ok) {
     let detail = ''
-    try { detail = (await res.json())?.detail ?? '' } catch { /* body wasn't JSON */ }
-    throw new ApiError(detail || `Backend responded ${res.status}`, res.status)
+    try { detail = (await response.json() as { detail?: string }).detail ?? '' } catch { /* non-JSON upstream response */ }
+    throw new ApiError(detail || `Backend responded ${response.status}`, response.status)
   }
-  return res.json() as Promise<T>
+  return response.json() as Promise<T>
 }
 
-// ─── Runs ───────────────────────────────────────────────────────────────────
-export const getRun = (runId: string) => apiFetch<unknown>(`/api/runs/${runId}`)
-export const getRunReportMarkdown = (runId: string) => apiFetch<{ markdown: string }>(`/api/runs/${runId}/report-markdown`)
-
-// ─── Findings ───────────────────────────────────────────────────────────────
-export const getFindings = (query: string) => apiFetch<unknown[]>(`/api/findings?${query}`)
-export const getFinding = (findingId: string) => apiFetch<unknown>(`/api/findings/${findingId}`)
-export const getFindingAttempts = (findingId: string) => apiFetch<unknown[]>(`/api/findings/${findingId}/attempts`)
-export const updateFindingStatus = (findingId: string, body: Record<string, string | boolean>) =>
-  apiFetch<unknown>(`/api/findings/${findingId}/status`, { method: 'PUT', body: JSON.stringify(body) })
-
-// ─── Incidents ──────────────────────────────────────────────────────────────
-export const getIncidents = () => apiFetch<unknown[]>('/api/incidents')
-
-// ─── Campaigns (SSE) ────────────────────────────────────────────────────────
-export interface CampaignRunPayload {
-  campaign_id: string
-  target_url: string
-  techniques: string[]
-  headers?: Record<string, string>
-  request_template?: string
-  response_path?: string
-}
+export const getOverview = () => apiFetch<DashboardOverview>('/api/dashboard/overview')
+export const getTargets = () => apiFetch<TargetsResponse>('/api/targets')
+export const getRuns = (query: URLSearchParams) => apiFetch<PaginatedRuns>(`/api/runs?${query}`)
+export const getRun = (runId: string) => apiFetch<RunDetail>(`/api/runs/${encodeURIComponent(runId)}`)
+export const getRunReportMarkdown = (runId: string) => apiFetch<{ run_id: string; markdown: string }>(`/api/runs/${encodeURIComponent(runId)}/report-markdown`)
+export const getRunFindings = (runId: string) => apiFetch<Finding[]>(`/api/runs/${encodeURIComponent(runId)}/findings`)
+export const getTargetCoverage = (target: string) => apiFetch<TargetCoverage>(`/api/targets/${encodeURIComponent(target)}/coverage`)
+export const getTargetTrends = (target: string) => apiFetch<TargetTrend[]>(`/api/targets/${encodeURIComponent(target)}/trends`)
+export const getFindings = (query: URLSearchParams) => apiFetch<Finding[]>(`/api/findings?${query}`)
+export const getFinding = (id: string) => apiFetch<Finding>(`/api/findings/${encodeURIComponent(id)}`)
+export const getFindingAttempts = (id: string) => apiFetch<FindingAttempt[]>(`/api/findings/${encodeURIComponent(id)}/attempts`)
+export const updateFindingStatus = (id: string, body: { status: string; reviewer_id?: string; rationale?: string }) =>
+  apiFetch<{ status: string }>(`/api/findings/${encodeURIComponent(id)}/status`, { method: 'PUT', body: JSON.stringify(body) })
 
 export async function runCampaignSSE(
   payload: CampaignRunPayload,
-  onEvent: (event: SSEEvent) => void,
-  opts?: { signal?: AbortSignal },
+  onEvent: (event: SseEvent) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
-  const res = await fetch(`${API_BASE}/api/campaigns/run`, {
+  const response = await fetch(`${API_BASE}/api/campaigns/run`, {
     method: 'POST',
-    headers: authHeader(),
+    headers: requestHeaders(),
     body: JSON.stringify(payload),
-    signal: opts?.signal,
+    signal,
   })
-
-  if (!res.ok) {
+  if (!response.ok) {
     let detail = ''
-    try { detail = (await res.json())?.detail ?? '' } catch { /* body wasn't JSON */ }
-    throw new ApiError(detail || `Backend responded ${res.status}`, res.status)
+    try { detail = (await response.json() as { detail?: string }).detail ?? '' } catch { /* non-JSON upstream response */ }
+    throw new ApiError(detail || `Backend responded ${response.status}`, response.status)
   }
-  if (!res.body) throw new Error('No SSE stream body')
+  if (!response.body) throw new ApiError('No SSE stream body')
 
-  const reader = res.body.getReader()
+  const reader = response.body.getReader()
   const decoder = new TextDecoder()
-
   let buffer = ''
   while (true) {
     const { done, value } = await reader.read()
     if (done) break
     buffer += decoder.decode(value, { stream: true })
     const lines = buffer.split('\n')
-    buffer = lines.pop() ?? '' // keep incomplete last line
+    buffer = lines.pop() ?? ''
     for (const line of lines) {
       if (!line.startsWith('data: ')) continue
-      try {
-        onEvent(JSON.parse(line.slice(6)))
-      } catch { /* skip malformed */ }
+      try { onEvent(JSON.parse(line.slice(6)) as SseEvent) } catch { /* ignore malformed frame, preserve stream */ }
     }
   }
 }
