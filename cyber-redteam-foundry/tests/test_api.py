@@ -10,6 +10,7 @@ from cyberredteam.storage.artifact_store import SQLiteStore
 from cyberredteam.storage.models import AttackRecord, FindingRecord, LLMCallRecord, RunRecord
 from pathlib import Path
 from datetime import datetime
+from sqlalchemy import select
 
 client = TestClient(app)
 
@@ -138,6 +139,24 @@ def test_target_portfolio(mock_db):
     assert target["target_id"] == "Finance Agent"
     assert target["campaign_count"] == 1
     assert target["open_findings"] == 1
+
+
+def test_target_detail_routes_accept_http_url_target_ids(mock_db):
+    """Coverage/trend routes must support the slash-containing HTTP IDs used by the UI."""
+    with mock_db.SessionLocal() as session:
+        run = session.scalar(select(RunRecord).where(RunRecord.run_id == "testrun123"))
+        run.target_id = "http://agent.example/chat"
+        attack = session.scalar(select(AttackRecord).where(AttackRecord.run_id == "testrun123"))
+        attack.target_id = "http://agent.example/chat"
+        finding = session.scalar(select(FindingRecord).where(FindingRecord.finding_id == "finding123"))
+        finding.target_id = "http://agent.example/chat"
+        session.commit()
+
+    coverage = client.get("/api/targets/http://agent.example/chat/coverage")
+    assert coverage.status_code == 200
+    assert coverage.json()["target_id"] == "http://agent.example/chat"
+    trends = client.get("/api/targets/http://agent.example/chat/trends")
+    assert trends.status_code == 200
 
 
 def test_get_analysis_report(mock_db):
