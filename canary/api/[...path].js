@@ -29,7 +29,12 @@ export default async function handler(req, res) {
     ? queryPath
     : req.url.split('?')[0].startsWith('/api/') ? req.url.split('?')[0].slice(5) : ''
   const segments = Array.isArray(rawPath) ? rawPath : String(rawPath).split('/')
-  const path = segments.filter(Boolean).map(encodeURIComponent).join('/')
+  const path = segments
+    .filter(Boolean)
+    .map((segment) => {
+      try { return encodeURIComponent(decodeURIComponent(segment)) } catch { return encodeURIComponent(segment) }
+    })
+    .join('/')
   if (!path || path.includes('..')) {
     res.status(400).json({ detail: 'Invalid API path.' })
     return
