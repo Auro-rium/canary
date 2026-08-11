@@ -1,4 +1,4 @@
-"""LLM abstraction layer for AWS Bedrock (Claude).
+"""LLM abstraction layer for NVIDIA NIM.
 
 Provides per-agent model factories and structured output support.
 """

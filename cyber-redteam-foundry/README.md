@@ -3,12 +3,12 @@
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688.svg?logo=fastapi)](https://fastapi.tiangolo.com/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-state%20machine-7c3aed.svg)](https://github.com/langchain-ai/langgraph)
-[![AWS Bedrock](https://img.shields.io/badge/AWS-Bedrock-FF9900.svg?logo=amazon-aws)](https://aws.amazon.com/bedrock/)
+[![NVIDIA NIM](https://img.shields.io/badge/LLM-NVIDIA%20NIM-76b900.svg)](https://build.nvidia.com/)
 [![sentence-transformers](https://img.shields.io/badge/sentence--transformers-MiniLM--L6--v2-blue.svg)](https://www.sbert.net/)
 [![pytest](https://img.shields.io/badge/tests-111%20passed-brightgreen.svg?logo=pytest)](https://pytest.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Red-team orchestration engine for AI agents. FastAPI + LangGraph on AWS Bedrock. Attacks any HTTP-based AI agent via a generic request/response contract, runs ≤3 techniques as parallel branches per iteration, evaluates against ASI/ATLAS taxonomy, and generates structured audit reports. Findings are triaged manually — no auto-remediation.
+Red-team orchestration engine for AI agents. FastAPI + LangGraph using the Backboard LLM gateway. Attacks any HTTP-based AI agent via a generic request/response contract, runs ≤3 techniques as parallel branches per iteration, evaluates against ASI/ATLAS taxonomy, and generates structured audit reports. Findings are triaged manually — no auto-remediation.
 
 ---
 

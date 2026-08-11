@@ -1,16 +1,16 @@
 
 
 strategist:
-  model: qwen.qwen3-coder-480b-a35b-v1:0
+  model: nvidia/nemotron-3-ultra-550b-a55b
 
 attacker:
-  model: deepseek.v3-v1:0
+  model: nvidia/nemotron-3-ultra-550b-a55b
 
 evaluator:
-  model: qwen.qwen3-coder-480b-a35b-v1:0
+  model: nvidia/nemotron-3-ultra-550b-a55b
 
 reporter:
-  model: qwen.qwen3-coder-480b-a35b-v1:0
+  model: nvidia/nemotron-3-ultra-550b-a55b
 
 target:
-  model: amazon.nova-pro-v1:0
+  model: nvidia/nemotron-3-ultra-550b-a55b

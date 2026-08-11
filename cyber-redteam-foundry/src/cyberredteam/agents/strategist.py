@@ -12,7 +12,7 @@ logger = setup_logging()
 
 
 class StrategistAgent:
-    """Selects attack strategies using AWS Bedrock reasoning via an LCEL chain."""
+    """Selects attack strategies using Backboard reasoning via a typed chain."""
 
     def __init__(self, llm=None, store=None):
         """Initialize strategist agent.
@@ -78,10 +78,10 @@ class StrategistAgent:
                 except ValueError:
                     logger.warning(f"Strategist recommended invalid strategy: {s}")
 
-            # Fallback if no valid strategies selected
+            # An invalid/empty LLM plan is an execution failure. Never replace
+            # an absent model decision with canned deterministic attacks.
             if not selected_types:
-                logger.warning("Strategist returned empty or invalid plan. Using fallbacks.")
-                selected_types = [StrategyType(c) for c in candidates[:count]]
+                raise RuntimeError("Strategist returned no valid configured strategies")
 
             # Ensure we return at most `count` strategies
             selected_types = selected_types[:count]
@@ -91,8 +91,7 @@ class StrategistAgent:
 
         except Exception as e:
             logger.error(f"Strategist agent failed to select strategies: {e}")
-            # Fallback
-            return [StrategyType(c) for c in candidates[:count]]
+            raise RuntimeError("Strategist LLM execution failed; refusing deterministic fallback") from e
 
     def evaluate_coverage(self, executed_strategies: List[StrategyType]) -> dict:
         """Evaluate attack coverage across strategy families."""
@@ -109,7 +108,7 @@ class StrategistAgent:
                 coverage["injection"] += 1
             elif "tool" in strategy.value:
                 coverage["tool_abuse"] += 1
-            elif "leakage" in strategy.value or "retrieval" in strategy.value:
+            elif "sensitive_data" in strategy.value or "retrieval" in strategy.value:
                 coverage["data_extraction"] += 1
             elif "jailbreak" in strategy.value:
                 coverage["safety_bypass"] += 1

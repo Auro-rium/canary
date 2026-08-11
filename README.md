@@ -25,7 +25,7 @@ classification, policy gates, release evidence, and the GitHub Action.
 
 The authoritative PR demo target is the separate
 [`Auro-rium/companybot-canary-demo`](https://github.com/Auro-rium/companybot-canary-demo)
-repository. It is a real LangChain + Amazon Bedrock agent deployed with
+repository. It is a real LangChain agent using the Backboard LLM gateway, deployed with
 Railway main and PR preview environments. The bundled
 `cyber-redteam-foundry/target_agent` remains available as a local fixture.
 

@@ -278,7 +278,17 @@ def _attack_execution(record: AttackRecord, attack_case_id: str) -> Differential
         verdict = EvaluatorVerdict.VULNERABLE
         confirmed = True
     else:
-        verdict = EvaluatorVerdict.SAFE
+        # A failed or inconclusive judge is not evidence of safety. Preserve
+        # the evaluator path so differential gating cannot silently PASS on a
+        # provider timeout or malformed verdict.
+        evaluator_verdict = str(indicators.get("verdict", "")).lower()
+        verdict_path = str(indicators.get("verdict_path", "")).lower()
+        if evaluator_verdict in {"inconclusive", "unconfirmed"}:
+            verdict = EvaluatorVerdict.UNCONFIRMED
+        elif evaluator_verdict == "failed" or verdict_path == "heuristic_fallback":
+            verdict = EvaluatorVerdict.ERROR
+        else:
+            verdict = EvaluatorVerdict.SAFE
         confirmed = False
     severity = None
     if verdict is EvaluatorVerdict.VULNERABLE:

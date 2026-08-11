@@ -210,25 +210,21 @@ def graph(
 
 @app.command()
 def doctor() -> None:
-    """Verify environment variables and test AWS Bedrock connectivity."""
+    """Verify environment variables and test NVIDIA NIM connectivity."""
     console.print("[bold blue]Running Diagnostics / Doctor Command[/bold blue]\n")
     settings = get_settings()
     from cyberredteam.llm.factory import get_model_for_agent
 
     errors = []
 
-    # Check AWS Bedrock configuration
-    console.print("[bold]Checking AWS Bedrock Configuration...[/bold]")
-    if not settings.aws_region:
-        console.print("[red]✗ AWS_REGION is not set.[/red]")
-        errors.append("AWS_REGION missing")
+    # Check NVIDIA configuration
+    console.print("[bold]Checking NVIDIA NIM Configuration...[/bold]")
+    if not settings.nvidia_api_key:
+        console.print("[red]✗ NVIDIA_API_KEY is not set.[/red]")
+        errors.append("NVIDIA_API_KEY missing")
     else:
-        console.print(f"✓ AWS_REGION: {settings.aws_region}")
-
-    console.print(
-        "  (AWS credentials are resolved via the standard boto3 chain: "
-        "env vars, shared config, or instance/role profile.)"
-    )
+        console.print("✓ NVIDIA_API_KEY is set.")
+    console.print(f"✓ Endpoint: {settings.nvidia_base_url}")
 
     # Show per-agent model assignment
     console.print("\n[bold]Model assignment per agent:[/bold]")
@@ -247,22 +243,23 @@ def doctor() -> None:
         raise typer.Exit(code=1)
 
     # Test actual connectivity
-    console.print("\n[bold]Testing connectivity to AWS Bedrock...[/bold]")
+    console.print("\n[bold]Testing connectivity to NVIDIA NIM...[/bold]")
     try:
-        from langchain_core.messages import HumanMessage
-
         from cyberredteam.llm.factory import get_llm
 
         llm = get_llm(get_model_for_agent("evaluator"), agent_name="doctor")
-        response = llm.llm.invoke([HumanMessage(content="Hello, connection check.")])
+        if hasattr(llm, "llm"):
+            from langchain_core.messages import HumanMessage
+            response = llm.llm.invoke([HumanMessage(content="Reply with the single word OK.")]).content
+        else:
+            response = llm.invoke_text("You are a connectivity checker.", "Reply with the single word OK.")
         console.print("[green]✓ Connection test succeeded![/green]")
-        console.print(f"Response: {response.content.strip()}")
+        console.print(f"Response: {response.strip()}")
     except Exception as e:
         console.print(f"[red]✗ Connection test failed: {e}[/red]")
         console.print(
-            "\n[bold red]Verify AWS_REGION, AWS credentials, that the configured "
-            "Bedrock model/inference-profile IDs exist in the region, and that your "
-            "IAM principal has bedrock:InvokeModel on them.[/bold red]"
+            "\n[bold red]Verify NVIDIA_API_KEY, endpoint, and model configuration "
+            "in the server environment.[/bold red]"
         )
         raise typer.Exit(code=1)
 

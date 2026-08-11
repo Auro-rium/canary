@@ -294,6 +294,7 @@ def run_release_orchestrator_thread(
     project: ProjectRecord,
     strategy_types: List[StrategyType],
     default_branch: str = "main",
+    target_headers: Optional[Dict[str, str]] = None,
 ) -> None:
     """Run a project release and persist its baseline comparison on completion."""
     replay_cases: list[dict[str, str]] = []
@@ -340,10 +341,31 @@ def run_release_orchestrator_thread(
         max_attempts=max(4, len(strategy_types) * 2),
         target_request_template=project.request_template,
         target_response_path=project.response_path,
+        target_headers=target_headers,
         replay_cases=replay_cases,
     )
 
-    if baseline_endpoint and replay_cases:
+    # Replay the candidate's exact generated payloads against baseline. This
+    # pairs newly discovered LLM attacks with baseline behavior instead of
+    # comparing only against the old accepted-baseline case list.
+    candidate_replay_cases: list[dict[str, str]] = []
+    candidate_store = SQLiteStore(settings.database_location)
+    try:
+        with candidate_store.SessionLocal() as session:
+            rows = session.scalars(
+                select(AttackRecord).where(AttackRecord.run_id == run_id).order_by(AttackRecord.id.asc())
+            ).all()
+            seen: set[tuple[str, str, str]] = set()
+            for attack in rows:
+                case = (str(attack.strategy_type or ""), str(attack.technique_id or attack.strategy_type or ""), str(attack.prompt or ""))
+                if not case[2] or case in seen:
+                    continue
+                seen.add(case)
+                candidate_replay_cases.append({"strategy": case[0], "technique_id": case[1], "prompt": case[2]})
+    finally:
+        candidate_store.close()
+
+    if baseline_endpoint and candidate_replay_cases:
         baseline_replay_run_id = f"{run_id}-baseline"
         replay_store = SQLiteStore(settings.database_location)
         try:
@@ -360,10 +382,11 @@ def run_release_orchestrator_thread(
             baseline_endpoint,
             strategy_types,
             max_iterations=max(1, min(2, (len(strategy_types) + 2) // 3)),
-            max_attempts=max(2, len(replay_cases)),
+            max_attempts=max(2, len(candidate_replay_cases)),
             target_request_template=baseline_request_template or project.request_template,
             target_response_path=baseline_response_path or project.response_path,
-            replay_cases=replay_cases,
+            target_headers=target_headers,
+            replay_cases=candidate_replay_cases,
         )
     store = SQLiteStore(settings.database_location)
     try:
@@ -501,7 +524,10 @@ def _start_release(
         threading.Thread(
             target=run_release_orchestrator_thread,
             args=(response_payload["release_id"], run_id, project_snapshot, _release_strategies(snapshot["strategies"])),
-            kwargs={"default_branch": default_branch},
+            kwargs={
+                "default_branch": default_branch,
+                "target_headers": ({"Authorization": f"Bearer {settings.target_api_key}"} if settings.target_api_key else None),
+            },
             daemon=True,
         ).start()
     return response_payload

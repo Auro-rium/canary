@@ -18,12 +18,10 @@ load_dotenv(override=False)
 class Settings(BaseSettings):
     """Application settings from environment variables."""
 
-    # AWS Bedrock
-    # Credentials are resolved by the standard boto3 chain (env vars,
-    # shared config/credentials file, or instance/role profile). Only the
-    # region is read explicitly here; least-privilege IAM should grant
-    # bedrock:InvokeModel on the configured model/inference-profile ARNs.
-    aws_region: Optional[str] = None
+    # NVIDIA NIM / build.nvidia.com. Keep the API key server-side.
+    nvidia_api_key: Optional[str] = None
+    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
+    nvidia_model: str = "nvidia/nemotron-3-ultra-550b-a55b"
 
     # API authentication — bearer token for server-side dashboard proxy and CI.
     # Never expose this value through a VITE_* frontend variable.
@@ -72,7 +70,7 @@ class Settings(BaseSettings):
 
     # Run Configuration
     # Total attempts per LLM call (including the first), not retries-after-first.
-    # Applied via LangChain's Runnable.with_retry() in llm/bedrock.py.
+    # Applied by the Backboard transport for transient request failures.
     max_retries: int = 3
     max_concurrent_runs: int = 3
     timeout_seconds: int = 30

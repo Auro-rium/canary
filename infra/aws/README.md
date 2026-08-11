@@ -10,8 +10,8 @@ the same `cyber-redteam-foundry` image:
 Persistent services are RDS PostgreSQL (`DATABASE_URL`) and ElastiCache Redis
 (`REDIS_URL`). Store both values in AWS Secrets Manager or SSM Parameter Store;
 do not put credentials in task definitions, Git, or Vercel environment
-variables. The ECS task role should grant only the configured Bedrock model
-invocation and read access to those specific secrets. CloudWatch receives
+variables. The ECS task role should grant only NVIDIA NIM secret access and
+read access to those specific secrets. CloudWatch receives
 container logs. Keep the ALB and data services in private subnets according
 to the deployment's network policy.
 
@@ -29,7 +29,7 @@ to the deployment's network policy.
    task definition.
 5. Deploy the API service with `RELEASE_EXECUTION_MODE=rq` and the worker
    service with the same `DATABASE_URL`, `REDIS_URL`, `RELEASE_QUEUE_NAME`,
-   Bedrock region, and authentication configuration.
+   `NVIDIA_API_KEY`, `NVIDIA_BASE_URL`, `NVIDIA_MODEL`, and authentication configuration.
 6. Configure the ALB health check to `GET /health` and set
    `FRONTEND_ORIGINS` to the Vercel dashboard origin.
 

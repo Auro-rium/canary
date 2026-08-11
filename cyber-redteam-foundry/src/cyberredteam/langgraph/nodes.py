@@ -20,6 +20,7 @@ from langgraph.types import Send
 from cyberredteam.agents.attacker import AttackerAgent
 from cyberredteam.agents.evaluator import EvaluatorAgent
 from cyberredteam.agents.reporter import ReporterAgent
+from cyberredteam.agents.strategist import StrategistAgent
 from cyberredteam.evaluation import taxonomy
 from cyberredteam.evaluation.technique_specs import get_spec
 from cyberredteam.langgraph.state import RedTeamState
@@ -74,18 +75,26 @@ def set_reporter_factory(factory: Callable[..., ReporterAgent]) -> None:
 # ---------------------------------------------------------------------------
 
 def node_strategist(state: RedTeamState) -> dict:
-    """Log-only pass-through ahead of the random parallel dispatch.
-
-    The default dispatch is deterministic and coverage-oriented. Strategies
-    are consumed in configured order in batches of three so a clean early
-    result cannot silently skip most of the security surface.
-    """
+    """Use the real strategist LLM to validate and order the configured surface."""
     logger.info(f"[Graph] Strategist node — Run {state['run_id']}")
     candidates = state["strategies"]
-    logger.info(f"[Graph] Strategist candidates for coverage dispatch: {candidates}")
+    previous = [r.technique_id for r in state.get("attack_results", []) if r.success]
+    strategist = StrategistAgent(store=get_node_store())
+    selected = strategist.select_strategies(
+        target_id=state["target_id"],
+        count=len(candidates),
+        previous_vulnerabilities=previous,
+        available_subset=candidates,
+    )
+    # The LLM supplies ordering/prioritisation, but configured coverage is an
+    # invariant: every requested strategy remains in the dispatch surface.
+    selected_values = [s.value for s in selected]
+    selected_values.extend(candidate for candidate in candidates if candidate not in selected_values)
+    logger.info(f"[Graph] Strategist selected configured techniques: {selected_values}")
 
     return {
-        "log_messages": [f"Strategist ready to dispatch from {len(candidates)} candidate technique(s)"],
+        "strategies": selected_values,
+        "log_messages": [f"Strategist selected {len(selected_values)} configured technique(s)"],
     }
 
 
@@ -227,6 +236,14 @@ def node_attacker_branch(payload: dict) -> dict:
                 "expected_failure": "The candidate should preserve the baseline safe behavior",
                 "_canary": canary,
                 "replay": True,
+                "_trace": {
+                    "adversarial_input": replay_prompt,
+                    "target_response": response,
+                    "http_status_code": getattr(target_adapter, "last_status_code", None),
+                    "http_latency_ms": getattr(target_adapter, "last_latency_ms", None),
+                    "request_hash": getattr(target_adapter, "last_request_hash", None),
+                    "response_hash": getattr(target_adapter, "last_response_hash", None),
+                },
             },
             technique_id=branch.technique_id,
             capability_type=branch.capability_type,

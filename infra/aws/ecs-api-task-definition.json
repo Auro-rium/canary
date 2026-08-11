@@ -17,13 +17,16 @@
         {"name": "RELEASE_EXECUTION_MODE", "value": "rq"},
         {"name": "RELEASE_QUEUE_NAME", "value": "canary-releases"},
         {"name": "AWS_REGION", "value": "${AWS_REGION}"},
-        {"name": "FRONTEND_ORIGINS", "value": "${FRONTEND_ORIGINS}"}
+        {"name": "FRONTEND_ORIGINS", "value": "${FRONTEND_ORIGINS}"},
+        {"name": "NVIDIA_BASE_URL", "value": "https://integrate.api.nvidia.com/v1"},
+        {"name": "NVIDIA_MODEL", "value": "nvidia/nemotron-3-ultra-550b-a55b"}
       ],
       "secrets": [
         {"name": "DATABASE_URL", "valueFrom": "${DATABASE_URL_SECRET_ARN}"},
         {"name": "REDIS_URL", "valueFrom": "${REDIS_URL_SECRET_ARN}"},
         {"name": "API_SECRET_KEY", "valueFrom": "${API_SECRET_KEY_SECRET_ARN}"},
         {"name": "TOKEN_PEPPER", "valueFrom": "${TOKEN_PEPPER_SECRET_ARN}"}
+        ,{"name": "NVIDIA_API_KEY", "valueFrom": "${NVIDIA_API_KEY_SECRET_ARN}"}
       ],
       "healthCheck": {
         "command": ["CMD-SHELL", "curl -fsS http://127.0.0.1:8001/health || exit 1"],

@@ -6,6 +6,8 @@ behavior that will actually ship.
 """
 
 import json
+import hashlib
+import time
 from typing import Any, Dict, Optional, Tuple
 
 import requests
@@ -79,6 +81,9 @@ class HttpTargetAdapter(TargetAdapter):
         self.target_id = self.endpoint
         self.last_error: Optional[str] = None
         self.last_status_code: Optional[int] = None
+        self.last_latency_ms: Optional[float] = None
+        self.last_request_hash: Optional[str] = None
+        self.last_response_hash: Optional[str] = None
         logger.info("HttpTargetAdapter initialized → %s", self.endpoint)
 
     def _build_headers(self) -> Dict[str, str]:
@@ -91,6 +96,9 @@ class HttpTargetAdapter(TargetAdapter):
     def execute_attack(self, payload: str, label: str = "") -> Tuple[str, Optional[str]]:
         self.last_error = None
         self.last_status_code = None
+        self.last_latency_ms = None
+        self.last_request_hash = None
+        self.last_response_hash = None
         logger.info(
             "HTTP target '%s' executing attack type '%s': %s...",
             self.endpoint, label, payload[:60],
@@ -104,6 +112,9 @@ class HttpTargetAdapter(TargetAdapter):
                 return "(target request template invalid)", None
         else:
             request_body = {"message": payload}
+        request_bytes = json.dumps(request_body, sort_keys=True, separators=(",", ":")).encode()
+        self.last_request_hash = hashlib.sha256(request_bytes).hexdigest()[:16]
+        started = time.perf_counter()
 
         try:
             session = requests.Session()
@@ -116,11 +127,16 @@ class HttpTargetAdapter(TargetAdapter):
                 allow_redirects=False,
             )
             self.last_status_code = response.status_code
+            self.last_latency_ms = round((time.perf_counter() - started) * 1000, 2)
             if 300 <= response.status_code < 400:
                 self.last_error = f"target returned an unsafe redirect ({response.status_code})"
                 return "(target redirect rejected)", None
             response.raise_for_status()
             data = response.json()
+            raw_response = getattr(response, "content", b"")
+            if not isinstance(raw_response, (bytes, bytearray, memoryview)):
+                raw_response = json.dumps(data, sort_keys=True, default=str).encode()
+            self.last_response_hash = hashlib.sha256(bytes(raw_response)).hexdigest()[:16]
 
             response_text = _extract_by_path(data, self.response_path) if self.response_path else None
             if self.response_path and response_text is None:
@@ -136,14 +152,17 @@ class HttpTargetAdapter(TargetAdapter):
             return response_text, None
 
         except requests.exceptions.Timeout:
+            self.last_latency_ms = round((time.perf_counter() - started) * 1000, 2)
             self.last_error = f"target agent timed out after {self.timeout}s"
             logger.warning("HTTP target timed out after %ss", self.timeout)
             return "(target agent timed out)", None
         except requests.exceptions.ConnectionError:
+            self.last_latency_ms = round((time.perf_counter() - started) * 1000, 2)
             self.last_error = "target agent unreachable"
             logger.error("Cannot connect to target at %s", self.endpoint)
             return "(target agent unreachable)", None
         except Exception as exc:
+            self.last_latency_ms = round((time.perf_counter() - started) * 1000, 2)
             self.last_error = f"target request failed: {exc}"
             logger.error("HTTP target error: %s", exc)
             return f"(target error: {exc})", None

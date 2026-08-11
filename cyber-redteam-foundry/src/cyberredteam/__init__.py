@@ -1,4 +1,4 @@
-"""AWS Bedrock Cyber Red Team Framework."""
+"""Backboard-powered AI-agent red-team framework."""
 
 __version__ = "0.1.0"
 __author__ = "Cyber Red Team"
