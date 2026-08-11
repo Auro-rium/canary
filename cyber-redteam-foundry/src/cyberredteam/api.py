@@ -716,7 +716,7 @@ def update_finding_status(finding_id: str, body: FindingStatusUpdate):
     return {"status": "ok", "finding_id": finding_id, "new_status": body.status}
 
 
-@app.get("/api/targets/{target_id}/coverage")
+@app.get("/api/targets/{target_id:path}/coverage")
 def get_target_coverage(target_id: str):
     """Which ASI classes have been tested and which have open findings."""
     store = SQLiteStore(Path(settings.db_path))
@@ -725,7 +725,7 @@ def get_target_coverage(target_id: str):
     return result
 
 
-@app.get("/api/targets/{target_id}/trends")
+@app.get("/api/targets/{target_id:path}/trends")
 def get_target_trends(target_id: str, days: int = 30):
     """Success rate per strategy per day for the last N days."""
     store = SQLiteStore(Path(settings.db_path))
