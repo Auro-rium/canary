@@ -120,7 +120,7 @@ def get_llm(
         api_key=settings.nvidia_api_key,
         base_url=settings.nvidia_base_url,
         temperature=0.7,
-        max_tokens=2048,
+        max_tokens=4096,
     )
 
     logger.info(f"Created NVIDIA ChatOpenAI client for {agent_name} (model={model})")
