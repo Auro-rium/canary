@@ -388,7 +388,7 @@
 
 <header class="file">
   <div class="file-strip">
-    <span><b>Case File</b> AC/2026-04</span>
+    <span><b>Case File</b> AC/2026-08</span>
     <span>Classification: <b>Public release</b></span>
     <span>Subject: Agentic AI system, HTTP-reachable</span>
   </div>
@@ -420,9 +420,9 @@
     </div>
 
     <p>
-      Give it the web address of any AI chatbot or
+      Give it an <b>authorized</b> HTTP endpoint for an AI chatbot or
       <span class="redact" tabindex="0">agent<span class="def">Not just a chatbot — a system that can also take actions: call other software, look things up, control a device.</span></span>
-      reachable over the internet. It fires dozens of adversarial messages at it — the kind a malicious user might try — and checks which ones actually worked. At the end you get a written report, in plain language, of everything it found.
+      reachable over the internet. You select the attack techniques to assess; Canary sends real adversarial messages to that endpoint and records its actual replies, HTTP observations, evaluator evidence, and a written report.
     </p>
     <p class="redact-hint">Underlined dotted terms are declassified on hover / tap.</p>
 
@@ -441,9 +441,8 @@
     </div>
 
     <p>
-      The actual thinking — writing the attacks, judging the results — is done by large language models, hosted on
-      <span class="redact" tabindex="0">AWS Bedrock<span class="def">Amazon's cloud service for renting access to AI models without running the AI yourself.</span></span>.
-      Two different models are used, <b>Qwen3-480B</b> and <b>DeepSeek-V3</b>, each assigned to the part of the pipeline it suits.
+      The model-powered roles use <span class="redact" tabindex="0">NVIDIA NIM<span class="def">NVIDIA's hosted, OpenAI-compatible inference endpoint.</span></span>
+      with <b>Nemotron 3 Ultra 550B</b>. There is no mock-model fallback: if the model provider is not configured, a campaign fails instead of fabricating a security finding.
     </p>
   </section>
 
@@ -471,7 +470,7 @@
   <section id="how">
     <span class="exhibit-tag">Exhibit C — Method</span>
     <h2>How it works</h2>
-    <p class="section-sub">Four roles, run in sequence, looped until the budget runs out.</p>
+    <p class="section-sub">Four roles coordinated by LangGraph, with selected attacks dispatched in parallel.</p>
 
     <div class="chain">
       <div class="statement">
@@ -479,7 +478,7 @@
         <div class="body">
           <div class="exhibit-tag">Role 1 · Strategist</div>
           <h3>Picks the attacks</h3>
-          <p>Randomly selects up to 3 techniques to try this round — say, "pretend to be an admin" or "claim debug mode." Several at once, not one at a time, to move faster.</p>
+          <p>Preserves the techniques selected for the campaign and dispatches every selected technique as an independent parallel branch. This step is deliberately deterministic — it does not pretend to be an LLM decision-maker.</p>
         </div>
       </div>
       <div class="statement">
@@ -487,7 +486,7 @@
         <div class="body">
           <div class="exhibit-tag">Role 2 · Attacker</div>
           <h3>Crafts the messages</h3>
-          <p>For each chosen technique, writes the actual adversarial wording and sends it to the target over the internet.</p>
+          <p>For each branch, uses the model to craft adversarial wording, then sends it to the target's configured HTTP endpoint. The target's reply and request observation are retained as evidence.</p>
         </div>
       </div>
       <div class="statement">
@@ -495,9 +494,7 @@
         <div class="body">
           <div class="exhibit-tag">Role 3 · Evaluator</div>
           <h3>Judges the results</h3>
-          <p>Every response is checked two ways at once: a fixed rule-based checklist, and a separate AI's judgment. Only when both broadly agree —
-          <span class="redact" tabindex="0">consensus<span class="def">Both the rule-based checklist and the AI judge had to broadly agree an attack succeeded, so a false alarm from either alone doesn't count.</span></span>
-          — does it get logged as a real finding.</p>
+          <p>Every response is assessed by deterministic detectors and an independent model judge. Canary records the verdict path and supporting indicators, so each finding can be reviewed against the raw prompt, target reply, and evaluator evidence.</p>
           <span class="loop-tag">↻ loops back to Role 1 if attempts remain and issues are unresolved</span>
         </div>
       </div>
@@ -506,7 +503,7 @@
         <div class="body">
           <div class="exhibit-tag">Role 4 · Reporter</div>
           <h3>Writes it up</h3>
-          <p>Compiles everything into a human-readable report plus a machine-readable JSON version for other tools.</p>
+          <p>Compiles the campaign into a human-readable Markdown report and structured evidence persisted for the dashboard, findings lifecycle, and API consumers.</p>
         </div>
       </div>
     </div>
@@ -519,7 +516,7 @@
   <section id="catalogue">
     <span class="exhibit-tag">Exhibit D — Attack catalogue</span>
     <h2>What it actually tries</h2>
-    <p class="section-sub">Mapped to <b>ASI</b> (Agentic Security Issues) — OWASP's Top 10, rewritten for AI agents instead of websites.</p>
+    <p class="section-sub">Eight selectable techniques, mapped to ASI classes for campaign coverage and findings reporting.</p>
 
     <div class="index-grid">
       <div class="index-card"><span class="code">ASI-01</span><h4>Prompt injection</h4><p>Hidden instructions smuggled in to override the agent's real ones.</p></div>
@@ -593,9 +590,9 @@
 <footer class="disposition" id="access">
   <span class="exhibit-tag">Disposition</span>
   <h2>Want to look under the hood?</h2>
-  <p class="lede">Full source — backend, dashboard, and everything described above — is public.</p>
+  <p class="lede">The source is public, the interactive dashboard is live, and the AWS FastAPI API is documented separately.</p>
   <a class="access-stamp" href="https://github.com/Auro-rium/canary" target="_blank" rel="noopener">Access granted →</a>
-  <p class="url">github.com/Auro-rium/canary</p>
+  <p class="url"><a href="https://github.com/Auro-rium/canary" target="_blank" rel="noopener">github.com/Auro-rium/canary</a><br><a href="https://canary-coral.vercel.app" target="_blank" rel="noopener">canary-coral.vercel.app</a> · <a href="http://3.108.23.172/docs" target="_blank" rel="noopener">AWS API docs</a></p>
 </footer>
 
 <script>
