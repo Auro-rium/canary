@@ -444,6 +444,11 @@
       The model-powered roles use <span class="redact" tabindex="0">NVIDIA NIM<span class="def">NVIDIA's hosted, OpenAI-compatible inference endpoint.</span></span>
       with <b>Nemotron 3 Ultra 550B</b>. There is no mock-model fallback: if the model provider is not configured, a campaign fails instead of fabricating a security finding.
     </p>
+
+    <div class="paper">
+      <h3>The demonstration target</h3>
+      <p><a href="https://github.com/Auro-rium/companybot-canary-demo" target="_blank" rel="noopener">CompanyAgent Canary Demo</a> is a separate, real LangChain tool-calling agent backed by Backboard. Canary reaches its <code>/chat</code> endpoint over HTTP, then retains the target's actual replies as evidence. The target remains its own application: Canary assesses it when authorized; it never embeds, mocks, or alters it.</p>
+    </div>
   </section>
 
   <section id="why">
