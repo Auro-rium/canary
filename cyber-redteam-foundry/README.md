@@ -3,12 +3,14 @@
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110%2B-009688.svg?logo=fastapi)](https://fastapi.tiangolo.com/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-state%20machine-7c3aed.svg)](https://github.com/langchain-ai/langgraph)
-[![AWS Bedrock](https://img.shields.io/badge/AWS-Bedrock-FF9900.svg?logo=amazon-aws)](https://aws.amazon.com/bedrock/)
+[![NVIDIA NIM](https://img.shields.io/badge/NVIDIA-NIM-76B900.svg?logo=nvidia)](https://build.nvidia.com/)
 [![sentence-transformers](https://img.shields.io/badge/sentence--transformers-MiniLM--L6--v2-blue.svg)](https://www.sbert.net/)
 [![pytest](https://img.shields.io/badge/tests-111%20passed-brightgreen.svg?logo=pytest)](https://pytest.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Red-team orchestration engine for AI agents. FastAPI + LangGraph on AWS Bedrock. Attacks any HTTP-based AI agent via a generic request/response contract, runs ≤3 techniques as parallel branches per iteration, evaluates against ASI/ATLAS taxonomy, and generates structured audit reports. Findings are triaged manually — no auto-remediation.
+Red-team orchestration engine for AI agents. FastAPI + LangGraph with NVIDIA NIM inference. Attacks any authorized HTTP-based AI agent via a generic request/response contract, dispatches selected techniques as parallel branches, evaluates against ASI/ATLAS taxonomy, and generates structured audit reports. Findings are triaged manually — no auto-remediation.
+
+Live services: [project explainer](https://agent-canary-explainer.vercel.app/) · [interactive dashboard](https://canary-coral.vercel.app/) · [AWS FastAPI docs](http://3.108.23.172/docs). The demonstration target is the separate [CompanyAgent Canary Demo](https://github.com/Auro-rium/companybot-canary-demo), assessed over HTTP with authorization.
 
 ---
 
@@ -82,7 +84,7 @@ cyber-redteam-foundry/
     │   ├── nodes.py         # Node implementations, incl. dispatch_attacker_branches
     │   └── orchestrator.py  # GraphOrchestrator entry point
     ├── llm/
-    │   ├── bedrock.py       # ChatBedrockConverse wrapper
+    │   ├── bedrock.py       # NVIDIA OpenAI-compatible provider wrapper (legacy filename)
     │   ├── factory.py       # get_llm_for_agent()
     │   └── schemas.py       # AttackerOutput, EvaluationResult, SecurityReport
     ├── storage/
@@ -114,23 +116,23 @@ a circular import (`langgraph/__init__.py` eagerly imports `graph.py` → `nodes
 
 ### Agents and models
 
-| # | Agent | Model (AWS Bedrock) | Role |
+| # | Agent | Model (NVIDIA NIM) | Role |
 |---|-------|---------------------|------|
-| 1 | Strategist | — (no LLM call) | Randomly dispatches up to 3 techniques per iteration as parallel branches |
-| 2 | Attacker | `deepseek.v3-v1:0` | One technique, one payload per branch — see [Attacker Contract](#attacker-contract--parallel-fan-out) |
-| 3 | Evaluator | `qwen.qwen3-coder-480b-a35b-v1:0` | Deterministic detectors + LLM judge, 4-case consensus; also owns the iterate-vs-report routing decision |
-| 4 | Reporter | `qwen.qwen3-coder-480b-a35b-v1:0` | Markdown + JSON audit reports |
+| 1 | Strategist | Deterministic graph node | Preserves the user-selected techniques and dispatches parallel branches |
+| 2 | Attacker | `nvidia/nemotron-3-ultra-550b-a55b` | Generates one adversarial payload per branch and sends it to the target |
+| 3 | Evaluator | `nvidia/nemotron-3-ultra-550b-a55b` | Deterministic detectors + LLM judge; records evidence and owns iterate-vs-report routing |
+| 4 | Reporter | `nvidia/nemotron-3-ultra-550b-a55b` | Markdown + JSON audit reports |
 
-Models configured in `configs/models.yaml`. Credentials resolve via standard `boto3` chain (env vars, `~/.aws/credentials`, or instance role).
+Models are configured in `configs/models.yaml`. NVIDIA credentials come from `NVIDIA_API_KEY`; there is no mock-model fallback, so a missing provider key fails the campaign instead of fabricating output.
 
-The strategist's technique selection is intentionally not an LLM call — it uses `random.sample` over the candidate `StrategyType` list, keeping selection fast and unpredictable to the target. An LLM-ranked method (`StrategistAgent.select_strategies()`) exists in `agents/strategist.py` for alternative selection strategies.
+The strategist's technique dispatch is intentionally not an LLM call. It preserves the explicit campaign selection and uses LangGraph `Send()` to fan out independent branches. The model-powered attacker, evaluator, and reporter roles use the configured NVIDIA endpoint.
 
 ### LangGraph flow — parallel fan-out
 
 ```mermaid
 flowchart TD
-    START([Campaign start]) --> S[1 · Strategist\nRandomly pick ≤3 techniques]
-    S -.->|Send x≤3| A1[2 · Attacker branch\ntechnique A]
+    START([Campaign start]) --> S[1 · Strategist\nDispatch selected techniques]
+    S -.->|Send x selected| A1[2 · Attacker branch\ntechnique A]
     S -.->|Send| A2[2 · Attacker branch\ntechnique B]
     S -.->|Send| A3[2 · Attacker branch\ntechnique C]
     A1 --> T[Target agent\nHTTP endpoint]
@@ -157,7 +159,7 @@ Each `Send()` spawns an independent `node_attacker_branch` invocation. LangGraph
 | `run_id` | `str` | Unique campaign execution ID |
 | `target_id` | `str` | Target HTTP URL |
 | `target_headers` / `target_request_template` / `target_response_path` | `Dict`/`Optional[str]` | Generic HTTP target config — see [Targeting Any HTTP Agent](#targeting-any-http-agent) |
-| `strategies` | `List[str]` | Candidate attack strategies for this campaign (sampled from, not all run every iteration) |
+| `strategies` | `List[str]` | Explicitly selected attack strategies dispatched as independent branches |
 | `iteration` | `int` | Current strategist → attacker_branch → evaluator cycle count |
 | `attack_results` | `List[AttackResult]` | Cumulative history of all attack attempts, tagged with `branch_id`/`technique_id`/`capability_type`/`depth`/`iteration` |
 | `vulnerability_found` | `bool` | Whether any threshold was exceeded |
@@ -384,7 +386,7 @@ Interactive docs: `http://localhost:8001/docs` (Swagger UI) after `cyber-rt serv
 
 ```
 cyber-rt init                        # Create DBs, dirs, logging
-cyber-rt doctor                      # Verify env + test Bedrock connectivity
+cyber-rt doctor                      # Verify env + test NVIDIA NIM connectivity
 cyber-rt list-strategies             # Show all strategies with ASI class
 cyber-rt run \
   --target-id <id> \
@@ -396,20 +398,18 @@ cyber-rt graph                       # Print LangGraph as Mermaid diagram
 cyber-rt server --port 8001          # Start FastAPI server
 ```
 
-`--strategies` is the **candidate pool**, not a fixed execution list — each iteration the
-strategist randomly samples up to 3 of them to run as parallel branches (see
-[LangGraph flow](#5-agent-pipeline)), so a campaign with 5 candidate strategies and 3
-`max_iterations` may never exercise all 5.
+`--strategies` is the explicit execution list. The strategist preserves the selected order and
+dispatches the selected techniques as parallel branches, up to the graph's supported branch
+limit (see [LangGraph flow](#4-agent-pipeline)).
 
 ---
 
 ## Environment Config
 
 ```env
-# AWS Bedrock
-AWS_ACCESS_KEY_ID=
-AWS_SECRET_ACCESS_KEY=
-AWS_DEFAULT_REGION=us-west-2
+# NVIDIA NIM / build.nvidia.com
+NVIDIA_API_KEY=
+NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
 
 # API auth — must match VITE_API_TOKEN in the frontend
 API_SECRET_KEY=
@@ -424,7 +424,7 @@ TARGET_ENDPOINT=https://your-owned-agent.example/chat
 TARGET_API_KEY=                      # optional
 
 # Retry / concurrency
-MAX_RETRIES=3                        # Total attempts per LLM call (incl. first) on Bedrock throttling
+MAX_RETRIES=3                        # Total attempts per LLM call (incl. first) on provider errors
 MAX_CONCURRENT_RUNS=3                # Max simultaneous campaigns per API server process
 
 # LangSmith tracing (optional)
@@ -454,7 +454,7 @@ uv pip install -e ".[dev]"
 
 # 3. Configure
 cp .env.example .env
-# fill in AWS credentials and API_SECRET_KEY
+# fill in NVIDIA_API_KEY and API_SECRET_KEY
 
 # 4. Initialise databases and verify
 cyber-rt init
@@ -487,4 +487,4 @@ owned HTTP target; Canary does not bundle a victim or sandbox target.
 pytest tests/ -v --cov=src/cyberredteam --cov-report=term-missing
 ```
 
-The test suite includes unit and integration coverage for the orchestration, adapters, storage, and API layers. Production inference always uses the configured AWS Bedrock models.
+The test suite includes unit and integration coverage for the orchestration, adapters, storage, and API layers. Production inference always uses the configured NVIDIA NIM model; missing credentials fail closed rather than triggering mock output.

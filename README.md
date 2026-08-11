@@ -36,6 +36,7 @@ AWS exposes only FastAPI. The React dashboard runs on Vercel and reaches the bac
 canary/
 ├── docker-compose.yml             # Local Docker stack: dashboard + backend
 ├── docker-compose.aws.yml         # AWS override: backend only on port 80
+├── explainer/                     # Static project explainer + Vercel config
 ├── canary/                        # React 19 + TypeScript + Vite 8 dashboard  → canary/README.md
 ├── cyber-redteam-foundry/         # FastAPI + LangGraph red-team engine        → cyber-redteam-foundry/README.md
 │   └── src/                       # Backend package; targets are external HTTP agents
