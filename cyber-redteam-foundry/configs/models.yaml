@@ -1,16 +1,16 @@
 
 
 strategist:
-  model: nvidia/nemotron-3-ultra-550b-a55b
+  model: nvidia/llama-3.1-nemotron-nano-8b-v1
 
 attacker:
-  model: nvidia/nemotron-3-ultra-550b-a55b
+  model: nvidia/llama-3.1-nemotron-nano-8b-v1
 
 evaluator:
-  model: nvidia/nemotron-3-ultra-550b-a55b
+  model: nvidia/llama-3.1-nemotron-nano-8b-v1
 
 reporter:
-  model: nvidia/nemotron-3-ultra-550b-a55b
+  model: nvidia/llama-3.1-nemotron-nano-8b-v1
 
 target:
-  model: nvidia/nemotron-3-ultra-550b-a55b
+  model: nvidia/llama-3.1-nemotron-nano-8b-v1

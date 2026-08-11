@@ -18,7 +18,7 @@ logger = setup_logging()
 
 # Default Backboard/OpenRouter model per agent.
 # Overridable per agent via configs/models.yaml.
-_DEFAULT_MODELS = {agent: {"model": "nvidia/nemotron-3-ultra-550b-a55b"} for agent in ("strategist", "attacker", "evaluator", "reporter")}
+_DEFAULT_MODELS = {agent: {"model": "nvidia/llama-3.1-nemotron-nano-8b-v1"} for agent in ("strategist", "attacker", "evaluator", "reporter")}
 
 _models_config: Optional[dict] = None
 
