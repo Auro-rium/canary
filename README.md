@@ -49,7 +49,7 @@ Four specialized agents run as a stateful LangGraph pipeline through NVIDIA's Op
 
 ```mermaid
 graph TD
-    START([Start Campaign]) --> strategist["1 · Strategist<br/>Picks strategies, dispatches ≤3 parallel branches"]
+    START([Start Campaign]) --> strategist["1 · Strategist<br/>Dispatches all selected parallel branches"]
     strategist -.->|Send| attacker["2 · Attacker branch<br/>Nemotron<br/>Builds &amp; fires adversarial prompts"]
     attacker --> target["Target Agent<br/>HTTP endpoint under test"]
     target --> evaluator["3 · Evaluator<br/>Nemotron<br/>Det. detectors + LLM judge"]
@@ -70,7 +70,7 @@ graph TD
 
 | Agent | Model | Responsibility |
 |---|---|---|
-| Strategist | Deterministic graph node | Preserves the requested strategy order and dispatches up to 3 parallel branches |
+| Strategist | Deterministic graph node | Preserves the requested strategy order and dispatches all selected branches |
 | Attacker | NVIDIA Nemotron | Constructs adversarial prompts, executes them against the target |
 | Evaluator | NVIDIA Nemotron | Deterministic detectors + LLM judge; produces 4-case consensus verdict and owns iterate-vs-report routing |
 | Reporter | NVIDIA Nemotron | Structured Markdown and JSON audit reports with per-finding evidence |
