@@ -1,4 +1,4 @@
-"""AWS Bedrock Cyber Red Team Framework."""
+"""NVIDIA Nemotron Cyber Red Team Framework."""
 
 __version__ = "0.1.0"
 __author__ = "Cyber Red Team"

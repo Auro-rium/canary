@@ -4,7 +4,7 @@ Builds a ``StateGraph[RedTeamState]`` with:
 
 *  4 nodes: strategist → attacker_branch (parallel fan-out) → evaluator → reporter
 *  strategist dispatches up to 3 parallel attacker_branch invocations via Send(),
-   one randomly-chosen technique each — LangGraph waits for all of them before evaluator runs
+   preserving the requested technique order — LangGraph waits for all of them before evaluator runs
 *  Iterative loop, owned entirely by evaluator: evaluator → (strategist, to re-dispatch a
    fresh branch set, if vulnerability_found and iterations remain, else reporter)
 *  SQLite-backed checkpointing for persistence and resumability
@@ -72,7 +72,7 @@ def build_redteam_graph() -> StateGraph:
     graph.set_entry_point("strategist")
 
     # Parallel fan-out: strategist → up to 3 concurrent attacker_branch invocations,
-    # one randomly-chosen technique each. LangGraph waits for all Send-spawned
+    # preserving requested technique order. LangGraph waits for all Send-spawned
     # branches to complete before evaluator runs (superstep boundary) — no manual
     # join/barrier logic needed.
     graph.add_conditional_edges("strategist", dispatch_attacker_branches)
@@ -160,14 +160,14 @@ def _fallback_mermaid() -> str:
     return """\
 graph TD
     START([START])
-    strategist["<b>Strategist</b><br/>Randomly dispatch ≤3 techniques"]
+    strategist["<b>Strategist</b><br/>Dispatch requested ≤3 techniques"]
     attacker_branch["<b>Attacker Branch</b><br/>Execute one attack (parallel ×≤3)"]
     evaluator["<b>Evaluator</b><br/>Score & assess"]
     reporter["<b>Reporter</b><br/>Generate report"]
     END_NODE([END])
 
     START --> strategist
-    strategist -.->|Send x≤3, random| attacker_branch
+    strategist -.->|Send x≤3, deterministic| attacker_branch
     attacker_branch --> evaluator
 
     evaluator -->|vulnerability_found & iterations remain| strategist

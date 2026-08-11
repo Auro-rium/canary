@@ -1,4 +1,4 @@
-"""LLM abstraction layer for AWS Bedrock (Claude).
+"""LLM abstraction layer for NVIDIA's OpenAI-compatible endpoint.
 
 Provides per-agent model factories and structured output support.
 """

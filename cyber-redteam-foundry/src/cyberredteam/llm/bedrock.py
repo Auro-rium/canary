@@ -1,6 +1,6 @@
-"""AWS Bedrock LLM client with LCEL chains and observability.
+"""Provider-compatible LLM client with LCEL chains and observability.
 
-Wraps any LangChain ``BaseChatModel`` (typically ``ChatBedrockConverse``) and
+Wraps any LangChain ``BaseChatModel`` (currently NVIDIA ``ChatOpenAI``) and
 builds LCEL chains for every invocation:
 
   structured:  ChatPromptTemplate | llm.with_structured_output(schema)
@@ -22,19 +22,30 @@ from langchain_core.prompts import ChatPromptTemplate, HumanMessagePromptTemplat
 from langchain_core.runnables import Runnable
 from pydantic import BaseModel
 
-from cyberredteam.logging import setup_logging
+from cyberredteam.logging import log_event, setup_logging
 from cyberredteam.settings import get_settings
 
 logger = setup_logging()
 
 
+def _retryable_errors() -> tuple[type[BaseException], ...]:
+    """Return provider errors that are safe to retry for NVIDIA/OpenAI."""
+    errors: list[type[BaseException]] = [botocore.exceptions.ClientError]
+    try:
+        import openai
+        errors.append(openai.APIError)
+    except ImportError:  # pragma: no cover - dependency exists in production
+        pass
+    return tuple(errors)
+
+
 class ObservableLLM:
-    """AWS Bedrock chat model wrapper that builds LCEL chains and logs every call.
+    """Chat model wrapper that builds LCEL chains and logs every call.
 
     Args:
-        llm: Underlying ``BaseChatModel`` (e.g. ``ChatBedrockConverse``).
+        llm: Underlying ``BaseChatModel`` (e.g. ``ChatOpenAI``).
         agent_name: Name of the calling agent (for observability).
-        deployment: Bedrock model / inference-profile ID (for observability).
+        deployment: Provider model ID (for observability).
         store: Optional ``SQLiteStore`` for persisting call logs.
     """
 
@@ -87,7 +98,7 @@ class ObservableLLM:
         prompt = self._build_prompt(system_prompt)
         chain = prompt | self.llm.with_structured_output(output_schema)
         return chain.with_retry(
-            retry_if_exception_type=(botocore.exceptions.ClientError,),
+            retry_if_exception_type=_retryable_errors(),
             wait_exponential_jitter=True,
             stop_after_attempt=get_settings().max_retries,
         )
@@ -107,7 +118,7 @@ class ObservableLLM:
         prompt = self._build_prompt(system_prompt)
         chain = prompt | self.llm | StrOutputParser()
         return chain.with_retry(
-            retry_if_exception_type=(botocore.exceptions.ClientError,),
+            retry_if_exception_type=_retryable_errors(),
             wait_exponential_jitter=True,
             stop_after_attempt=get_settings().max_retries,
         )
@@ -131,7 +142,18 @@ class ObservableLLM:
             Whatever the chain produces (Pydantic model or ``str``).
         """
         start = time.time()
-        result = chain.invoke({"user_message": user_message})
+        try:
+            result = chain.invoke({"user_message": user_message})
+        except Exception as exc:
+            log_event(
+                logger,
+                "llm_error",
+                agent=self.agent_name,
+                deployment=self.deployment,
+                error_type=type(exc).__name__,
+                error=str(exc),
+            )
+            raise
         latency = time.time() - start
 
         output_text = (
@@ -212,7 +234,7 @@ class ObservableLLM:
     def _extract_tokens(result: Any) -> Optional[Dict[str, int]]:
         """Try to extract token usage from a response object.
 
-        Handles LangChain's ``usage_metadata`` (Bedrock Converse) and the
+        Handles LangChain's ``usage_metadata`` (OpenAI-compatible responses) and the
         older ``response_metadata`` shapes.  Returns ``None`` for structured
         Pydantic outputs which carry no usage information.
         """

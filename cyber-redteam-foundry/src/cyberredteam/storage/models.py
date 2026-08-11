@@ -21,6 +21,7 @@ class RunRecord(Base):
     successful_attacks = Column(Integer, default=0)
     success_rate = Column(Float, default=0.0)
     status = Column(String, default="running")  # running | completed | failed
+    error = Column(String, nullable=True)
 
 
 class AttackRecord(Base):
@@ -138,10 +139,14 @@ def _migrate_columns(engine) -> None:
             ("target_id",      "VARCHAR"),
             ("finding_id",     "VARCHAR"),
             ("score_threshold","REAL DEFAULT 0.5"),
+            ("error",          "TEXT"),
         ],
         "findings": [
             ("embedding",      "TEXT"),
             ("trace_s3_uri",   "VARCHAR"),
+        ],
+        "runs": [
+            ("error", "TEXT"),
         ],
         "evaluator_verdicts": [
             ("asi_class_suggested", "VARCHAR"),

@@ -1,6 +1,8 @@
 """Logging configuration."""
 
 import logging
+import json
+import os
 from pathlib import Path
 from typing import Optional
 
@@ -39,6 +41,13 @@ def setup_logging(
     console_handler.setLevel(getattr(logging, log_level.upper()))
     logger.addHandler(console_handler)
 
+    # Default to the configured runtime log path so container logs are also
+    # persisted to the mounted runs volume.
+    if log_file is None:
+        configured = os.getenv("LOG_FILE")
+        if configured:
+            log_file = Path(configured)
+
     # File handler if specified
     if log_file:
         log_file.parent.mkdir(parents=True, exist_ok=True)
@@ -51,3 +60,8 @@ def setup_logging(
         logger.addHandler(file_handler)
 
     return logger
+
+
+def log_event(logger: logging.Logger, event: str, **fields: object) -> None:
+    """Emit a machine-readable event without logging secrets or bodies."""
+    logger.info(json.dumps({"event": event, **fields}, default=str, sort_keys=True))

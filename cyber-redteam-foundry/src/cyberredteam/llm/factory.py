@@ -1,7 +1,7 @@
 """LLM factory — creates per-agent NVIDIA NIM clients.
 
-Reads model IDs from ``configs/models.yaml`` and AWS configuration from
-environment variables.  Each agent maps to a Bedrock model; high-volume
+Reads model IDs from ``configs/models.yaml`` and NVIDIA configuration from
+environment variables.  Each agent maps to a NVIDIA model; high-volume
 roles (attacker) can use a faster/cheaper model while judgment roles
 (evaluator, reporter) use a stronger one.
 
@@ -70,8 +70,8 @@ def get_model_for_agent(agent_name: str) -> str:
     return str(agent_config)
 
 
-# Backwards-compatible alias — callers that predate the Bedrock migration
-# still ask for a "deployment"; it now resolves to a Bedrock model ID.
+# Backwards-compatible alias — callers that predate the provider migration
+# still ask for a "deployment"; it now resolves to a NVIDIA model ID.
 def get_deployment_for_agent(agent_name: str) -> str:
     """Deprecated alias for :func:`get_model_for_agent`."""
     return get_model_for_agent(agent_name)
