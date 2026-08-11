@@ -13,8 +13,9 @@ Live deployment:
 
 - Dashboard: https://canary-coral.vercel.app/
 - Explainer: https://agent-canary-explainer.vercel.app/
-- FastAPI docs: http://3.108.23.172/docs
 - Target repository: https://github.com/Auro-rium/companybot-canary-demo
+
+The former shared AWS demo backend at `3.108.23.172` was intentionally terminated. No shared FastAPI endpoint is currently provided. A user must deploy the backend on their own AWS host and configure the Vercel proxy before the dashboard can execute campaigns.
 
 ## 1. Runtime topology
 
@@ -25,7 +26,7 @@ Browser
 Vercel React dashboard
   │ server-side /api proxy + bearer token
   ▼
-AWS EC2 FastAPI backend
+User-provisioned AWS FastAPI backend
   │ LangGraph + SQLite + report artifacts
   │ NVIDIA_API_KEY stays server-side
   ▼
@@ -35,7 +36,7 @@ NVIDIA NIM: nvidia/nemotron-3-ultra-550b-a55b
 Authorized external HTTP target
 ```
 
-AWS exposes the FastAPI service only. It does not serve the React UI. The Vercel project owns the frontend and forwards protected API requests to AWS. The Vercel browser bundle does not contain the backend token.
+When deployed, AWS exposes the FastAPI service only; it does not serve the React UI. The Vercel project owns the frontend and forwards protected API requests to the user's configured backend. The Vercel browser bundle does not contain the backend token.
 
 ## 2. LangGraph workflow
 
@@ -209,13 +210,13 @@ The Vercel proxy functions map browser `/api/*` requests to the AWS FastAPI serv
 
 ### AWS backend
 
-The AWS deployment uses the backend-only Compose override:
+The repository includes an AWS backend-only Compose override, but the shared demo instance has been terminated. Deploy it on your own host:
 
 ```bash
 docker compose -f docker-compose.yml -f docker-compose.aws.yml up -d --build redteam-backend
 ```
 
-The backend is exposed on port 80 through the override and serves Swagger at `/docs`. The frontend profile is disabled in the AWS deployment.
+The backend is exposed on port 80 through the override and serves Swagger at `/docs`. The frontend profile is disabled in the AWS deployment. Set `CANARY_API_URL` in Vercel to your own backend URL and `CANARY_API_TOKEN` to the backend's `API_SECRET_KEY`.
 
 ### Vercel dashboard
 

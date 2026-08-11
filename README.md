@@ -10,10 +10,11 @@ There are no mock attack results, static attacker payloads, sandbox targets, or 
 
 - Explainer: [agent-canary-explainer.vercel.app](https://agent-canary-explainer.vercel.app/)
 - Interactive dashboard: [canary-coral.vercel.app](https://canary-coral.vercel.app/)
-- AWS FastAPI docs: [3.108.23.172/docs](http://3.108.23.172/docs)
 - Source: [github.com/Auro-rium/canary](https://github.com/Auro-rium/canary)
 
-The dashboard is hosted on Vercel. The FastAPI backend runs separately on AWS and exposes only the API. Its root URL intentionally does not serve the UI. Vercel forwards API requests server-side and keeps the backend bearer token out of browser JavaScript.
+The dashboard is hosted on Vercel. The previous shared AWS FastAPI demo backend has been terminated. The dashboard will require a newly deployed backend and matching Vercel environment variables before it can run campaigns again. Deploy your own backend; do not rely on the retired address `3.108.23.172`.
+
+> **AWS deployment note:** The former demo instance `i-0120dbe4036377c33` in `ap-south-1` was intentionally terminated. To use Canary, provision your own AWS host, deploy `redteam-backend` with the AWS Compose override, configure `NVIDIA_API_KEY`, `API_SECRET_KEY`, `ALLOWED_TARGETS`, and set the Vercel `CANARY_API_URL`/`CANARY_API_TOKEN` variables.
 
 The demonstration target is a separate project: [CompanyAgent Canary Demo](https://github.com/Auro-rium/companybot-canary-demo). It is a real LangChain tool-calling agent backed by Backboard and is assessed over HTTP at its `/chat` endpoint. Canary does not embed, modify, or fabricate this target. Assess only systems you own or are explicitly authorized to test.
 

@@ -10,7 +10,7 @@
 
 Red-team orchestration engine for AI agents. FastAPI + LangGraph with NVIDIA NIM inference. Attacks any authorized HTTP-based AI agent via a generic request/response contract, dispatches selected techniques as parallel branches, evaluates against ASI/ATLAS taxonomy, and generates structured audit reports. Findings are triaged manually — no auto-remediation.
 
-Live services: [project explainer](https://agent-canary-explainer.vercel.app/) · [interactive dashboard](https://canary-coral.vercel.app/) · [AWS FastAPI docs](http://3.108.23.172/docs). The demonstration target is the separate [CompanyAgent Canary Demo](https://github.com/Auro-rium/companybot-canary-demo), assessed over HTTP with authorization.
+Live presentation: [project explainer](https://agent-canary-explainer.vercel.app/) · [interactive dashboard](https://canary-coral.vercel.app/). The previous shared AWS backend was terminated; deploy this FastAPI service on your own host before using the dashboard. The demonstration target is the separate [CompanyAgent Canary Demo](https://github.com/Auro-rium/companybot-canary-demo), assessed over HTTP with authorization.
 
 ---
 

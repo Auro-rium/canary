@@ -9,7 +9,9 @@
 
 Real-time dashboard for the **Cyber Red Team Foundry** backend, built with React 19 + TypeScript + Vite 8. Styled with TailwindCSS and JetBrains Mono, served via nginx, communicating over REST and Server-Sent Events.
 
-Live links: [interactive dashboard](https://canary-coral.vercel.app/) · [project explainer](https://agent-canary-explainer.vercel.app/) · [AWS FastAPI docs](http://3.108.23.172/docs)
+Live links: [interactive dashboard](https://canary-coral.vercel.app/) · [project explainer](https://agent-canary-explainer.vercel.app/)
+
+The previous shared AWS backend was terminated. The Vercel dashboard requires a user-provisioned FastAPI backend configured through server-side `CANARY_API_URL` and `CANARY_API_TOKEN` variables before campaign execution works.
 
 The explainer source lives at [`explainer/`](../explainer/) in the repository. The demonstration target is the separate [CompanyAgent Canary Demo](https://github.com/Auro-rium/companybot-canary-demo), a real HTTP LangChain tool-calling agent; Canary assesses it only with authorization.
 
