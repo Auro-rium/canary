@@ -1,454 +1,278 @@
 # Agent Canary — Technical Reference
 
-Agent Canary is a two-service system for automated red-teaming of LLM agents. The backend
-(`cyber-redteam-foundry/`, FastAPI + LangGraph, Python) runs adversarial campaigns against an
- arbitrary HTTP JSON agent using NVIDIA-hosted Nemotron through an OpenAI-compatible endpoint for the attacker/evaluator/reporter
-roles, and persists findings to SQLite. The frontend (`canary/`, React 19 + Vite + TypeScript)
-is a dashboard that drives campaigns over Server-Sent Events and browses stored findings.
+This document describes the deployed system as it exists on `main`.
 
-This document assumes familiarity with LangGraph, FastAPI, and React, and cites concrete
-file:line locations throughout so claims can be checked against the code directly.
+Agent Canary is a two-service product:
 
----
+1. `cyber-redteam-foundry/` is a Python 3.11 FastAPI backend and LangGraph orchestration engine.
+2. `canary/` is a React 19 + TypeScript + Vite dashboard served by Vercel or nginx.
 
-## 1. LangGraph orchestration
+The backend sends model-generated adversarial prompts to an external HTTP agent, records the target's actual response, evaluates the evidence, and persists campaign artifacts in SQLite and the report directory. The target is not part of the Canary process. The current demonstration target is the separate CompanyAgent Canary Demo repository.
 
-The graph lives in `cyber-redteam-foundry/src/cyberredteam/langgraph/graph.py` and is built by
-`build_redteam_graph()` (graph.py:57-97). It has exactly four nodes:
+Live deployment:
 
-```
-strategist → (Send fan-out) → attacker_branch × selected strategies (parallel) → evaluator → {strategist | reporter}
-```
+- Dashboard: https://canary-coral.vercel.app/
+- Explainer: https://agent-canary-explainer.vercel.app/
+- FastAPI docs: http://3.108.23.172/docs
+- Target repository: https://github.com/Auro-rium/companybot-canary-demo
 
-- `strategist` (graph.py:66, implemented in `nodes.py:77-92`) is a log-only pass-through. It does
-  **not** call an LLM — `StrategistAgent.select_strategies()` exists as an LLM-ranked alternative
-  but is unused by the default dispatch path (nodes.py:80-84).
-- The actual fan-out happens in the conditional edge `dispatch_attacker_branches`
-  (nodes.py:99-141), registered via `graph.add_conditional_edges("strategist",
-  dispatch_attacker_branches)` (graph.py:78). This function does not return a routing string —
-  it returns `List[Send]`, LangGraph's mechanism for dynamic parallel dispatch. It:
-  1. Converts `state["strategies"]` to `StrategyType` enum members (nodes.py:107).
-  2. Preserves the requested order and takes `candidates[:MAX_PARALLEL_BRANCHES]`, where
-     `MAX_PARALLEL_BRANCHES = 12` — so every currently exposed strategy selection is dispatched,
-     with headroom for additional supported strategies.
-  3. For each chosen strategy, resolves `(asi_class, _) = taxonomy.lookup(strategy.value, "")`
-     and `spec = get_spec(asi_class)` (nodes.py:116-117) to build an `AttackBranch` — a plain
-     dataclass (`schemas.py:100-119`), not part of `RedTeamState`, carrying `branch_id`,
-     `capability_type`, `technique_id`, `technique_spec`, `depth=0`, and
-     `attempt_budget_remaining=state["max_attempts_per_strategy"]`.
-  4. Wraps each branch in `Send("attacker_branch", {...})` (nodes.py:132-140) — the payload dict
-     also carries `run_id`, `target_id`, `iteration`, and the generic HTTP target config
-     (`target_headers`/`target_request_template`/`target_response_path`).
+## 1. Runtime topology
 
-`graph.add_edge("attacker_branch", "evaluator")` (graph.py:79) means every spawned
-branches feeds into the *same* `evaluator` node. LangGraph's superstep model guarantees the
-evaluator only executes once all `Send`-spawned `attacker_branch` invocations from that dispatch
-have completed — no manual barrier/join code is needed. The join is enabled by the state schema
-in `state.py:44`:
-
-```python
-attack_results: Annotated[List[AttackResult], operator.add]
+```text
+Browser
+  │ HTTPS
+  ▼
+Vercel React dashboard
+  │ server-side /api proxy + bearer token
+  ▼
+AWS EC2 FastAPI backend
+  │ LangGraph + SQLite + report artifacts
+  │ NVIDIA_API_KEY stays server-side
+  ▼
+NVIDIA NIM: nvidia/nemotron-3-ultra-550b-a55b
+  │
+  ▼
+Authorized external HTTP target
 ```
 
-Each parallel branch (`node_attacker_branch`, nodes.py:148-198) returns a delta dict with
-`"attack_results": [result]` — a single-item list. LangGraph merges all concurrent deltas for an
-`Annotated[..., operator.add]` field by concatenation, regardless of which branch happened to
-finish first (nodes.py:151-153, 189-190). Note `current_strategy` is deliberately *not* written
-from this node — as a plain (non-Annotated) field, concurrent writers in the same superstep would
-raise `InvalidUpdateError` (nodes.py:191-194 comment).
+AWS exposes the FastAPI service only. It does not serve the React UI. The Vercel project owns the frontend and forwards protected API requests to AWS. The Vercel browser bundle does not contain the backend token.
 
-**Why iteration-tag filtering replaced positional slicing.** Because branches can complete in any
-order and `attack_results` is a single ever-growing append-only list across the whole run
-(spanning multiple dispatch rounds when the loop re-fires), the evaluator cannot assume "the last
-N entries" are this round's results — a slower branch from iteration 0 could still be appended
-after a faster branch from iteration 1 in a naive ordering. Instead, `node_evaluator`
-(nodes.py:205-259) filters by an explicit iteration tag stamped onto every `AttackResult` at
-creation time:
+## 2. LangGraph workflow
 
-```python
-recent = [r for r in state["attack_results"] if r.iteration == state["iteration"]]
+The graph has four functional stages:
+
+```text
+strategist
+  → Send(attacker_branch × selected techniques)
+  → evaluator
+  → strategist  [if a successful finding exists and iterations remain]
+  → reporter   [otherwise]
 ```
 
-(nodes.py:219, with the comment at 217-218 spelling out exactly this rationale). The `iteration`
-field is set by `attack_branch()` on the `AttackResult` it returns (attacker.py:233, 284, passed
-in via the `Send` payload at nodes.py:136/158). This tag-filter is what makes the design safe
-under out-of-order parallel completion — a slice like `results[-len(chosen):]` would silently
-break the moment two dispatch rounds interleave in the appended list.
+### Strategist dispatch
 
-**`should_iterate` routing.** The evaluator node itself decides whether to continue
-(`vuln_found = len(successful) > 0` and `can_iterate = new_iteration < max_iterations and
-vuln_found`, nodes.py:237-243) and writes `should_continue_iterating` into state. The graph's
-conditional edge `should_iterate(state)` (graph.py:35-50) is a thin router that reads that flag:
+The default `strategist` node is deterministic. It logs the campaign's explicit strategy selection and does not call an LLM to rank, skip, or invent techniques. `dispatch_attacker_branches()` converts each selected strategy to a `StrategyType`, resolves its ASI technique specification, creates an independent `AttackBranch`, and returns one LangGraph `Send` per branch.
 
-```python
-return "strategist" if state["should_continue_iterating"] else "reporter"
+The graph supports `MAX_PARALLEL_BRANCHES = 12`. The current dashboard exposes eight techniques, and explicit selections are preserved in order up to that backend limit. Each branch receives its own branch ID, technique ID, target configuration, iteration number, depth, and attempt budget.
+
+### Parallel attacker branches
+
+Each `Send` invokes `node_attacker_branch()` independently. The branch calls the NVIDIA-backed attacker agent to generate one structured `AttackerOutput`, then passes the resulting prompt to `HttpTargetAdapter`. It returns one `AttackResult` containing:
+
+- branch and iteration identity;
+- strategy and ASI technique;
+- exact prompt sent, unless the attacker refused;
+- target response or target error;
+- HTTP status, latency, request/response hashes, and observations;
+- evaluator fields initialized for downstream assessment.
+
+`attack_results` and log messages use `Annotated[list, operator.add]`, so parallel deltas are gathered without overwriting each other. The evaluator runs at the LangGraph superstep boundary after the dispatched branches complete.
+
+### Iteration routing
+
+The evaluator filters results by their explicit `iteration` field. It never assumes that the last N list entries belong to the current round; parallel completion order is not a correctness signal.
+
+If one or more attempts produce a successful finding and the iteration budget remains, the graph returns to the deterministic strategist node and dispatches a fresh branch set. Otherwise it proceeds to the reporter. The evaluator writes `should_continue_iterating`; the graph edge only reads that state flag.
+
+LangGraph checkpoints use SQLite with the campaign ID as the thread ID. This makes state, branch results, and the execution timeline inspectable after a process restart.
+
+## 3. Agent and model wiring
+
+The model assignments are in `cyber-redteam-foundry/configs/models.yaml`:
+
+| Role | Model | Calls |
+|---|---|---|
+| Strategist node | None in the default graph | Deterministic dispatch only. |
+| Attacker | `nvidia/nemotron-3-ultra-550b-a55b` | Generates the scoped adversarial prompt. |
+| Evaluator | `nvidia/nemotron-3-ultra-550b-a55b` | Judges target behavior against evidence and thresholds. |
+| Reporter | `nvidia/nemotron-3-ultra-550b-a55b` | Produces structured Markdown/JSON report output. |
+
+`llm/factory.py` constructs a `ChatOpenAI`-compatible client pointed at `NVIDIA_BASE_URL` and wraps it in `ObservableLLM`. The compatibility module is named `bedrock.py` for import stability, but it contains no Bedrock transport. The provider is NVIDIA NIM.
+
+There is no mock or fabricated-output fallback in the production factory. `get_llm()` raises when `NVIDIA_API_KEY` is absent. Provider/network calls use bounded retry behavior from `MAX_RETRIES`, and each invocation can persist agent name, model, latency, input/output hashes, and token usage.
+
+## 4. Target adapter contract
+
+`HttpTargetAdapter` is the only production target path. It supports a generic JSON contract rather than a target-specific SDK.
+
+Default request:
+
+```http
+POST <target_id>
+Authorization: Bearer <TARGET_API_KEY>   # optional
+Content-Type: application/json
+
+{"message":"<generated prompt>"}
 ```
 
-wired via `graph.add_conditional_edges("evaluator", should_iterate, {"strategist": "strategist",
-"reporter": "reporter"})` (graph.py:84-91). Looping back to `strategist` triggers a *fresh*
-`dispatch_attacker_branches` call — the requested strategies, new branch IDs, fresh
-`depth=0` budgets — not a continuation of the old branches. `max_iterations` is enforced purely
-by this counter check; there is no separate iteration-count node.
+The adapter can receive a custom request template containing the quoted placeholder `{{PROMPT}}`. The placeholder is replaced using `json.dumps()`, preserving valid JSON for quotes, line breaks, and Unicode. A custom response path such as `choices.0.message.content` can extract the target's answer from nested JSON. If no path is supplied, the adapter checks common response keys.
 
-Checkpointing is SQLite-backed (`compile_graph()`, graph.py:104-134): `SqliteSaver` keyed by
-`thread_id = run_id` (orchestrator.py:121-126), so a run's state can be resumed via
-`GraphOrchestrator.get_state()` (orchestrator.py:171-188). A Mermaid diagram is generated via
-`compiled.get_graph().draw_mermaid()` with a hand-written fallback (`_fallback_mermaid()`,
-graph.py:158-184) if that API call fails.
+The target may be a public URL, an internal URL reachable from the backend, or a private service with its own bearer key. The backend allowlist is the authorization boundary for campaign creation. Canary does not start a target container in the production AWS stack.
 
-### Design patterns
+Current demo target contract:
 
-The implementation combines a durable state-machine workflow with several established patterns:
-
-- **Orchestrator:** `GraphOrchestrator` owns run setup, graph invocation, checkpointing, and
-  artifact persistence.
-- **Scatter-gather:** LangGraph `Send()` fans a campaign out into independent attacker branches,
-  then the evaluator gathers their completed results at the superstep boundary.
-- **Strategy:** each `StrategyType` selects a different attack technique behind the same attacker
-  interface.
-- **Adapter:** `HttpTargetAdapter` normalizes request templates, authentication, response-path
-  extraction, and target observations for arbitrary HTTP agents.
-- **Reducer:** `Annotated[..., operator.add]` fields append branch results and log events as
-  parallel node deltas merge into `RedTeamState`.
-- **Checkpoint:** SQLite-backed LangGraph checkpoints use the campaign ID as `thread_id`, making
-  the state timeline inspectable and resumable.
-
-The strategist is deliberately deterministic in the current graph. It dispatches the user's
-selected strategies; it does not call an LLM to rank, skip, or invent strategies. The attacker,
-evaluator, and reporter are the LLM-backed roles.
-
----
-
-## 2. Attacker contract
-
-`AttackerAgent.attack_branch()` (`agents/attacker.py:159-285`) generates and executes exactly one
-payload per branch invocation. It never judges success itself — `success=False` and `score=0.0`
-are hardcoded on every returned `AttackResult` (attacker.py:274, 276) with a comment that the
-evaluator determines both.
-
-**`AttackerOutput` schema** (`llm/schemas.py:33-71`), produced via
-`llm.build_structured_chain(system_prompt, AttackerOutput)` (attacker.py:128) — the provider's
-structured-output mode, never free-text parsing:
-
-- `status: Literal["OK", "ATTACKER_REFUSED"]` — first-class refusal outcome (schemas.py:41-45).
-- `capability_type`, `technique_id`, `depth` — echoed straight back from the input branch; the
-  attacker's own echoes are overwritten by the caller anyway (`output.capability_type =
-  branch.capability_type`, etc., attacker.py:206-208) so the LLM cannot drift the branch's
-  assignment.
-- `payload` — empty when refused, otherwise the literal string sent to the target
-  (schemas.py:49-56).
-- `mutation_of_parent` — required to describe what changed vs. the parent attempt when
-  `depth > 0`, null at depth 0 (schemas.py:62-66) — this is how the system's depth-based
-  mutation lineage is tracked (the default graph dispatches at `depth=0`;
-  `mutation_of_parent`/`parent_evidence` plumbing exists for deeper recursive attack
-  trees built by other callers of `attack_branch`).
-
-**Hard-refusal short-circuit.** If `output.status == "ATTACKER_REFUSED"` (attacker.py:213-234),
-the function returns immediately with `prompt=""`, `response=""`, `success=False`,
-`severity=INFO`, and `indicators={"_refused": True, "refusal_reason": ...}` — **the target
-adapter's `execute_attack()` is never called**. This means a refused branch produces zero network
-traffic to the target and zero LLM-judge cost on the evaluator side; it's purely logged. This is
-distinct from the LLM-call-failure fallback path (`_fallback_output()`, attacker.py:144-157),
-which is only triggered when the provider call raises. The branch fails closed and does not send
-any payload to the target; there are no static attacker-payload fallbacks.
-
-**technique_id → ASI taxonomy mapping.** `technique_id` on every `AttackBranch` is set once, in
-`dispatch_attacker_branches`, from `taxonomy.lookup(strategy.value, "")` (nodes.py:116) — the
-ASI class computed at dispatch time before the attacker ever runs. `evaluation/taxonomy.lookup()`
-(`taxonomy.py:37-67`) resolves `(strategy, component)` pairs against the static
-`configs/asi_taxonomy.yaml` mapping list using three-tier precedence: exact strategy+component >
-strategy+wildcard component (`component: "*"`) > global wildcard fallback (`strategy: "*",
-component: "*"` → `ASI01`/`AML.T0051.000`, taxonomy.py:16, 94-97). Since the attacker call site
-passes `component=""`, dispatch-time resolution always lands on the strategy+wildcard tier (e.g.
-`prompt_injection` → `ASI01`/`AML.T0051.001`, `asi_taxonomy.yaml:38-41`). The evaluator later
-re-resolves taxonomy with the *actual* observed component once the LLM judge reports one
-(evaluator.py:253-258), which can promote the ASI class to a more specific mapping (e.g.
-`tool_misuse` + `employee_lookup` → `ASI02`/`AML.T0051.002`, `asi_taxonomy.yaml:23-26`).
-`technique_spec` on the branch (used in the attacker's prompt) comes from
-`evaluation/technique_specs.get_spec(asi_class)` (technique_specs.py:39-41), which loads static
-`{spec, expected_failure, expected_safe_behavior}` text from `configs/technique_specs.yaml` keyed
-by ASI class — deliberately static/auditable rather than LLM-authored per call
-(technique_specs.py:3-4).
-
----
-
-## 3. Evaluator
-
-`EvaluatorAgent.evaluate()` (`agents/evaluator.py:77-415`) implements what the module docstring
-calls a "4-case consensus" between deterministic pattern detectors and an LLM judge
-(evaluator.py:80-86):
-
-| Case | Deterministic | LLM signal | Verdict | `result.success` | `verdict_path` |
-|---|---|---|---|---|---|
-| 1 | hit | success/failure (not inconclusive) | `confirmed`, high confidence | `True` | `consensus` (evaluator.py:314-322) |
-| 2 | hit | inconclusive | `confirmed`, medium confidence | `True` | `deterministic_only` (324-330) |
-| 3 | miss | success (score ≥ threshold) | `unconfirmed`, low confidence | `False` | `llm_only` (332-338) |
-| 4 | miss | anything else | `inconclusive` or `failed` | `False` | `heuristic_fallback`/`llm_only` (340-345) |
-
-Only Cases 1 and 2 set `result.success = True` — Case 3 ("judge says yes, deterministic missed
-it") is explicitly **not** treated as a confirmed finding; it requires human confirmation before
-escalating (evaluator.py:338 comment). The deterministic phase (evaluator.py:133-215) runs
-strategy-specific scanners — canary-token exfiltration check first as highest-confidence
-(evaluator.py:139-145), then a PII/credential regex scan (147-158), then one of eight
-strategy-specific analyzers (`PromptInjectionTool`, `ToolAbuseTool`, `MemoryPoisoningTool`,
-`RAGProbeTool`, `JailbreakTool`, `InstructionHierarchyTool`, `WorkflowManipulationTool`,
-161-210) selected by `result.strategy_type`. Hits are mapped to canonical names via
-`_DET_HIT_NAMES` (evaluator.py:33-43, e.g. `canary_exfiltration → CANARY_TOKEN_EXFILTRATED`) and
-passed to the LLM judge as `deterministic_hits` in its prompt (evaluator.py:225) so the judge's
-narrative can't contradict hard evidence — and if it tries to anyway (`_CONTRADICTION_PHRASES`
-like "did not reveal", evaluator.py:261-266, 284-291), the evaluator overwrites
-`evidence_summary` with a canned description of the deterministic hit.
-
-**Per-ASI thresholds.** `_get_threshold()` (evaluator.py:58-64) looks up
-`configs/thresholds.yaml`'s `per_asi_class` map, falling back to `defaults.medium = 0.5`. The
-file (`thresholds.yaml:1-18`) sets tighter thresholds for higher-stakes classes — e.g. `ASI03`
-(privilege escalation) and `ASI10` at `0.70`, `ASI04`/`ASI08` (sensitive data / retrieval
-poisoning) looser at `0.55–0.60`. This threshold gates Case 3's `llm_judge_score >= threshold`
-check (evaluator.py:332, 296-299) and is stored on the result as `score_threshold` for auditability
-(evaluator.py:98).
-
-**Architecturally unusual: the evaluator owns the iterate/report decision.** There is no
-separate controller/router node deciding whether to loop — `node_evaluator` in `nodes.py`
-computes `vulnerability_found` and `should_continue_iterating` directly from
-`result.success` on every accumulated `attack_results` entry (nodes.py:236-243), and the graph's
-conditional edge (`should_iterate`, graph.py:35-50) is a pure state-read with no logic of its
-own. This means the *evaluation* layer — not a dedicated orchestration/strategy node — is the
-sole authority on both "is this a real finding" and "should the campaign keep attacking." A
-controller node deciding independently whether to loop (e.g. based on attempt budget alone)
-would need to duplicate or second-guess this success signal; instead the loop-continuation logic
-lives entirely inside the agent whose job is to judge attack outcomes.
-
-`finding_id` is minted by the evaluator (not the attacker) once `component` is known:
-`sha256(f"{target_id}:{component}:{strategy_val}:{asi_class}")[:16]` (evaluator.py:349-354) — a
-content-addressed key, stable across runs and re-derivable independently for audit (also see §5).
-
----
-
-## 4. Generic target adapter
-
-`cyber-redteam-foundry/src/cyberredteam/tools/target_adapter.py` defines `HttpTargetAdapter`,
-the adapter used whenever `target_id` looks like a URL (`node_attacker_branch`,
-nodes.py:166-173) — this is what lets the system attack **any** HTTP JSON agent. There is no
-in-process sandbox target.
-
-**`_render_request_body()`** (target_adapter.py:14-23) substitutes a literal `"{{PROMPT}}"`
-placeholder (must appear in quoted-string position, `_PROMPT_PLACEHOLDER = '"{{PROMPT}}"'`,
-line 11) inside a caller-supplied JSON template string:
-
-```python
-rendered = template.replace(_PROMPT_PLACEHOLDER, json.dumps(prompt))
+```http
+POST http://13.201.9.115/chat
+{"message":"..."}
 ```
 
-Using `json.dumps(prompt)` rather than naive string interpolation is the key correctness trick:
-`json.dumps` produces an already-quoted, escaped JSON string literal, so the substitution stays
-valid JSON regardless of quotes, newlines, or unicode inside the adversarial payload
-(target_adapter.py:18-21 docstring). This is what lets templates like `{"messages":
-[{"role":"user","content":"{{PROMPT}}"}]}` work for arbitrary target request schemas
-(docstring at 93-95).
+This is the separately deployed CompanyAgent application. Its Backboard credentials remain outside Canary.
 
-**`_extract_by_path()`** (target_adapter.py:26-43) is a dot-path JSON walker for pulling the
-reply text out of an arbitrary response shape, e.g. `choices.0.message.content`. It splits the
-path on `.` and, at each segment, indexes into a list via `int(segment)` if `current` is a list,
-or dict-key-accesses otherwise; any `KeyError`/`IndexError`/`ValueError`/`TypeError` returns
-`None` so callers can fall back to heuristics rather than crash. Numeric path segments (`"0"`)
-are the list-index support called out in the task — `choices.0.message.content` therefore walks
-`data["choices"][0]["message"]["content"]`.
+## 5. Evaluation and verdicts
 
-**Backward compatibility.** `HttpTargetAdapter.__init__` (target_adapter.py:75-116) makes
-`api_key`, `headers`, `request_template`, and `response_path` all optional. When
-`request_template` is omitted, `execute_attack()` falls back to `{"message": prompt}`
-(target_adapter.py:138-140); when `response_path` is omitted or doesn't resolve, it falls back to
-key-guessing over `response`/`output`/`content`/`text`, finally `str(data)` (152-168). This keeps
-the default `{"message": ...}` contract supported while allowing arbitrary schemas.
-`execute_attack()` also detects Docker (`/.dockerenv` or `RUNNING_IN_DOCKER=true`) and
-rewrites `localhost:9000`/`127.0.0.1:9000` in the endpoint to `host.docker.internal:9000`
-(target_adapter.py:101-106) — the piece that connects to the Docker-topology decision in §8.
+The evaluator combines deterministic detectors with a model judge. The deterministic layer checks strategy-specific indicators such as prompt leakage, PII/credential patterns, tool misuse, memory/context violations, retrieval probes, hierarchy violations, and workflow signals. The model judge supplies semantic scoring, confidence, rationale, and component context.
 
----
+The result path is recorded explicitly:
 
-## 5. Storage & dedup
+| Detector | Model judge | Result |
+|---|---|---|
+| hit | successful/non-inconclusive | `confirmed`, high confidence, success true |
+| hit | inconclusive | `confirmed`, medium confidence, success true |
+| miss | successful above threshold | `unconfirmed`, low confidence, success false; review signal only |
+| miss | failed/inconclusive | `inconclusive` or `failed`, no confirmed finding |
 
-`storage/models.py` defines the SQLAlchemy schema across (among others) three artifact tables
-central to the findings pipeline:
+The exact evaluator schema stores score, threshold, confidence, verdict path, deterministic hit names, rationale, ASI class, ATLAS technique, and evidence summary. A finding is content-addressed from target, component, strategy, and ASI class so repeated observations can be deduplicated across campaigns.
 
-- **`findings`** (`FindingRecord`, models.py:64-83) — the canonical, cross-run vulnerability
-  record: `finding_id` (primary key, sha256-derived per §3), `status` (default `"open"`,
-  indexed), `seen_in_runs` (JSON list), `embedding` (JSON — the dedup vector, see below).
-- **`evaluator_verdicts`** (`VerdictRecord`, models.py:86-105) — one row per evaluator call:
-  `deterministic_score`, `llm_judge_score`, `consensus_score`, `verdict`, `verdict_path`,
-  `rationale`. This is the audit trail for *why* a given verdict fired, independent of the
-  finding it rolled up into.
-- **`attack_traces`** (`TraceRecord`, models.py:108-120) — verbatim, unsanitized
-  `adversarial_input` / `target_response` / `tool_calls_observed`, explicitly for "Phase 4
-  replay" (comment at 109) — kept separate from `findings` so raw attack text (which may contain
-  the sanitization-triggering keywords the evaluator strips before sending to its LLM judge, see
-  evaluator.py:113-131) isn't mixed with the sanitized/aggregated record.
+An attacker refusal is a first-class outcome. A refused branch produces no target request and no static replacement payload. A provider failure also fails closed; it is not converted into a successful or fabricated attack.
 
-**Dedup key.** `finding_id = sha256(f"{target_id}:{component}:{strategy}:{asi_class}")[:16]`
-(evaluator.py:351-353) — the same `(target, component, strategy, asi_class)` tuple always
-produces the same finding, so `upsert_finding()` (`artifact_store.py:172-242`) either creates a
-new `FindingRecord` or, if one with that `finding_id` already exists, just appends the new
-`run_id` to `seen_in_runs` and promotes severity if this run's result is worse
-(artifact_store.py:234-239). This is exact-match dedup on the identifying tuple.
+## 6. Persistence and observability
 
-**Semantic dedup.** On *insert* (i.e. no exact `finding_id` match), `upsert_finding()` also
-computes a sentence-transformers embedding of the adversarial input
-(`embed()`, `storage/embedder.py:19-31`, using `all-MiniLM-L6-v2`, 384-dim, loaded lazily) and
-compares it via cosine similarity (`semantic_similarity()`, embedder.py:46-56) against every
-*other* open finding for the same `target_id` (artifact_store.py:192-206). If similarity ≥ 0.92,
-it does **not** merge automatically — it logs a warning and sets
-`finding_data["_duplicate_candidate"]` for surfaced review (artifact_store.py:201-206) — semantic
-near-duplicates (different exact tuple, same underlying vulnerability worded differently) are
-flagged for a human, not silently collapsed.
+SQLite is the operational source for campaign history:
 
-**Finding lifecycle state machine.** `_VALID_TRANSITIONS` (artifact_store.py:245-250):
+| Data | Purpose |
+|---|---|
+| Runs | Campaign status, target, configuration, lifecycle timestamps. |
+| Attacks | Every branch attempt, prompt, response, score, strategy, and observation. |
+| Findings | Deduplicated vulnerability records and manual lifecycle status. |
+| Evaluator verdicts | Full scoring and evidence path per attempt. |
+| LLM calls | Agent/model, token counts, latency, and hashes. |
+| LangGraph checkpoints | Resumable state timeline keyed by campaign ID. |
 
-```
-open           → wont_fix | false_positive | inconclusive
-inconclusive   → open | wont_fix | false_positive
-wont_fix       → (terminal)
-false_positive → (terminal)
-```
+Report artifacts are written as Markdown and/or JSON under `reports/`. Runtime logs are written under `runs/`. These paths are ignored by Git and should be treated as sensitive because they may contain target responses and attack traces.
 
-`transition_finding_status()` (artifact_store.py:252-287) enforces this strictly — it raises
-`ValueError` on any transition not in the allowed list, and additionally *requires*
-`metadata["reviewer_id"]` and `metadata["rationale"]` for `wont_fix`/`false_positive`
-(artifact_store.py:277-281). There is no automated `open → remediated`/`fixed` transition
-anywhere in this table — the state machine only ever moves a finding to a closed-without-fix
-state, and only via an explicit, attributed manual call. This is a deliberate design choice: the
-system flags and tracks findings but never claims a vulnerability has been fixed on its own
-authority.
+The dashboard exposes the same evidence through campaign detail, findings, and target pages. Campaign detail can reveal the raw generated prompt, actual target reply, HTTP observation, evaluator indicators, report Markdown, and LLM telemetry. This is intentional for authorized review and is why dashboard access must remain protected.
 
----
+## 7. Backend API
 
-## 6. Auth & LLM wiring
+Every protected route requires `Authorization: Bearer <API_SECRET_KEY>`.
 
-**NVIDIA wrapper.** `llm/factory.get_llm()` builds a `ChatOpenAI` client pointed at NVIDIA's
-OpenAI-compatible endpoint and wraps it in `ObservableLLM`. The compatibility module remains
-named `bedrock.py` to avoid breaking imports, but it contains no Bedrock transport. `ObservableLLM`
-exists for LCEL chain construction plus
-observability: `build_structured_chain()` (bedrock.py:72-93) composes
-`ChatPromptTemplate | llm.with_structured_output(schema)` and wraps it in `.with_retry(
-retry_if_exception_type=(provider API errors,), wait_exponential_jitter=True,
-stop_after_attempt=settings.max_retries)` — so every structured call (attacker, evaluator) gets
-automatic retry on provider/network errors. Every invocation logs agent name, model, latency, and
-sha256 input/output hashes (`_log_call()`, bedrock.py:172-209), optionally persisted to the
-`llm_calls` table via the store (models.py:48-61).
+| Route | Function |
+|---|---|
+| `GET /api/status` | Health and runtime status. |
+| `GET /api/dashboard/overview` | Aggregate dashboard metrics and LLM totals. |
+| `GET /api/runs` | Paginated campaign history. |
+| `POST /api/runs` | Background campaign launch. |
+| `POST /api/campaigns/run` | SSE campaign launch and event stream. |
+| `GET /api/runs/{run_id}` | Complete persisted campaign detail. |
+| `GET /api/runs/{run_id}/analysis-report` | Structured analysis report. |
+| `GET /api/runs/{run_id}/report-markdown` | Markdown report artifact. |
+| `GET /api/runs/{run_id}/findings` | Findings linked to one campaign. |
+| `GET /api/targets` | Target portfolio. |
+| `GET /api/targets/{target_id}/coverage` | Target ASI coverage. URL target IDs use a path converter. |
+| `GET /api/targets/{target_id}/trends` | Per-strategy target history. |
+| `GET /api/findings` | Paginated findings with filters. |
+| `GET /api/findings/{finding_id}` | Finding and latest verdict. |
+| `GET /api/findings/{finding_id}/attempts` | Contributing attempts. |
+| `PUT /api/findings/{finding_id}/status` | Manual status transition with reviewer/rationale. |
+| `GET /api/open-findings` | Open finding feed. |
+| `GET /api/incidents` | Incident feed. |
 
-There is **no mock/fallback LLM path** — `get_llm()` raises `RuntimeError` if `NVIDIA_API_KEY` isn't
-set, with the comment "we never fall back to fabricated output — a security
-tool that invents findings is worse than one that fails" (factory.py:108-109).
+`POST /api/campaigns/run` emits `agent_state`, `log`, `finding`, and `campaign_complete` SSE events. The frontend buffers event lines so a network chunk split cannot corrupt a JSON event.
 
-**Model-per-agent selection.** `_DEFAULT_MODELS` assigns NVIDIA model IDs by role, overridable via
-`configs/models.yaml`
-(`get_model_for_agent()`, factory.py:64-81). Targets are independent HTTP services; their model
-credentials and runtime remain outside Canary.
+## 8. Frontend architecture
 
-**Bearer-token auth.** The backend's `require_auth()` (`api.py:29-43`) is registered as an
-app-level FastAPI dependency (`FastAPI(dependencies=[Depends(require_auth)])`, api.py:51-53),
-so every route requires it. It fails closed: if `settings.api_secret_key` (i.e. `API_SECRET_KEY`
-env var, `settings.py:30`) isn't set, every request gets `503` rather than running open
-(api.py:36-40); otherwise it checks `Authorization: Bearer <token>` matches exactly
-(api.py:41-43). In production, browser requests stay relative to `/api/*` and Vercel's
-server-side proxy (`canary/api/[...path].js`) injects `CANARY_API_TOKEN` while forwarding to
-`CANARY_API_URL`; neither value is bundled into the browser. `VITE_API_TOKEN` is retained only
-for a direct local-development connection to an authenticated backend. The Docker deployment can
-still use nginx's internal proxy with a build-time development token, but Vercel is the public
-dashboard boundary.
+The Vite dashboard uses React Router and a typed API client. The main routes are:
 
----
+| Route | Responsibility |
+|---|---|
+| `/campaigns` | Campaign history and filters. |
+| `/campaigns/new` | Authorized target configuration and SSE execution. |
+| `/campaigns/:runId` | Evidence-backed campaign detail. |
+| `/findings` | Finding filters, evidence, and manual lifecycle transitions. |
+| `/targets` | Target portfolio. |
+| `/targets/:targetId` | Coverage, trends, and recent campaigns for one target. |
+| `/` | Presentation landing page with live aggregate metrics. |
 
-## 7. Frontend data flow
+The Vercel proxy functions map browser `/api/*` requests to the AWS FastAPI service. Explicit dynamic wrappers are used for dashboard, runs, targets, and slash-containing URL target IDs. The AWS backend remains UI-free.
 
-**`canary/src/lib/api.ts`** centralizes all backend calls behind `apiFetch<T>()`
-(api.ts:22-33), which injects `authHeader()` and normalizes error bodies into `ApiError` (with
-`.status` preserved, api.ts:14-20) so callers can distinguish "backend explicitly rejected this"
-from "network failure."
+## 9. Security model
 
-**SSE handling — the buffering fix.** `runCampaignSSE()` (api.ts:77-113) POSTs to
-`/api/campaigns/run` and manually drives the streaming body via `res.body.getReader()` rather
-than `EventSource` (which can't send a POST body/custom auth header). The read loop
-(api.ts:99-112):
+- Only owned or explicitly authorized targets may be assessed.
+- Enable `REQUIRE_TARGET_ALLOWLIST=true` and set `ALLOWED_TARGETS` before exposing the backend.
+- Keep `NVIDIA_API_KEY`, `API_SECRET_KEY`, `CANARY_API_TOKEN`, and target credentials server-side.
+- Do not place secrets in `VITE_*` variables or campaign screenshots.
+- The target receives real generated prompts; do not use production systems without written authorization.
+- Canary reports findings but does not auto-fix or mutate the target.
+- Reports and SQLite traces may contain sensitive target responses; protect them like security logs.
 
-```js
-let buffer = ''
-while (true) {
-  const { done, value } = await reader.read()
-  if (done) break
-  buffer += decoder.decode(value, { stream: true })
-  const lines = buffer.split('\n')
-  buffer = lines.pop() ?? ''   // keep incomplete last line
-  for (const line of lines) {
-    if (!line.startsWith('data: ')) continue
-    try { onEvent(JSON.parse(line.slice(6))) } catch { /* skip malformed */ }
-  }
-}
+## 10. Deployment and operations
+
+### AWS backend
+
+The AWS deployment uses the backend-only Compose override:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.aws.yml up -d --build redteam-backend
 ```
 
-The load-bearing detail is `buffer = lines.pop() ?? ''`: a chunk boundary from `reader.read()`
-can split a single SSE `data: {...}` line across two `Uint8Array` chunks (TCP/HTTP chunking gives
-no guarantee that a `data:` line arrives whole). Without holding back the last (potentially
-partial) line and re-prepending it to the next chunk's decoded text, `JSON.parse` on a truncated
-line would throw and — worse — the second half of that event would then be misread as a
-freestanding line and silently dropped, not just delayed. This is a real fix for observed
-mid-stream corruption, not a defensive no-op.
+The backend is exposed on port 80 through the override and serves Swagger at `/docs`. The frontend profile is disabled in the AWS deployment.
 
-**`RunAuditPage.tsx`** (`canary/src/pages/RunAuditPage.tsx`) is the primary consumer:
-`runRealCampaign()` (lines 278-305) calls `runCampaignSSE()` with the campaign payload
-(target URL, selected techniques, optional headers/`request_template`/`response_path` — all
-omitted-if-blank) and a `handleSSEEvent` dispatcher (lines 255-275) that switches on
-`event.type` (`agent_state`, `log`, `finding`, `campaign_complete`) to drive local component
-state (`updateAgent`, `fireEdge`, `appendLog`, `setReport`).
+### Vercel dashboard
 
-**Dashboard feature.** The dashboard pages and shared API client in `canary/src/pages/` and
-`AgentGraphPanel.tsx`, `Sidebar.tsx`) is a chat-command interface layered over the same
-campaign/SSE machinery. User input is parsed by `parseCommand()`
-(`canary/src/lib/commands.ts:31-68`) into a small discriminated union (`CONNECT`, `RUN`,
-`SHOW_FINDINGS`, `SHOW_COVERAGE`, `RERUN_LAST`, `EXPORT`, `HELP`, `UNKNOWN`, ...) — e.g. `run
-prompt_injection,jailbreak` splits on commas and partitions tokens into valid vs. `invalid`
-technique IDs against the static `TECHNIQUE_IDS` list (commands.ts:43-47). `ChatPanel.tsx`
-dispatches on the parsed `Command` (line 99) and falls through to
-`say('error', 'Unrecognized command...')` for `UNKNOWN` (line 176).
+The dashboard is deployed from `canary/` and uses production variables:
 
-State is centralized in **`canary/src/store/useConsoleStore.ts`**, a `zustand` store
-(`create<ConsoleStore>(...)`, line 46) holding `targetUrl`, `selectedTechniques`, `campaignId`,
-`phase`, `agentStatuses`, `logs`, `findings`, `report`, `chatMessages`, and `runHistory`. Actions
-are plain `set()` calls — e.g. `appendLog` (lines 78-81) appends a timestamped entry, `fireEdge`
-(69-76) flashes `activeEdge` for 1200ms via a module-level timer, `addRunHistory` (106) dedupes by
-`campaign_id` on insert.
+```env
+CANARY_API_URL=http://<aws-backend-host>
+CANARY_API_TOKEN=<API_SECRET_KEY>
+```
 
-**IndexedDB run history.** `canary/src/lib/db.ts` wraps `idb-keyval` (`get`/`set`/`del`/`keys`)
-with a `canary-run:` key prefix (db.ts:4): `saveRun()` (6-8) persists a completed campaign's
-`CompletePayload` keyed by `campaign_id`; `loadRunHistory()` (10-15) filters all IndexedDB keys by
-that prefix and loads them back for `Sidebar.tsx`'s history list. `ChatPanel.tsx:78` calls
-`saveRun(payload).catch(() => {/* IndexedDB unavailable — history just won't persist */})` — a
-save failure (private browsing, quota) degrades gracefully rather than blocking the chat flow.
+Build locally with:
 
----
+```bash
+cd canary
+npm install
+npm run lint
+npm run build
+```
 
-## 8. Docker topology
+### Vercel explainer
 
-`docker-compose.yml` defines exactly two services on a single bridge network (`canary-net`,
-lines 9-11):
+The explainer is a static Vercel project rooted at `explainer/`:
 
-- **`redteam-backend`** — built from `cyber-redteam-foundry/Dockerfile`, runs
-  `uvicorn cyberredteam.api:app --host 0.0.0.0 --port 8001 --timeout-keep-alive 300`
-  (lines 20-24), env from `cyber-redteam-foundry/.env`, `RUNNING_IN_DOCKER=true` set explicitly
-  (line 28) — this is exactly the flag `HttpTargetAdapter.__init__` checks
-  (`target_adapter.py:102`) to decide whether to rewrite `localhost:9000` endpoints. Port 8001
-  is published to the host both for direct FastAPI inspection and because nginx proxies to it
-  internally (comment at lines 1-3).
-- **`canary-frontend`** — built from `canary/Dockerfile`, receives `VITE_API_URL=""` (relative
-  URL, so nginx proxies `/api/*` to the backend) and `VITE_API_TOKEN` as build args (lines 45-49),
-  publishes host port 8000 → container port 80 (nginx), and `depends_on: redteam-backend`
-  (lines 55-56).
+```bash
+cd explainer
+npx vercel dev --local --listen 127.0.0.1:4173
+npx vercel link --project agent-canary-explainer --yes
+npx vercel --prod --yes
+```
 
-**Owned HTTP targets may run outside Docker**, as host processes. `redteam-backend` reaches them via
-`extra_hosts: ["host.docker.internal:host-gateway"]` (lines 29-30), and
-`HttpTargetAdapter.__init__` rewrites any `localhost:9000`/`127.0.0.1:9000` endpoint string in
-the run config to `host.docker.internal:9000` when it detects it's running inside the container
-(target_adapter.py:101-106).
+The folder intentionally contains only `explainer.html` and `vercel.json` in Git. Local Vercel metadata and `.env.local` files must remain ignored.
 
-**Why**: the generic `HttpTargetAdapter` (§4) attacks *any* owned HTTP JSON agent reachable from
-the host, including a locally-run LangChain/AutoGen agent or a service bound to `localhost`.
-Canary does not provide a built-in target process.
+## 11. Validation
+
+The current validation commands are:
+
+```bash
+cd canary
+npm run lint
+npm run build
+
+cd ../cyber-redteam-foundry
+uv run --extra dev pytest tests/test_api.py tests/test_auth.py
+```
+
+The focused backend suite covers API/auth behavior and URL target detail routing. Live production checks have verified the dashboard proxy, AWS backend health, campaign history, target coverage, target trends, and persisted LLM telemetry.
+
+## 12. Design patterns
+
+- **Orchestrator:** `GraphOrchestrator` owns run setup, checkpoint invocation, and persistence.
+- **Scatter-gather:** LangGraph `Send()` fans out independent attacker branches and gathers their deltas at the evaluator barrier.
+- **Strategy:** each `StrategyType` selects one scoped attack technique behind the common attacker contract.
+- **Adapter:** `HttpTargetAdapter` normalizes HTTP request templates, auth headers, response paths, and observations.
+- **Reducer:** `Annotated[..., operator.add]` merges parallel branch results and log events.
+- **Checkpoint:** SQLite-backed LangGraph state uses the campaign ID as `thread_id`.
+- **Proxy:** Vercel server functions isolate the browser from the AWS API credential.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
