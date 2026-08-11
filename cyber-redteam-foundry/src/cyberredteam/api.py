@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import select
 
@@ -19,11 +19,13 @@ from cyberredteam.schemas import RunConfig, StrategyType
 from cyberredteam.settings import get_settings
 from cyberredteam.storage.artifact_store import SQLiteStore
 from cyberredteam.storage.models import AttackRecord, RunRecord
+from cyberredteam.logging import setup_logging
 
 logger = logging.getLogger("cyberredteam.api")
 logging.basicConfig(level=logging.INFO)
 
 settings = get_settings()
+setup_logging(settings.log_level, settings.log_file)
 
 
 def require_auth(authorization: Optional[str] = Header(None)) -> None:
@@ -62,6 +64,14 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def unauthenticated_health_check(request, call_next):
+    """Expose a minimal container/load-balancer probe without API credentials."""
+    if request.url.path == "/health":
+        return JSONResponse({"status": "ok"})
+    return await call_next(request)
 
 
 class RunRequest(BaseModel):
@@ -116,11 +126,13 @@ def run_orchestrator_thread(
             max_iterations=max_iterations,
         )
         orchestrator.run()
-        active_runs[run_id] = "completed"
+        with _active_runs_lock:
+            active_runs[run_id] = "completed"
         logger.info(f"[API] Run {run_id} completed successfully")
     except Exception as e:
         logger.error(f"[API] Run {run_id} failed: {e}")
-        active_runs[run_id] = "failed"
+        with _active_runs_lock:
+            active_runs[run_id] = "failed"
         # Update DB status to failed
         try:
             store = SQLiteStore(Path(settings.db_path))
@@ -129,6 +141,7 @@ def run_orchestrator_thread(
                 run = session.scalar(stmt)
                 if run:
                     run.status = "failed"
+                    run.error = str(e)
                     session.commit()
             store.close()
         except Exception as dbe:
@@ -144,6 +157,9 @@ def get_status():
         "database": str(settings.db_path),
         "database_exists": db_exists,
         "report_directory": str(settings.report_output_dir),
+        "active_runs": _running_count(),
+        "target_allowlist_configured": bool(_authorized_targets()),
+        "log_file": str(settings.log_file),
     }
 
 
@@ -160,6 +176,11 @@ def create_run(req: RunRequest, background_tasks: BackgroundTasks):
                 detail=f"Target '{target_id}' is not in the authorized allowlist.",
             )
     else:
+        if settings.require_target_allowlist:
+            raise HTTPException(
+                status_code=503,
+                detail="Target allowlist is required but ALLOWED_TARGETS is empty.",
+            )
         logger.warning(
             "ALLOWED_TARGETS is empty — no target allowlist enforced. "
             "Set it before exposing this API."
@@ -242,6 +263,7 @@ def get_run(run_id: str):
             "run_id": run.run_id,
             "target_id": run.target_id,
             "status": run.status,
+            "error": run.error,
             "start_time": run.start_time.isoformat() if run.start_time else None,
             "end_time": run.end_time.isoformat() if run.end_time else None,
             "total_attacks": run.total_attacks,
@@ -261,6 +283,8 @@ def get_run(run_id: str):
                     "score": a.score,
                     "score_threshold": a.score_threshold,
                     "indicators": a.indicators,
+                    "observation": (a.indicators or {}).get("_observation"),
+                    "error": a.error,
                     "timestamp": a.timestamp.isoformat() if a.timestamp else None,
                 }
                 for a in attacks
@@ -687,6 +711,11 @@ async def campaign_run_sse(req: CampaignRunRequest):
             status_code=403,
             detail=f"Target '{target_id}' is not in the authorised allowlist.",
         )
+    if not allowed and settings.require_target_allowlist:
+        raise HTTPException(
+            status_code=503,
+            detail="Target allowlist is required but ALLOWED_TARGETS is empty.",
+        )
 
     with _active_runs_lock:
         if _running_count() >= settings.max_concurrent_runs:
@@ -783,13 +812,15 @@ async def campaign_run_sse(req: CampaignRunRequest):
                         run_rec = sess.scalar(select(RunRecord).where(RunRecord.run_id == run_id))
                         atks = list(sess.scalars(select(AttackRecord).where(AttackRecord.run_id == run_id)).all())
                         status = run_rec.status if run_rec else "running"
+                        run_error = run_rec.error if run_rec else None
                     s.close()
-                    return status, atks
+                    return status, run_error, atks
 
-                current_status, attacks = await asyncio.to_thread(_read_db)
+                current_status, run_error, attacks = await asyncio.to_thread(_read_db)
             except Exception as exc:
                 logger.warning(f"[SSE] DB poll error: {exc}")
                 current_status = active_runs.get(run_id, "running")
+                run_error = str(exc)
                 attacks = []
 
             # Emit new attack results
@@ -798,9 +829,18 @@ async def campaign_run_sse(req: CampaignRunRequest):
                 last_attack_count = len(attacks)
 
                 for atk in new_attacks:
+                    observation = (atk.indicators or {}).get("_observation", {})
+                    target_status = observation.get("http_status", "n/a")
+                    target_state = observation.get("status", "not_recorded")
                     yield sse({"type": "log", "payload": {
                         "level": "EVAL",
-                        "message": f"Target responded to {atk.strategy_type} probe. Evaluating indicators.",
+                        "message": (
+                            f"Target observation: {target_state} / HTTP {target_status} / "
+                            f"{observation.get('latency_ms', 'n/a')}ms for {atk.strategy_type}."
+                            if observation else
+                            f"No target observation recorded for {atk.strategy_type}: "
+                            f"{atk.error or 'unknown execution error'}."
+                        ),
                     }})
                     yield sse({"type": "agent_state", "payload": {
                         "agent_id": "evaluator", "status": "processing", "active_edge": "evaluator->target",
@@ -848,7 +888,7 @@ async def campaign_run_sse(req: CampaignRunRequest):
         if current_status != "completed":
             failed = current_status == "failed"
             message = (
-                "Real agent pipeline failed; no report was generated."
+                f"Real agent pipeline failed: {run_error or 'no error recorded'}."
                 if failed
                 else "Campaign is still running; no report is available yet."
             )
@@ -909,15 +949,17 @@ async def campaign_run_sse(req: CampaignRunRequest):
             }
         except Exception as exc:
             logger.error(f"[SSE] Final report build failed: {exc}")
-            complete_payload = {
-                "campaign_id":    campaign_id,
-                "run_id":         run_id,
-                "total_findings": 0,
-                "critical_count": 0,
-                "high_count":     0,
-                "duration_seconds": elapsed,
-                "findings":       [],
-            }
+            yield sse({"type": "log", "payload": {
+                "level": "ERROR",
+                "message": f"Final report assembly failed: {exc}",
+            }})
+            yield sse({"type": "campaign_failed", "payload": {
+                "campaign_id": campaign_id,
+                "run_id": run_id,
+                "status": "failed",
+                "message": f"Final report assembly failed: {exc}",
+            }})
+            return
 
         total = complete_payload["total_findings"]
         yield sse({"type": "log", "payload": {

@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     # no allowlist is enforced (a warning is logged; do not rely on this in
     # production).
     allowed_targets: str = ""
+    require_target_allowlist: bool = False
 
     # Target
     target_mode: str = "http"

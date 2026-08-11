@@ -2,9 +2,9 @@
 
 Agent Canary is a two-service system for automated red-teaming of LLM agents. The backend
 (`cyber-redteam-foundry/`, FastAPI + LangGraph, Python) runs adversarial campaigns against an
-arbitrary HTTP JSON agent using AWS Bedrock-hosted LLMs for the attacker/evaluator/strategist
+ arbitrary HTTP JSON agent using NVIDIA-hosted Nemotron through an OpenAI-compatible endpoint for the attacker/evaluator/reporter
 roles, and persists findings to SQLite. The frontend (`canary/`, React 19 + Vite + TypeScript)
-is a dashboard/console that drives campaigns over Server-Sent Events and browses stored findings.
+is a dashboard that drives campaigns over Server-Sent Events and browses stored findings.
 
 This document assumes familiarity with LangGraph, FastAPI, and React, and cites concrete
 file:line locations throughout so claims can be checked against the code directly.
@@ -28,9 +28,8 @@ strategist → (Send fan-out) → attacker_branch × ≤3 (parallel) → evaluat
   dispatch_attacker_branches)` (graph.py:78). This function does not return a routing string —
   it returns `List[Send]`, LangGraph's mechanism for dynamic parallel dispatch. It:
   1. Converts `state["strategies"]` to `StrategyType` enum members (nodes.py:107).
-  2. Calls `random.sample(candidates, min(MAX_PARALLEL_BRANCHES, len(candidates)))` where
-     `MAX_PARALLEL_BRANCHES = 3` (nodes.py:33, 110) — so **at most 3** strategies are sampled per
-     dispatch, chosen uniformly at random rather than ranked by an LLM.
+  2. Preserves the requested order and takes `candidates[:MAX_PARALLEL_BRANCHES]`, where
+     `MAX_PARALLEL_BRANCHES = 3` — so **at most 3** explicitly requested strategies are dispatched.
   3. For each chosen strategy, resolves `(asi_class, _) = taxonomy.lookup(strategy.value, "")`
      and `spec = get_spec(asi_class)` (nodes.py:116-117) to build an `AttackBranch` — a plain
      dataclass (`schemas.py:100-119`), not part of `RedTeamState`, carrying `branch_id`,
@@ -86,7 +85,7 @@ return "strategist" if state["should_continue_iterating"] else "reporter"
 
 wired via `graph.add_conditional_edges("evaluator", should_iterate, {"strategist": "strategist",
 "reporter": "reporter"})` (graph.py:84-91). Looping back to `strategist` triggers a *fresh*
-`dispatch_attacker_branches` call — a new random sample of ≤3 strategies, new branch IDs, fresh
+`dispatch_attacker_branches` call — the requested first ≤3 strategies, new branch IDs, fresh
 `depth=0` budgets — not a continuation of the old branches. `max_iterations` is enforced purely
 by this counter check; there is no separate iteration-count node.
 
@@ -106,7 +105,7 @@ are hardcoded on every returned `AttackResult` (attacker.py:274, 276) with a com
 evaluator determines both.
 
 **`AttackerOutput` schema** (`llm/schemas.py:33-71`), produced via
-`llm.build_structured_chain(system_prompt, AttackerOutput)` (attacker.py:128) — i.e. Bedrock's
+`llm.build_structured_chain(system_prompt, AttackerOutput)` (attacker.py:128) — the provider's
 structured-output mode, never free-text parsing:
 
 - `status: Literal["OK", "ATTACKER_REFUSED"]` — first-class refusal outcome (schemas.py:41-45).
@@ -128,9 +127,8 @@ the function returns immediately with `prompt=""`, `response=""`, `success=False
 adapter's `execute_attack()` is never called**. This means a refused branch produces zero network
 traffic to the target and zero LLM-judge cost on the evaluator side; it's purely logged. This is
 distinct from the LLM-call-failure fallback path (`_fallback_output()`, attacker.py:144-157),
-which is only triggered when the Bedrock call itself raises (network/throttling) and substitutes
-one of the static `_FALLBACK_PAYLOADS` (attacker.py:32-69) — a fallback payload still gets sent to
-the target, unlike a genuine refusal.
+which is only triggered when the provider call raises. The branch fails closed and does not send
+any payload to the target; there are no static attacker-payload fallbacks.
 
 **technique_id → ASI taxonomy mapping.** `technique_id` on every `AttackBranch` is set once, in
 `dispatch_attacker_branches`, from `taxonomy.lookup(strategy.value, "")` (nodes.py:116) — the
@@ -303,25 +301,24 @@ authority.
 
 ## 6. Auth & LLM wiring
 
-**Bedrock wrapper.** `llm/factory.get_llm()` (`factory.py:91-144`) builds a
-`ChatBedrockConverse` instance (`langchain_aws`) directly — `model=model, region_name=... ,
-temperature=0.7, max_tokens=2048` (factory.py:130-135) — and wraps it in `ObservableLLM`
-(`llm/bedrock.py:31-241`). `ObservableLLM` exists purely for LCEL chain construction plus
+**NVIDIA wrapper.** `llm/factory.get_llm()` builds a `ChatOpenAI` client pointed at NVIDIA's
+OpenAI-compatible endpoint and wraps it in `ObservableLLM`. The compatibility module remains
+named `bedrock.py` to avoid breaking imports, but it contains no Bedrock transport. `ObservableLLM`
+exists for LCEL chain construction plus
 observability: `build_structured_chain()` (bedrock.py:72-93) composes
 `ChatPromptTemplate | llm.with_structured_output(schema)` and wraps it in `.with_retry(
-retry_if_exception_type=(botocore.exceptions.ClientError,), wait_exponential_jitter=True,
+retry_if_exception_type=(provider API errors,), wait_exponential_jitter=True,
 stop_after_attempt=settings.max_retries)` — so every structured call (attacker, evaluator) gets
-automatic retry on Bedrock throttling. Every invocation logs agent name, model, latency, and
+automatic retry on provider/network errors. Every invocation logs agent name, model, latency, and
 sha256 input/output hashes (`_log_call()`, bedrock.py:172-209), optionally persisted to the
 `llm_calls` table via the store (models.py:48-61).
 
-There is **no mock/fallback LLM path** — `get_llm()` raises `RuntimeError` if `AWS_REGION` isn't
-set (factory.py:115-120), with the comment "we never fall back to fabricated output — a security
+There is **no mock/fallback LLM path** — `get_llm()` raises `RuntimeError` if `NVIDIA_API_KEY` isn't
+set, with the comment "we never fall back to fabricated output — a security
 tool that invents findings is worse than one that fails" (factory.py:108-109).
 
-**Model-per-agent selection.** `_DEFAULT_MODELS` (factory.py:36-41) assigns different Bedrock
-models by role — e.g. `attacker: deepseek.v3-v1:0` vs. `strategist/evaluator/reporter:
-qwen.qwen3-coder-480b-a35b-v1:0` — overridable via `configs/models.yaml`
+**Model-per-agent selection.** `_DEFAULT_MODELS` assigns NVIDIA model IDs by role, overridable via
+`configs/models.yaml`
 (`get_model_for_agent()`, factory.py:64-81). Targets are independent HTTP services; their model
 credentials and runtime remain outside Canary.
 
@@ -383,7 +380,7 @@ omitted-if-blank) and a `handleSSEEvent` dispatcher (lines 255-275) that switche
 `event.type` (`agent_state`, `log`, `finding`, `campaign_complete`) to drive local component
 state (`updateAgent`, `fireEdge`, `appendLog`, `setReport`).
 
-**Console feature.** `canary/src/components/console/` (`ConsoleLayout.tsx`, `ChatPanel.tsx`,
+**Dashboard feature.** The dashboard pages and shared API client in `canary/src/pages/` and
 `AgentGraphPanel.tsx`, `Sidebar.tsx`) is a chat-command interface layered over the same
 campaign/SSE machinery. User input is parsed by `parseCommand()`
 (`canary/src/lib/commands.ts:31-68`) into a small discriminated union (`CONNECT`, `RUN`,

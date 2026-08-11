@@ -214,7 +214,7 @@ export default function RunAuditPage({ onBack }: RunAuditPageProps) {
       appendLog('ERROR', err.status !== undefined
         ? err.message
         : `Backend unavailable (${err.message}). No report was generated.`)
-      setPhase('idle')
+      setPhase('failed')
     })
   }, [targetUrl, selectedTechniques.length, runRealCampaign, appendLog])
 

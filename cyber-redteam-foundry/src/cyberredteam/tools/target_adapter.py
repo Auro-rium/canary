@@ -1,10 +1,13 @@
 """Target adapter for executing attack cases against different deployment types."""
 
 import json
+import hashlib
+import time
 import requests
 from typing import Any, Dict, Optional, Tuple
 
 from cyberredteam.logging import setup_logging
+from cyberredteam.logging import log_event
 
 logger = setup_logging()
 
@@ -112,6 +115,11 @@ class HttpTargetAdapter(TargetAdapter):
         self.request_template = request_template
         self.response_path = response_path
         self.target_id = endpoint  # For logging
+        self.last_observation: Dict[str, Any] = {
+            "stage": "target_request",
+            "status": "not_started",
+            "endpoint": self.endpoint,
+        }
 
         logger.info(f"HttpTargetAdapter initialized → {self.endpoint}")
 
@@ -139,6 +147,8 @@ class HttpTargetAdapter(TargetAdapter):
         else:
             request_body = {"message": prompt}
 
+        started = time.perf_counter()
+        request_hash = hashlib.sha256(payload.encode()).hexdigest()[:16]
         try:
             resp = requests.post(
                 self.endpoint,
@@ -146,6 +156,18 @@ class HttpTargetAdapter(TargetAdapter):
                 headers=self._build_headers(),
                 timeout=self.timeout,
             )
+            latency_ms = round((time.perf_counter() - started) * 1000, 2)
+            self.last_observation = {
+                "stage": "target_request",
+                "status": "response",
+                "endpoint": self.endpoint,
+                "http_status": resp.status_code,
+                "latency_ms": latency_ms,
+                "request_hash": request_hash,
+                "response_hash": hashlib.sha256(resp.content).hexdigest()[:16],
+                "response_bytes": len(resp.content),
+            }
+            log_event(logger, "target_response", **self.last_observation)
             resp.raise_for_status()
             data = resp.json()
 
@@ -170,11 +192,35 @@ class HttpTargetAdapter(TargetAdapter):
             return response_text, None
 
         except requests.exceptions.Timeout:
+            self.last_observation = {
+                "stage": "target_request", "status": "timeout", "endpoint": self.endpoint,
+                "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+                "request_hash": request_hash, "error_type": "timeout",
+            }
+            log_event(logger, "target_error", **self.last_observation)
             logger.warning(f"HTTP target timed out after {self.timeout}s")
             return "(target agent timed out)", None
         except requests.exceptions.ConnectionError:
+            self.last_observation = {
+                "stage": "target_request", "status": "unreachable", "endpoint": self.endpoint,
+                "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+                "request_hash": request_hash, "error_type": "connection_error",
+            }
+            log_event(logger, "target_error", **self.last_observation)
             logger.error(f"Cannot connect to target at {self.endpoint}")
             return "(target agent unreachable)", None
         except Exception as e:
+            response_obj = locals().get("resp")
+            self.last_observation = {
+                "stage": "target_request", "status": "error", "endpoint": self.endpoint,
+                "latency_ms": round((time.perf_counter() - started) * 1000, 2),
+                "request_hash": request_hash, "error_type": type(e).__name__,
+                "error": str(e),
+            }
+            if response_obj is not None:
+                self.last_observation["http_status"] = response_obj.status_code
+                self.last_observation["response_hash"] = hashlib.sha256(response_obj.content).hexdigest()[:16]
+                self.last_observation["response_bytes"] = len(response_obj.content)
+            log_event(logger, "target_error", **self.last_observation)
             logger.error(f"HTTP target error: {e}")
             return f"(target error: {e})", None

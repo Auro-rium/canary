@@ -28,6 +28,15 @@ interface Attack {
   timestamp: string | null
   finding_id: string | null
   target_id: string | null
+  observation?: {
+    status?: string
+    http_status?: number
+    latency_ms?: number
+    response_hash?: string
+    error_type?: string
+    error?: string
+  } | null
+  error?: string | null
 }
 
 interface RunDetail {
@@ -39,6 +48,7 @@ interface RunDetail {
   total_attacks: number
   successful_attacks: number
   success_rate: number
+  error?: string | null
   attacks: Attack[]
 }
 
@@ -109,6 +119,11 @@ function RunDetailPanel({ detail }: { detail: RunDetail }) {
       </div>
 
       {/* Summary row */}
+      {detail.error && (
+        <div className="border border-red-600/30 bg-red-950/20 px-3 py-2 mb-6 text-red-300 text-[10px]">
+          RUN ERROR: {detail.error}
+        </div>
+      )}
       <div className="flex gap-6 border border-white/10 bg-white/[0.02] px-4 py-3 mb-6">
         <div className="flex flex-col gap-0.5">
           <span className="text-white/20 text-[9px] uppercase tracking-wider">Total Attacks</span>
@@ -177,9 +192,20 @@ function RunDetailPanel({ detail }: { detail: RunDetail }) {
                 </span>
 
                 {/* Prompt excerpt */}
-                <span className="text-white/40 text-[9px] font-mono leading-relaxed line-clamp-2">
-                  {attack.prompt.length > 120 ? attack.prompt.slice(0, 120) + '…' : attack.prompt}
-                </span>
+                <div className="text-white/40 text-[9px] font-mono leading-relaxed min-w-0">
+                  <div className="line-clamp-2">
+                    {attack.prompt.length > 120 ? attack.prompt.slice(0, 120) + '…' : attack.prompt}
+                  </div>
+                  <div className="mt-1 text-[8px] uppercase tracking-wider text-white/25">
+                    TARGET {attack.observation?.http_status ?? '—'}
+                    {attack.observation?.latency_ms != null ? ` • ${attack.observation.latency_ms}ms` : ''}
+                    {attack.observation?.status ? ` • ${attack.observation.status}` : ''}
+                    {attack.error ? ` • ${attack.error}` : ''}
+                  </div>
+                  <div className="mt-1 text-white/30 line-clamp-2">
+                    RESPONSE: {attack.response || '—'}
+                  </div>
+                </div>
 
                 {/* Finding ID */}
                 <span className="text-white/20 text-[9px] font-mono truncate">

@@ -2,7 +2,7 @@
 
 [![Python 3.11](https://img.shields.io/badge/Python-3.11-3776ab?logo=python&logoColor=white)](https://www.python.org/)
 [![React 19](https://img.shields.io/badge/React-19-61dafb?logo=react&logoColor=black)](https://react.dev/)
-[![AWS Bedrock](https://img.shields.io/badge/AWS%20Bedrock-Enabled-FF9900?logo=amazonaws&logoColor=white)](https://aws.amazon.com/bedrock/)
+[![NVIDIA Nemotron](https://img.shields.io/badge/NVIDIA-Nemotron-76B900?logo=nvidia&logoColor=white)](https://build.nvidia.com/)
 [![LangGraph](https://img.shields.io/badge/LangGraph-Multi--Agent-7c3aed)](https://github.com/langchain-ai/langgraph)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ed?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
@@ -10,7 +10,7 @@
 
 Autonomous AI red-team platform. Point it at any HTTP-based AI agent, and a 4-agent LangGraph pipeline attacks it, evaluates findings, and streams live results to a React dashboard. Vulnerabilities are triaged manually — no auto-remediation.
 
-![Agent Canary demo: launching a campaign, live SSE agent topology, findings report, Findings page, and the Console](demo/demo.gif)
+![Agent Canary demo: launching a campaign, live SSE agent topology, findings report, and Findings page](demo/demo.gif)
 
 Full-length recording: [demo/demo.mp4](demo/demo.mp4)
 
@@ -45,18 +45,18 @@ canary/
 
 ## Architecture
 
-Four specialized agents run as a stateful LangGraph pipeline on AWS Bedrock.
+Four specialized agents run as a stateful LangGraph pipeline through NVIDIA's OpenAI-compatible Nemotron endpoint.
 
 ```mermaid
 graph TD
     START([Start Campaign]) --> strategist["1 · Strategist<br/>Picks strategies, dispatches ≤3 parallel branches"]
-    strategist -.->|Send| attacker["2 · Attacker branch<br/>DeepSeek V3<br/>Builds &amp; fires adversarial prompts"]
+    strategist -.->|Send| attacker["2 · Attacker branch<br/>Nemotron<br/>Builds &amp; fires adversarial prompts"]
     attacker --> target["Target Agent<br/>HTTP endpoint under test"]
-    target --> evaluator["3 · Evaluator<br/>Qwen3 480b<br/>Det. detectors + LLM judge"]
+    target --> evaluator["3 · Evaluator<br/>Nemotron<br/>Det. detectors + LLM judge"]
     evaluator --> branch{Vulnerability found<br/>and iterations remain?}
 
     branch -->|Yes — re-dispatch| strategist
-    branch -->|No| reporter["4 · Reporter<br/>Qwen3 480b<br/>Markdown + JSON audit report"]
+    branch -->|No| reporter["4 · Reporter<br/>Nemotron<br/>Markdown + JSON audit report"]
 
     reporter --> END([Persist findings])
 
@@ -70,10 +70,10 @@ graph TD
 
 | Agent | Model | Responsibility |
 |---|---|---|
-| Strategist | — (no LLM call) | Randomly dispatches up to 3 attack strategies per iteration as parallel branches |
-| Attacker | DeepSeek V3 | Constructs adversarial prompts, executes them against the target |
-| Evaluator | Qwen3 480b | Deterministic detectors + LLM judge; produces 4-case consensus verdict; owns the iterate-vs-report routing decision |
-| Reporter | Qwen3 480b | Structured Markdown and JSON audit reports with per-finding evidence |
+| Strategist | Deterministic graph node | Preserves the requested strategy order and dispatches up to 3 parallel branches |
+| Attacker | NVIDIA Nemotron | Constructs adversarial prompts, executes them against the target |
+| Evaluator | NVIDIA Nemotron | Deterministic detectors + LLM judge; produces 4-case consensus verdict and owns iterate-vs-report routing |
+| Reporter | NVIDIA Nemotron | Structured Markdown and JSON audit reports with per-finding evidence |
 
 ---
 
@@ -124,7 +124,7 @@ Two layers produce a 4-case consensus verdict per attempt:
 **Layer 1 — Deterministic detectors**
 Regex and pattern matching for PII, credentials, prompt injection, tool abuse, memory violations, RAG probing.
 
-**Layer 2 — LLM judge (Qwen3 480b)**
+**Layer 2 — LLM judge (NVIDIA Nemotron)**
 Semantic confidence scoring against attack strategy success criteria.
 
 | Detector | LLM | Verdict |
@@ -184,13 +184,13 @@ React 19 SPA served on port **8000**, four pages:
 | Run Audit | Configure and launch campaigns. Live SSE stream with agent topology diagram. |
 | Findings | Paginated findings table with verdict badges, severity, status lifecycle controls. |
 | Red Team | Live incident feed, run detail panel, strategy labels. |
-| Console | Chat-centric command interface for driving campaigns and querying findings/coverage/trends. |
+| Red Team | Live incident feed, run detail, target observations, and strategy labels. |
 
 ---
 
 ## Quick Start (Local Docker)
 
-**Prerequisites:** Docker Desktop (or Engine + Compose plugin), AWS account with Bedrock access enabled for Qwen3 models in your region.
+**Prerequisites:** Docker Desktop (or Engine + Compose plugin), an NVIDIA API key, and an authorized HTTP agent target.
 
 ```bash
 # 1. Clone
@@ -228,11 +228,10 @@ docker compose -f docker-compose.yml -f docker-compose.aws.yml up -d --build red
 ### `cyber-redteam-foundry/.env`
 
 ```env
-# AWS Bedrock — credentials resolved via standard boto3 chain
-AWS_REGION="us-east-1"
-AWS_ACCESS_KEY_ID=""          # or use ~/.aws/credentials / instance role
-AWS_SECRET_ACCESS_KEY=""
-AWS_SESSION_TOKEN=""          # optional, for temporary credentials
+# NVIDIA NIM / build.nvidia.com
+NVIDIA_API_KEY=""
+NVIDIA_BASE_URL="https://integrate.api.nvidia.com/v1"
+NVIDIA_MODEL="nvidia/nemotron-3-ultra-550b-a55b"
 
 # API authentication — Bearer token for all /api/* endpoints
 API_SECRET_KEY="change-me"
@@ -240,6 +239,7 @@ API_SECRET_KEY="change-me"
 # Authorization scope — comma-separated target_ids allowed for runs
 # Empty = no allowlist enforced
 ALLOWED_TARGETS=""
+REQUIRE_TARGET_ALLOWLIST=false
 
 # Target configuration
 TARGET_MODE="http"
@@ -312,7 +312,7 @@ cyber-rt run \
   --max-iterations 3
 
 # Diagnostics
-cyber-rt doctor          # verify AWS Bedrock connectivity
+cyber-rt doctor          # verify runtime configuration
 cyber-rt list-strategies # show all strategies with severity defaults
 cyber-rt status          # summary of last run
 cyber-rt graph           # print Mermaid diagram of the LangGraph workflow

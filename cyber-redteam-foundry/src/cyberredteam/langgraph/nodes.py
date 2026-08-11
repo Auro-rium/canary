@@ -10,7 +10,6 @@ Agent instances are created via a factory so they can be injected in
 tests.
 """
 
-import random
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -75,17 +74,15 @@ def set_reporter_factory(factory: Callable[..., ReporterAgent]) -> None:
 # ---------------------------------------------------------------------------
 
 def node_strategist(state: RedTeamState) -> dict:
-    """Log-only pass-through ahead of the random parallel dispatch.
+    """Log-only pass-through ahead of deterministic parallel dispatch.
 
-    The actual technique selection for fan-out is pure `random.sample` in
-    `dispatch_attacker_branches` (the conditional edge below) — no LLM call,
-    per design. `StrategistAgent.select_strategies()` (LLM-ranked) remains
-    available for callers that want ranked-not-random selection; it's simply
-    unused by this graph's default dispatch path.
+    Technique selection is intentionally explicit in the current graph. The
+    StrategistAgent remains available for future LLM-ranked selection, but the
+    graph does not claim that this node called it.
     """
     logger.info(f"[Graph] Strategist node — Run {state['run_id']}")
     candidates = state["strategies"]
-    logger.info(f"[Graph] Strategist candidates for random dispatch: {candidates}")
+    logger.info(f"[Graph] Strategist candidates for deterministic dispatch: {candidates}")
 
     return {
         "log_messages": [f"Strategist ready to dispatch from {len(candidates)} candidate technique(s)"],
@@ -97,7 +94,7 @@ def node_strategist(state: RedTeamState) -> dict:
 # ---------------------------------------------------------------------------
 
 def dispatch_attacker_branches(state: RedTeamState) -> List[Send]:
-    """Randomly select up to MAX_PARALLEL_BRANCHES techniques and fan out.
+    """Select the requested techniques in order and fan them out.
 
     Each selected technique becomes one independent AttackBranch (fresh
     depth=0, its own attempt budget) sent to `node_attacker_branch` as a
@@ -107,7 +104,10 @@ def dispatch_attacker_branches(state: RedTeamState) -> List[Send]:
     candidates = [StrategyType(s) for s in state["strategies"]]
     if not candidates:
         candidates = [StrategyType.PROMPT_INJECTION]
-    chosen = random.sample(candidates, min(MAX_PARALLEL_BRANCHES, len(candidates)))
+    # Preserve the caller's explicit technique selection. Truncation is
+    # deterministic and visible in logs; random selection made the UI and
+    # persisted attack records disagree about what was tested.
+    chosen = candidates[:MAX_PARALLEL_BRANCHES]
 
     logger.info(f"[Graph] Dispatching {len(chosen)} parallel attacker branch(es): {[c.value for c in chosen]}")
 
