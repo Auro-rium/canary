@@ -530,14 +530,12 @@ def get_incidents():
             else:
                 time_str = "just now"
 
-            # Map strategy back to UI string
-            ui_type = "Prompt Injection"
-            if a.strategy_type == "tool_misuse":
-                ui_type = "Tool Misuse"
-            elif a.strategy_type == "leakage" or a.strategy_type == "indirect_injection":
-                ui_type = "Data Exfiltration"
-            elif a.strategy_type == "jailbreak":
-                ui_type = "Privilege Escalation"
+            # Map the persisted strategy to the same canonical labels used by
+            # the frontend. Never default unknown strategies to Prompt Injection.
+            ui_type = _STRATEGY_TO_UI_TYPE.get(
+                a.strategy_type,
+                a.strategy_type.replace("_", " ").title(),
+            )
 
             status = "Critical" if a.success else "Blocked"
             if a.severity == "medium" and not a.success:
@@ -581,6 +579,19 @@ _STRATEGY_TO_ASI: Dict[str, str] = {
     "sensitive_data_exposure": "ASI-06",
     "retrieval_poisoning":    "ASI-08",
     "workflow_manipulation":  "ASI-09",
+}
+
+_STRATEGY_TO_UI_TYPE: Dict[str, str] = {
+    "prompt_injection": "Prompt Injection",
+    "memory_poisoning": "Memory Poisoning",
+    "tool_misuse": "Tool Misuse",
+    "jailbreak": "Privilege Escalation",
+    "instruction_hierarchy": "Goal Hijacking",
+    "sensitive_data_exposure": "Data Exfiltration",
+    "indirect_injection": "Data Exfiltration",
+    "leakage": "Data Exfiltration",
+    "retrieval_poisoning": "Supply Chain Attack",
+    "workflow_manipulation": "Agent DoS",
 }
 
 # Severity values accepted by FindingPayload on the frontend.
