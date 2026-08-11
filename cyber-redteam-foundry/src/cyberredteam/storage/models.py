@@ -52,6 +52,7 @@ class LLMCallRecord(Base):
     __tablename__ = "llm_calls"
 
     id = Column(Integer, primary_key=True)
+    run_id = Column(String, nullable=True, index=True)
     agent_name = Column(String, index=True)
     deployment = Column(String)
     latency = Column(Float)
@@ -147,6 +148,9 @@ def _migrate_columns(engine) -> None:
         ],
         "runs": [
             ("error", "TEXT"),
+        ],
+        "llm_calls": [
+            ("run_id", "TEXT"),
         ],
         "evaluator_verdicts": [
             ("asi_class_suggested", "VARCHAR"),

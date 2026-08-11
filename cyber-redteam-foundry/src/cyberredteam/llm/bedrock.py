@@ -96,7 +96,9 @@ class ObservableLLM:
             an instance of ``output_schema``.
         """
         prompt = self._build_prompt(system_prompt)
-        chain = prompt | self.llm.with_structured_output(output_schema)
+        # Preserve the raw provider message so token usage metadata survives
+        # structured-output parsing.
+        chain = prompt | self.llm.with_structured_output(output_schema, include_raw=True)
         return chain.with_retry(
             retry_if_exception_type=_retryable_errors(),
             wait_exponential_jitter=True,
@@ -130,6 +132,7 @@ class ObservableLLM:
         chain: Runnable,
         user_message: str,
         system_context: str = "",
+        run_id: Optional[str] = None,
     ) -> Any:
         """Invoke a pre-built LCEL chain with latency and hash logging.
 
@@ -156,6 +159,13 @@ class ObservableLLM:
             raise
         latency = time.time() - start
 
+        token_source = result.get("raw") if isinstance(result, dict) else result
+        token_usage = self._extract_tokens(token_source)
+        if isinstance(result, dict) and "parsed" in result:
+            if result.get("parsing_error"):
+                raise result["parsing_error"]
+            result = result["parsed"]
+
         output_text = (
             result.model_dump_json()
             if hasattr(result, "model_dump_json")
@@ -165,6 +175,8 @@ class ObservableLLM:
             input_text=f"{system_context}\n---\n{user_message}",
             output_text=output_text,
             latency=latency,
+            token_usage=token_usage,
+            run_id=run_id,
         )
         return result
 
@@ -197,6 +209,7 @@ class ObservableLLM:
         output_text: str,
         latency: float,
         token_usage: Optional[Dict[str, int]] = None,
+        run_id: Optional[str] = None,
     ) -> None:
         input_hash = hashlib.sha256(input_text.encode()).hexdigest()[:16]
         output_hash = hashlib.sha256(output_text.encode()).hexdigest()[:16]
@@ -226,6 +239,7 @@ class ObservableLLM:
                     output_hash=output_hash,
                     prompt_tokens=token_usage.get("prompt_tokens", 0) if token_usage else 0,
                     completion_tokens=token_usage.get("completion_tokens", 0) if token_usage else 0,
+                    run_id=run_id,
                 )
             except Exception as exc:
                 logger.debug(f"Failed to persist LLM call log: {exc}")
