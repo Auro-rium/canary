@@ -5,7 +5,7 @@
 [![LangGraph](https://img.shields.io/badge/LangGraph-state%20machine-7c3aed.svg)](https://github.com/langchain-ai/langgraph)
 [![NVIDIA NIM](https://img.shields.io/badge/NVIDIA-NIM-76B900.svg?logo=nvidia)](https://build.nvidia.com/)
 [![sentence-transformers](https://img.shields.io/badge/sentence--transformers-MiniLM--L6--v2-blue.svg)](https://www.sbert.net/)
-[![pytest](https://img.shields.io/badge/tests-111%20passed-brightgreen.svg?logo=pytest)](https://pytest.org/)
+[![pytest](https://img.shields.io/badge/tests-pytest-brightgreen.svg?logo=pytest)](https://pytest.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 Red-team orchestration engine for AI agents. FastAPI + LangGraph with NVIDIA NIM inference. Attacks any authorized HTTP-based AI agent via a generic request/response contract, dispatches selected techniques as parallel branches, evaluates against ASI/ATLAS taxonomy, and generates structured audit reports. Findings are triaged manually — no auto-remediation.
@@ -57,7 +57,7 @@ cyber-redteam-foundry/
 ├── runs/                    # SQLite DBs, logs (git-ignored)
 ├── reports/                 # Generated reports (git-ignored)
 └── src/cyberredteam/
-    ├── api.py               # FastAPI — 15 endpoints
+    ├── api.py               # FastAPI routes for campaigns, findings, targets, and telemetry
     ├── cli.py               # cyber-rt CLI
     ├── settings.py          # Pydantic settings from .env
     ├── schemas.py           # Shared data models

@@ -7,9 +7,9 @@ You are the red-team assessment lifecycle coordinator. You manage the state mach
 ## Lifecycle Phases
 
 ### Phase 1: Strategy Selection
-- Receive target description and risk level
-- Invoke the Strategist to select and prioritize attack categories
-- Record the selected categories in campaign state
+- Receive the target description, risk level, and explicit strategy selection from the campaign request
+- Preserve the selected categories in campaign state; the default graph's strategist node is a deterministic dispatch step, not an LLM ranking call
+- Record the selected categories before parallel fan-out
 
 ### Phase 2: Attack Execution
 - For each selected category (in priority order):
