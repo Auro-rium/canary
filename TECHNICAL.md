@@ -17,7 +17,7 @@ The graph lives in `cyber-redteam-foundry/src/cyberredteam/langgraph/graph.py` a
 `build_redteam_graph()` (graph.py:57-97). It has exactly four nodes:
 
 ```
-strategist → (Send fan-out) → attacker_branch × ≤3 (parallel) → evaluator → {strategist | reporter}
+strategist → (Send fan-out) → attacker_branch × selected strategies (parallel) → evaluator → {strategist | reporter}
 ```
 
 - `strategist` (graph.py:66, implemented in `nodes.py:77-92`) is a log-only pass-through. It does
@@ -29,7 +29,8 @@ strategist → (Send fan-out) → attacker_branch × ≤3 (parallel) → evaluat
   it returns `List[Send]`, LangGraph's mechanism for dynamic parallel dispatch. It:
   1. Converts `state["strategies"]` to `StrategyType` enum members (nodes.py:107).
   2. Preserves the requested order and takes `candidates[:MAX_PARALLEL_BRANCHES]`, where
-     `MAX_PARALLEL_BRANCHES = 3` — so **at most 3** explicitly requested strategies are dispatched.
+     `MAX_PARALLEL_BRANCHES = 12` — so every currently exposed strategy selection is dispatched,
+     with headroom for additional supported strategies.
   3. For each chosen strategy, resolves `(asi_class, _) = taxonomy.lookup(strategy.value, "")`
      and `spec = get_spec(asi_class)` (nodes.py:116-117) to build an `AttackBranch` — a plain
      dataclass (`schemas.py:100-119`), not part of `RedTeamState`, carrying `branch_id`,
@@ -39,7 +40,7 @@ strategist → (Send fan-out) → attacker_branch × ≤3 (parallel) → evaluat
      also carries `run_id`, `target_id`, `iteration`, and the generic HTTP target config
      (`target_headers`/`target_request_template`/`target_response_path`).
 
-`graph.add_edge("attacker_branch", "evaluator")` (graph.py:79) means every one of the ≤3 spawned
+`graph.add_edge("attacker_branch", "evaluator")` (graph.py:79) means every spawned
 branches feeds into the *same* `evaluator` node. LangGraph's superstep model guarantees the
 evaluator only executes once all `Send`-spawned `attacker_branch` invocations from that dispatch
 have completed — no manual barrier/join code is needed. The join is enabled by the state schema
@@ -85,7 +86,7 @@ return "strategist" if state["should_continue_iterating"] else "reporter"
 
 wired via `graph.add_conditional_edges("evaluator", should_iterate, {"strategist": "strategist",
 "reporter": "reporter"})` (graph.py:84-91). Looping back to `strategist` triggers a *fresh*
-`dispatch_attacker_branches` call — the requested first ≤3 strategies, new branch IDs, fresh
+`dispatch_attacker_branches` call — the requested strategies, new branch IDs, fresh
 `depth=0` budgets — not a continuation of the old branches. `max_iterations` is enforced purely
 by this counter check; there is no separate iteration-count node.
 
@@ -94,6 +95,27 @@ Checkpointing is SQLite-backed (`compile_graph()`, graph.py:104-134): `SqliteSav
 `GraphOrchestrator.get_state()` (orchestrator.py:171-188). A Mermaid diagram is generated via
 `compiled.get_graph().draw_mermaid()` with a hand-written fallback (`_fallback_mermaid()`,
 graph.py:158-184) if that API call fails.
+
+### Design patterns
+
+The implementation combines a durable state-machine workflow with several established patterns:
+
+- **Orchestrator:** `GraphOrchestrator` owns run setup, graph invocation, checkpointing, and
+  artifact persistence.
+- **Scatter-gather:** LangGraph `Send()` fans a campaign out into independent attacker branches,
+  then the evaluator gathers their completed results at the superstep boundary.
+- **Strategy:** each `StrategyType` selects a different attack technique behind the same attacker
+  interface.
+- **Adapter:** `HttpTargetAdapter` normalizes request templates, authentication, response-path
+  extraction, and target observations for arbitrary HTTP agents.
+- **Reducer:** `Annotated[..., operator.add]` fields append branch results and log events as
+  parallel node deltas merge into `RedTeamState`.
+- **Checkpoint:** SQLite-backed LangGraph checkpoints use the campaign ID as `thread_id`, making
+  the state timeline inspectable and resumable.
+
+The strategist is deliberately deterministic in the current graph. It dispatches the user's
+selected strategies; it does not call an LLM to rank, skip, or invent strategies. The attacker,
+evaluator, and reporter are the LLM-backed roles.
 
 ---
 
@@ -327,14 +349,12 @@ app-level FastAPI dependency (`FastAPI(dependencies=[Depends(require_auth)])`, a
 so every route requires it. It fails closed: if `settings.api_secret_key` (i.e. `API_SECRET_KEY`
 env var, `settings.py:30`) isn't set, every request gets `503` rather than running open
 (api.py:36-40); otherwise it checks `Authorization: Bearer <token>` matches exactly
-(api.py:41-43). The frontend's `authHeader()` (`canary/src/lib/api.ts:9-12`) sends
-`Authorization: Bearer ${API_TOKEN}` where `API_TOKEN = import.meta.env.VITE_API_TOKEN` — i.e.
-the same shared secret, but **baked into the frontend bundle at Vite build time** (it's a
-`VITE_`-prefixed env var, inlined by Vite's build step, not read at runtime). `docker-compose.yml`
-wires this explicitly: the frontend build receives `VITE_API_TOKEN: "${VITE_API_TOKEN}"` as a
-build arg (docker-compose.yml:45-49) with a comment that it "Must match API_SECRET_KEY in
-cyber-redteam-foundry/.env" — there's no runtime handshake, just an operator-maintained shared
-value across two separately-built images.
+(api.py:41-43). In production, browser requests stay relative to `/api/*` and Vercel's
+server-side proxy (`canary/api/[...path].js`) injects `CANARY_API_TOKEN` while forwarding to
+`CANARY_API_URL`; neither value is bundled into the browser. `VITE_API_TOKEN` is retained only
+for a direct local-development connection to an authenticated backend. The Docker deployment can
+still use nginx's internal proxy with a build-time development token, but Vercel is the public
+dashboard boundary.
 
 ---
 

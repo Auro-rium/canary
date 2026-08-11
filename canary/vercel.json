@@ -1,0 +1,9 @@
+{
+  "rewrites": [
+    { "source": "/campaigns", "destination": "/index.html" },
+    { "source": "/campaigns/:path*", "destination": "/index.html" },
+    { "source": "/findings", "destination": "/index.html" },
+    { "source": "/targets", "destination": "/index.html" },
+    { "source": "/targets/:path*", "destination": "/index.html" }
+  ]
+}

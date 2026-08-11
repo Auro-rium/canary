@@ -1,30 +1,23 @@
-import { useState } from 'react'
-import './index.css'
+import { BrowserRouter, Navigate, Route, Routes } from 'react-router-dom'
 import Navbar from './components/Navbar'
-import Hero from './components/Hero'
-import RunAuditPage from './pages/RunAuditPage'
+import HomePage from './pages/HomePage'
+import CampaignsPage from './pages/CampaignsPage'
+import CampaignNewPage from './pages/CampaignNewPage'
+import CampaignDetailPage from './pages/CampaignDetailPage'
 import FindingsPage from './pages/FindingsPage'
-import RedTeamPage from './pages/RedTeamPage'
-
-type Page = 'home' | 'audit' | 'findings' | 'redteam'
+import TargetsPage from './pages/TargetsPage'
+import TargetDetailPage from './pages/TargetDetailPage'
+import './index.css'
 
 export default function App() {
-  const [page, setPage] = useState<Page>('home')
-
-  const nav = (p: Page) => () => setPage(p)
-
-  if (page === 'audit')    return <RunAuditPage onBack={nav('home')} />
-  if (page === 'findings') return <FindingsPage onBack={nav('home')} onRunAudit={nav('audit')} onRedTeam={nav('redteam')} />
-  if (page === 'redteam')  return <RedTeamPage  onBack={nav('home')} onRunAudit={nav('audit')} onFindings={nav('findings')} />
-
-  return (
-    <main className="bg-black min-h-screen font-mono">
-      <Navbar
-        onRunAudit={nav('audit')}
-        onFindings={nav('findings')}
-        onRedTeam={nav('redteam')}
-      />
-      <Hero onRunAudit={nav('audit')} />
-    </main>
-  )
+  return <BrowserRouter><Navbar /><Routes>
+    <Route path="/" element={<HomePage />} />
+    <Route path="/campaigns" element={<CampaignsPage />} />
+    <Route path="/campaigns/new" element={<CampaignNewPage />} />
+    <Route path="/campaigns/:runId" element={<CampaignDetailPage />} />
+    <Route path="/findings" element={<FindingsPage />} />
+    <Route path="/targets" element={<TargetsPage />} />
+    <Route path="/targets/:targetId" element={<TargetDetailPage />} />
+    <Route path="*" element={<Navigate to="/" replace />} />
+  </Routes></BrowserRouter>
 }

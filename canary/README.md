@@ -13,15 +13,29 @@ Real-time dashboard for the **Cyber Red Team Foundry** backend, built with React
 
 ## Pages
 
-### RunAuditPage — `/audit`
+### Campaigns — `/campaigns`
 
-Campaign launch and live monitoring.
+Paginated campaign history backed by `GET /api/runs`.
 
-- Submits `POST /api/campaigns/run` with target URL, attack strategies, and intensity.
-- Opens SSE stream for live events; renders 4-node agent topology with animated edges.
-- Three phases: **CONFIG → RUNNING → REPORT**.
-- Final report: campaign_id, run_id, finding counts (by severity), duration, target.
-- Requires the authenticated backend; failed requests are shown as errors and never replaced with fabricated findings.
+- Filters by target and lifecycle status.
+- Shows persisted campaign counts, confirmed findings, timing, and LLM token totals.
+- Every row links to an evidence-backed run detail page.
+
+### New campaign — `/campaigns/new`
+
+Authorized HTTP target configuration and live execution.
+
+- Submits `POST /api/campaigns/run` and consumes its SSE stream.
+- Validates HTTP(S) URLs, optional JSON headers, request templates, and response paths before launch.
+- Supports every currently exposed attack strategy; no frontend cap silently drops a selected strategy.
+- Clears entered target headers after launch and warns that server checkpoints may contain them.
+
+### Campaign detail — `/campaigns/:runId`
+
+Complete persisted evidence for one campaign.
+
+- Polls `GET /api/runs/{run_id}` while active, then renders the authoritative terminal record.
+- Provides expandable raw attacker prompts, target replies, HTTP observations, evaluator evidence, linked findings, reporter Markdown, and the full LLM token/latency ledger.
 
 **SSE event types** emitted by `POST /api/campaigns/run`:
 
@@ -32,7 +46,7 @@ Campaign launch and live monitoring.
 | `finding` | Structured finding: id, severity, title, description |
 | `campaign_complete` | Terminal event: campaign_id, run_id, summary counts, duration |
 
-### FindingsPage — `/findings`
+### Findings — `/findings`
 
 Paginated findings review with status management.
 
@@ -41,13 +55,11 @@ Paginated findings review with status management.
 - Status transitions (`PUT /api/findings/{id}/status`) require `reviewer_id` + `rationale`.
 - Attempts table from `GET /api/findings/{id}/attempts`.
 
-### RedTeamPage — `/redteam`
+### Targets — `/targets` and `/targets/:targetId`
 
-Live incident feed and run detail panel.
+Target portfolio and coverage review.
 
-- Polls `GET /api/incidents` every 30 seconds.
-- Row click opens detail panel from `GET /api/runs/{run_id}`.
-- Attacks table with humanized strategy labels and finding IDs (linkable to FindingsPage).
+- Shows real campaign counts, most recent status, open finding counts, ASI coverage, strategy trends, and recent campaigns.
 
 ---
 
@@ -63,19 +75,23 @@ canary/
 ├── package.json
 └── src/
     ├── main.tsx
-    ├── App.tsx              # View switch: home, audit, findings, redteam
+    ├── App.tsx              # Browser routes: home, campaigns, findings, targets
     ├── components/
     │   ├── Navbar.tsx
     │   ├── Hero.tsx
-    │   └── AgentGraphPanel.tsx      # agent topology SVG used by RunAuditPage
+    │   └── Console.tsx              # shared console primitives
     ├── lib/
     │   ├── api.ts                  # single client for every backend endpoint
     │   ├── techniques.ts           # attack technique catalogue
-    │   └── types.ts                # shared domain types (Phase, FindingPayload, ...)
+    │   ├── types.ts                # backend-aligned domain DTOs
+    │   └── presentation.ts         # shared formatting helpers
     └── pages/
-        ├── RunAuditPage.tsx
+        ├── CampaignsPage.tsx
+        ├── CampaignNewPage.tsx
+        ├── CampaignDetailPage.tsx
         ├── FindingsPage.tsx
-        └── RedTeamPage.tsx
+        ├── TargetsPage.tsx
+        └── TargetDetailPage.tsx
 ```
 
 ---
@@ -100,11 +116,13 @@ No external UI component library. All UI is hand-built with Tailwind utility cla
 | Variable | Description | Default |
 |---|---|---|
 | `VITE_API_URL` | Backend base URL | `""` (relative — nginx proxies) |
-| `VITE_API_TOKEN` | Bearer token; must match `API_SECRET_KEY` on the backend | — |
+| `VITE_API_TOKEN` | Optional direct-development bearer token; never set in Vercel production | — |
 
 When `VITE_API_URL` is empty (the default), all `/api/*` requests are relative and nginx routes them to `redteam-backend:8001`. In dev, Vite's proxy handles the same routing to `http://localhost:8001`.
 
-All requests include `Authorization: Bearer <VITE_API_TOKEN>`.
+Vercel production requests stay relative to `/api/*`. The Vercel server-side proxy adds
+`CANARY_API_TOKEN` when forwarding to `CANARY_API_URL`, so browser bundles never contain the
+backend token. `VITE_API_TOKEN` is only for direct local development against an authenticated API.
 
 ---
 
@@ -182,12 +200,15 @@ All requests are authenticated with `Authorization: Bearer <VITE_API_TOKEN>`. Ev
 
 | Method | Endpoint | Used by |
 |---|---|---|
-| `GET` | `/api/status` | health check |
+| `GET` | `/api/dashboard/overview` | HomePage |
+| `GET` | `/api/runs` | CampaignsPage |
 | `GET` | `/api/runs/{run_id}` | RedTeamPage |
 | `GET` | `/api/runs/{run_id}/report-markdown` | RunAuditPage |
 | `GET` | `/api/findings` | FindingsPage |
 | `GET` | `/api/findings/{id}` | FindingsPage |
 | `GET` | `/api/findings/{id}/attempts` | FindingsPage |
 | `PUT` | `/api/findings/{id}/status` | FindingsPage |
-| `GET` | `/api/incidents` | RedTeamPage |
+| `GET` | `/api/targets` | TargetsPage |
+| `GET` | `/api/targets/{target_id}/coverage` | TargetDetailPage |
+| `GET` | `/api/targets/{target_id}/trends` | TargetDetailPage |
 | `POST` | `/api/campaigns/run` (SSE) | RunAuditPage |

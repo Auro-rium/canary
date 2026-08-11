@@ -8,7 +8,7 @@
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ed?logo=docker&logoColor=white)](https://docs.docker.com/compose/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-Autonomous AI red-team platform. Point it at any HTTP-based AI agent, and a 4-agent LangGraph pipeline attacks it, evaluates findings, and streams live results to a React dashboard. Vulnerabilities are triaged manually — no auto-remediation.
+Autonomous AI red-team platform. Point it at any HTTP-based AI agent, and a LangGraph pipeline dispatches selected attack strategies in parallel, evaluates target responses, and streams live results to a React dashboard. Vulnerabilities are triaged manually — no auto-remediation.
 
 ![Agent Canary demo: launching a campaign, live SSE agent topology, findings report, and Findings page](demo/demo.gif)
 
@@ -24,7 +24,7 @@ The production deployment is split into two services:
 - **Interactive dashboard:** [canary-coral.vercel.app](https://canary-coral.vercel.app/)
 - **AWS FastAPI backend:** [Swagger docs](http://3.108.23.172/docs)
 
-AWS exposes only FastAPI. The React dashboard runs on Vercel and reaches the backend through a server-side proxy; the API bearer token is never bundled into the browser. The AWS host root intentionally returns FastAPI `404 Not Found` because it is not a second frontend.
+AWS exposes only FastAPI. The React dashboard runs on Vercel and reaches the backend through a server-side proxy; the API bearer token is never bundled into the production browser build. The AWS host root intentionally returns FastAPI `404 Not Found` because it is not a second frontend.
 
 ---
 
@@ -183,7 +183,6 @@ React 19 SPA served on port **8000**, four pages:
 |---|---|
 | Run Audit | Configure and launch campaigns. Live SSE stream with agent topology diagram. |
 | Findings | Paginated findings table with verdict badges, severity, status lifecycle controls. |
-| Red Team | Live incident feed, run detail panel, strategy labels. |
 | Red Team | Live incident feed, run detail, target observations, and strategy labels. |
 
 ---

@@ -12,13 +12,13 @@ from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from cyberredteam.langgraph.orchestrator import GraphOrchestrator
 from cyberredteam.schemas import RunConfig, StrategyType
 from cyberredteam.settings import get_settings
 from cyberredteam.storage.artifact_store import SQLiteStore
-from cyberredteam.storage.models import AttackRecord, LLMCallRecord, RunRecord
+from cyberredteam.storage.models import AttackRecord, FindingRecord, LLMCallRecord, RunRecord
 from cyberredteam.logging import setup_logging
 
 logger = logging.getLogger("cyberredteam.api")
@@ -186,6 +186,173 @@ def get_status():
         "target_allowlist_configured": bool(_authorized_targets()),
         "log_file": str(settings.log_file),
     }
+
+
+def _llm_stats_by_run(session, run_ids: List[str]) -> Dict[str, Dict[str, int | float]]:
+    """Return compact, run-linked LLM telemetry for list/dashboard responses."""
+    if not run_ids:
+        return {}
+    rows = session.execute(
+        select(
+            LLMCallRecord.run_id,
+            func.count(LLMCallRecord.id),
+            func.coalesce(func.sum(LLMCallRecord.prompt_tokens), 0),
+            func.coalesce(func.sum(LLMCallRecord.completion_tokens), 0),
+            func.coalesce(func.sum(LLMCallRecord.latency), 0),
+        )
+        .where(LLMCallRecord.run_id.in_(run_ids))
+        .group_by(LLMCallRecord.run_id)
+    ).all()
+    return {
+        run_id: {
+            "calls": int(calls),
+            "prompt_tokens": int(prompt_tokens),
+            "completion_tokens": int(completion_tokens),
+            "total_tokens": int(prompt_tokens) + int(completion_tokens),
+            "latency_ms": round(float(latency or 0) * 1000, 2),
+        }
+        for run_id, calls, prompt_tokens, completion_tokens, latency in rows
+        if run_id
+    }
+
+
+def _run_summary(run: RunRecord, llm_stats: Optional[Dict[str, int | float]] = None) -> Dict:
+    """Serialize a run without raw prompts/responses for campaign lists."""
+    return {
+        "run_id": run.run_id,
+        "target_id": run.target_id,
+        "status": run.status,
+        "error": run.error,
+        "start_time": run.start_time.isoformat() if run.start_time else None,
+        "end_time": run.end_time.isoformat() if run.end_time else None,
+        "total_attacks": run.total_attacks or 0,
+        "successful_attacks": run.successful_attacks or 0,
+        "success_rate": run.success_rate or 0.0,
+        "llm_stats": llm_stats or {
+            "calls": 0,
+            "prompt_tokens": 0,
+            "completion_tokens": 0,
+            "total_tokens": 0,
+            "latency_ms": 0.0,
+        },
+    }
+
+
+@app.get("/api/dashboard/overview")
+def get_dashboard_overview():
+    """Return truthful aggregate metrics for the operations-console landing page."""
+    store = SQLiteStore(Path(settings.db_path))
+    with store.SessionLocal() as session:
+        runs = list(session.scalars(select(RunRecord)).all())
+        findings = list(session.scalars(select(FindingRecord)).all())
+        llm = session.execute(
+            select(
+                func.count(LLMCallRecord.id),
+                func.coalesce(func.sum(LLMCallRecord.prompt_tokens), 0),
+                func.coalesce(func.sum(LLMCallRecord.completion_tokens), 0),
+                func.coalesce(func.sum(LLMCallRecord.latency), 0),
+            )
+        ).one()
+    store.close()
+
+    by_status: Dict[str, int] = {}
+    for run in runs:
+        by_status[run.status] = by_status.get(run.status, 0) + 1
+    open_findings = [finding for finding in findings if finding.status == "open"]
+    severity_counts: Dict[str, int] = {}
+    for finding in open_findings:
+        severity = (finding.severity or "info").lower()
+        severity_counts[severity] = severity_counts.get(severity, 0) + 1
+
+    calls, prompt_tokens, completion_tokens, latency = llm
+    return {
+        "backend": {
+            "status": "healthy",
+            "active_runs": _running_count(),
+            "target_allowlist_configured": bool(_authorized_targets()),
+        },
+        "campaigns": {
+            "total": len(runs),
+            "by_status": by_status,
+            "targets": len({run.target_id for run in runs if run.target_id}),
+        },
+        "open_findings": {
+            "total": len(open_findings),
+            "by_severity": severity_counts,
+        },
+        "llm_stats": {
+            "calls": int(calls),
+            "prompt_tokens": int(prompt_tokens),
+            "completion_tokens": int(completion_tokens),
+            "total_tokens": int(prompt_tokens) + int(completion_tokens),
+            "latency_ms": round(float(latency or 0) * 1000, 2),
+        },
+    }
+
+
+@app.get("/api/runs")
+def list_runs(
+    target_id: Optional[str] = None,
+    status: Optional[str] = None,
+    page: int = 1,
+    page_size: int = 25,
+):
+    """Paginated campaign history for the dashboard; raw evidence stays on run detail."""
+    if page < 1 or page_size < 1 or page_size > 100:
+        raise HTTPException(status_code=422, detail="page must be >= 1 and page_size must be 1-100")
+
+    store = SQLiteStore(Path(settings.db_path))
+    with store.SessionLocal() as session:
+        query = select(RunRecord)
+        count_query = select(func.count(RunRecord.run_id))
+        if target_id:
+            query = query.where(RunRecord.target_id == target_id)
+            count_query = count_query.where(RunRecord.target_id == target_id)
+        if status:
+            query = query.where(RunRecord.status == status)
+            count_query = count_query.where(RunRecord.status == status)
+        total = int(session.scalar(count_query) or 0)
+        records = list(
+            session.scalars(
+                query.order_by(RunRecord.start_time.desc()).offset((page - 1) * page_size).limit(page_size)
+            ).all()
+        )
+        telemetry = _llm_stats_by_run(session, [record.run_id for record in records])
+    store.close()
+    return {
+        "items": [_run_summary(record, telemetry.get(record.run_id)) for record in records],
+        "page": page,
+        "page_size": page_size,
+        "total": total,
+    }
+
+
+@app.get("/api/targets")
+def list_targets():
+    """Return target portfolio summaries using persisted campaign and finding data."""
+    store = SQLiteStore(Path(settings.db_path))
+    with store.SessionLocal() as session:
+        runs = list(session.scalars(select(RunRecord).order_by(RunRecord.start_time.desc())).all())
+        findings = list(session.scalars(select(FindingRecord)).all())
+    store.close()
+
+    summaries: Dict[str, Dict] = {}
+    for run in runs:
+        if not run.target_id:
+            continue
+        entry = summaries.setdefault(run.target_id, {
+            "target_id": run.target_id,
+            "campaign_count": 0,
+            "latest_run": None,
+            "open_findings": 0,
+        })
+        entry["campaign_count"] += 1
+        if entry["latest_run"] is None:
+            entry["latest_run"] = _run_summary(run)
+    for finding in findings:
+        if finding.status == "open" and finding.target_id in summaries:
+            summaries[finding.target_id]["open_findings"] += 1
+    return {"items": list(summaries.values())}
 
 
 @app.post("/api/runs")
