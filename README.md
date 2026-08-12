@@ -92,6 +92,40 @@ The evaluator remains authoritative: deterministic detector signals and the
 semantic judge are retained with confidence, severity, rationale, response
 text, and taxonomy evidence. Attackers do not declare their own success.
 
+## LLM provider and telemetry
+
+Canary's strategist, attacker, evaluator, and reporter are all real LLM-backed
+agents. The current hosted configuration uses Backboard with OpenRouter and
+`openai/gpt-5.6-luna`:
+
+```env
+BACKBOARD_API_KEY=              # server-side only
+BACKBOARD_BASE_URL=https://app.backboard.io/api
+BACKBOARD_LLM_PROVIDER=openrouter
+BACKBOARD_MODEL_NAME=openai/gpt-5.6-luna
+```
+
+Every call is persisted in `llm_calls`. Telemetry includes the complete system
+and user prompt, raw provider response, provider/model, status code, retries,
+latency, token counts, hashes, errors, and timestamp. Token counts use provider
+usage metadata when returned; otherwise Canary records a transparent text-length
+estimate rather than reporting zero.
+
+Authenticated API access:
+
+```text
+GET /api/telemetry/llm-calls?limit=100
+```
+
+Prompt and response telemetry is sensitive evidence. It is protected by the
+Canary API bearer token and must not be exposed to unauthenticated browsers or
+logs.
+
+The four-attack CompanyAgent smoke test completed in 145 seconds: four HTTP
+200 target executions, one confirmed critical tool-misuse finding, and three
+blocked attacks. Exact generated payloads and evaluator evidence are persisted
+with the run.
+
 Gate policy is explicit:
 
 ```yaml
@@ -147,6 +181,7 @@ GET    /api/projects/{project_id}/releases
 GET    /api/releases/{release_id}
 GET    /api/releases/{release_id}/regressions
 POST   /api/ci/releases
+GET    /api/telemetry/llm-calls
 ```
 
 The CI endpoint accepts repository, commit, environment, endpoint, strategy,
