@@ -18,7 +18,13 @@ load_dotenv(override=False)
 class Settings(BaseSettings):
     """Application settings from environment variables."""
 
-    # NVIDIA NIM / build.nvidia.com. Keep the API key server-side.
+    # Backboard provider. Keep the API key server-side.
+    backboard_api_key: Optional[str] = None
+    backboard_base_url: str = "https://app.backboard.io/api"
+    backboard_llm_provider: str = "openrouter"
+    backboard_model_name: str = "openai/gpt-5.6-luna"
+
+    # NVIDIA NIM legacy/provider alternative.
     nvidia_api_key: Optional[str] = None
     nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
     nvidia_model: str = "nvidia/nemotron-3-ultra-550b-a55b"

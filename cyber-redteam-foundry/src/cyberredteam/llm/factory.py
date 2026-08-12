@@ -1,4 +1,4 @@
-"""LLM factory — creates per-agent NVIDIA NIM clients.
+"""LLM factory — creates per-agent Backboard clients.
 
 Reads model IDs from ``configs/models.yaml`` and Backboard configuration from
 environment variables. There is no mock fallback: if Backboard is not
@@ -11,14 +11,14 @@ from typing import Optional
 
 import yaml
 
-from cyberredteam.llm.nvidia import NvidiaObservableLLM
+from cyberredteam.llm.backboard import BackboardObservableLLM
 from cyberredteam.logging import setup_logging
 
 logger = setup_logging()
 
 # Default Backboard/OpenRouter model per agent.
 # Overridable per agent via configs/models.yaml.
-_DEFAULT_MODELS = {agent: {"model": "nvidia/llama-3.1-nemotron-nano-8b-v1"} for agent in ("strategist", "attacker", "evaluator", "reporter")}
+_DEFAULT_MODELS = {agent: {"model": "openai/gpt-5.6-luna"} for agent in ("strategist", "attacker", "evaluator", "reporter")}
 
 _models_config: Optional[dict] = None
 
@@ -51,7 +51,7 @@ def get_model_for_agent(agent_name: str) -> str:
         Provider-specific model identifier string.
     """
     from os import getenv
-    model_override = getenv("NVIDIA_MODEL", "").strip()
+    model_override = getenv("BACKBOARD_MODEL_NAME", "").strip()
     if model_override:
         return model_override
     config = _load_models_config()
@@ -71,25 +71,25 @@ def get_deployment_for_agent(agent_name: str) -> str:
     return get_model_for_agent(agent_name)
 
 
-def get_llm(model: str, agent_name: str = "unknown", store: object = None) -> NvidiaObservableLLM:
-    """Create an NVIDIA NIM client for a specific model."""
+def get_llm(model: str, agent_name: str = "unknown", store: object = None) -> BackboardObservableLLM:
+    """Create a Backboard client for a specific model."""
     from cyberredteam.settings import get_settings
 
     settings = get_settings()
 
-    api_key = settings.nvidia_api_key
+    api_key = settings.backboard_api_key
     if not api_key:
         raise RuntimeError(
-            "NVIDIA NIM is not configured: NVIDIA_API_KEY is unset. "
+            "Backboard is not configured: BACKBOARD_API_KEY is unset. "
             "Set it server-side before running. Refusing to fabricate LLM output."
         )
-    return NvidiaObservableLLM(api_key=api_key, agent_name=agent_name, model=model, store=store, base_url=settings.nvidia_base_url)
+    return BackboardObservableLLM(api_key=api_key, agent_name=agent_name, model=model, provider=settings.backboard_llm_provider, store=store, base_url=settings.backboard_base_url)
 
 
 def get_llm_for_agent(
     agent_name: str,
     store: object = None,
-) -> NvidiaObservableLLM:
+) -> BackboardObservableLLM:
     """Create an NVIDIA NIM client using the configured model for an agent."""
     model = get_model_for_agent(agent_name)
     return get_llm(model, agent_name=agent_name, store=store)
