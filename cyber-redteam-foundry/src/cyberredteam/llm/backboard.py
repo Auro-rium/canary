@@ -39,6 +39,11 @@ class BackboardObservableLLM:
         self.provider = provider
         self.store = store
         self.base_url = base_url.rstrip("/")
+        self.last_status_code: Optional[int] = None
+        self.last_retry_count = 0
+        self.last_usage: dict[str, int] = {}
+        self.last_output = ""
+        self.last_error: Optional[str] = None
 
     def build_structured_chain(self, system_prompt: str, output_schema: Type[BaseModel]) -> _BackboardChain:
         return _BackboardChain(self, system_prompt, output_schema)
@@ -48,10 +53,28 @@ class BackboardObservableLLM:
 
     def invoke_chain(self, chain: _BackboardChain, user_message: str, system_context: str = "") -> Any:
         start = time.time()
-        result = chain.invoke({"user_message": user_message})
-        output_text = result.model_dump_json() if hasattr(result, "model_dump_json") else str(result)
-        self._log_call(f"{system_context}\n---\n{user_message}", output_text, time.time() - start)
-        return result
+        input_text = f"{system_context}\n---\n{user_message}"
+        self.last_output = ""
+        self.last_error = None
+        self.last_status_code = None
+        self.last_retry_count = 0
+        self.last_usage = {}
+        try:
+            result = chain.invoke({"user_message": user_message})
+            output_text = self.last_output or (result.model_dump_json() if hasattr(result, "model_dump_json") else str(result))
+            if not self.last_usage.get("prompt_tokens"):
+                self.last_usage["prompt_tokens"] = max(1, len(input_text) // 4)
+            if not self.last_usage.get("completion_tokens"):
+                self.last_usage["completion_tokens"] = max(1, len(output_text) // 4)
+            self.last_usage["total_tokens"] = self.last_usage["prompt_tokens"] + self.last_usage["completion_tokens"]
+            return result
+        except Exception as exc:
+            self.last_error = str(exc)
+            raise
+        finally:
+            if not self.last_usage:
+                self.last_usage = {"prompt_tokens": max(1, len(input_text) // 4), "completion_tokens": max(1, len(self.last_output) // 4), "total_tokens": max(1, (len(input_text) + len(self.last_output)) // 4)}
+            self._log_call(input_text, self.last_output, time.time() - start)
 
     def invoke_structured(self, system_prompt: str, user_message: str, output_schema: Type[BaseModel]) -> BaseModel:
         return self.invoke_chain(self.build_structured_chain(system_prompt, output_schema), user_message, system_context=system_prompt)
@@ -80,11 +103,20 @@ class BackboardObservableLLM:
                     json=payload,
                     timeout=settings.timeout_seconds,
                 )
+                self.last_status_code = response.status_code
+                self.last_retry_count = attempt
                 response.raise_for_status()
                 body = response.json()
+                usage = body.get("usage") or {}
+                self.last_usage = {
+                    "prompt_tokens": int(usage.get("prompt_tokens", usage.get("input_tokens", 0)) or 0),
+                    "completion_tokens": int(usage.get("completion_tokens", usage.get("output_tokens", 0)) or 0),
+                    "total_tokens": int(usage.get("total_tokens", 0) or 0),
+                }
                 content = body.get("content", "")
                 if not content:
                     raise RuntimeError(f"Backboard returned no content (status={body.get('status')})")
+                self.last_output = content
                 if schema is None:
                     return content
                 cleaned = content.strip()
@@ -100,6 +132,6 @@ class BackboardObservableLLM:
     def _log_call(self, input_text: str, output_text: str, latency: float) -> None:
         input_hash = hashlib.sha256(input_text.encode()).hexdigest()[:16]
         output_hash = hashlib.sha256(output_text.encode()).hexdigest()[:16]
-        logger.info(f"[LLM] agent={self.agent_name} provider=backboard/{self.provider} model={self.deployment} latency={latency:.2f}s input_hash={input_hash} output_hash={output_hash}")
+        logger.info(f"[LLM] agent={self.agent_name} provider=backboard/{self.provider} model={self.deployment} status={self.last_status_code} retries={self.last_retry_count} latency={latency:.2f}s input_hash={input_hash} output_hash={output_hash} prompt_tokens={self.last_usage.get('prompt_tokens', 0)} completion_tokens={self.last_usage.get('completion_tokens', 0)}")
         if self.store and hasattr(self.store, "save_llm_call"):
-            self.store.save_llm_call(agent_name=self.agent_name, deployment=f"backboard/{self.provider}/{self.deployment}", latency=latency, input_hash=input_hash, output_hash=output_hash, prompt_tokens=0, completion_tokens=0)
+            self.store.save_llm_call(agent_name=self.agent_name, deployment=f"backboard/{self.provider}/{self.deployment}", latency=latency, input_hash=input_hash, output_hash=output_hash, prompt_tokens=self.last_usage.get("prompt_tokens", 0), completion_tokens=self.last_usage.get("completion_tokens", 0), total_tokens=self.last_usage.get("total_tokens", 0), input_text=input_text, output_text=output_text, status_code=self.last_status_code, retry_count=self.last_retry_count, error=self.last_error)

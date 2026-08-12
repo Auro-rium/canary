@@ -70,6 +70,12 @@ class LLMCallRecord(Base):
     output_hash = Column(String)
     prompt_tokens = Column(Integer, default=0)
     completion_tokens = Column(Integer, default=0)
+    total_tokens = Column(Integer, default=0)
+    input_text = Column(Text, nullable=True)
+    output_text = Column(Text, nullable=True)
+    status_code = Column(Integer, nullable=True)
+    retry_count = Column(Integer, default=0)
+    error = Column(Text, nullable=True)
     timestamp = Column(DateTime, default=datetime.utcnow)
 
 

@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from sqlalchemy import select
+from sqlalchemy import inspect, select, text
 from sqlalchemy.orm import sessionmaker
 
 from cyberredteam.logging import setup_logging
@@ -46,8 +46,28 @@ class SQLiteStore:
 
         # Initialize database
         self.engine = init_db(self.location)
+        self._migrate_llm_telemetry()
         self.SessionLocal = sessionmaker(bind=self.engine)
         logger.info("Initialized artifact store at %s", self.location)
+
+    def _migrate_llm_telemetry(self) -> None:
+        """Add observability columns to existing SQLite/Postgres databases."""
+        required = {
+            "total_tokens": "INTEGER DEFAULT 0",
+            "input_text": "TEXT",
+            "output_text": "TEXT",
+            "status_code": "INTEGER",
+            "retry_count": "INTEGER DEFAULT 0",
+            "error": "TEXT",
+        }
+        inspector = inspect(self.engine)
+        if "llm_calls" not in inspector.get_table_names():
+            return
+        existing = {c["name"] for c in inspector.get_columns("llm_calls")}
+        with self.engine.begin() as conn:
+            for name, definition in required.items():
+                if name not in existing:
+                    conn.execute(text(f"ALTER TABLE llm_calls ADD COLUMN {name} {definition}"))
 
     def save_run_start(self, run_id: str, target_id: str) -> None:
         """Record the start of a run."""
@@ -94,6 +114,12 @@ class SQLiteStore:
         output_hash: str,
         prompt_tokens: int = 0,
         completion_tokens: int = 0,
+        total_tokens: int = 0,
+        input_text: Optional[str] = None,
+        output_text: Optional[str] = None,
+        status_code: Optional[int] = None,
+        retry_count: int = 0,
+        error: Optional[str] = None,
     ) -> None:
         """Store an LLM call observability record."""
         with self.SessionLocal() as session:
@@ -105,6 +131,12 @@ class SQLiteStore:
                 output_hash=output_hash,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
+                total_tokens=total_tokens,
+                input_text=input_text,
+                output_text=output_text,
+                status_code=status_code,
+                retry_count=retry_count,
+                error=error,
             )
             session.add(record)
             session.commit()
@@ -115,6 +147,12 @@ class SQLiteStore:
         with self.SessionLocal() as session:
             stmt = select(AttackRecord).where(AttackRecord.run_id == run_id)
             return session.scalars(stmt).all()
+
+    def get_llm_calls(self, limit: int = 100) -> list[LLMCallRecord]:
+        """Return recent LLM calls, including full prompt/response telemetry."""
+        with self.SessionLocal() as session:
+            stmt = select(LLMCallRecord).order_by(LLMCallRecord.id.desc()).limit(limit)
+            return list(session.scalars(stmt).all())
 
     def update_run_complete(
         self,
