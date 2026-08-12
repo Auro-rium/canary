@@ -192,6 +192,15 @@ runs:
           --header "Authorization: Bearer ${CANARY_API_TOKEN}" \
           --header "Content-Type: application/json" \
           --data @"$CANARY_REPORT_DIR/release-request.json")"
+        # The request file contains the one-time ownership token needed by the API.
+        # Redact it immediately after submission so the uploaded evidence artifact
+        # cannot become a credential-bearing artifact.
+        ruby -rjson -e '
+          path = ARGV.fetch(0)
+          payload = JSON.parse(File.read(path))
+          payload.delete("verification_token")
+          File.write(path, JSON.pretty_generate(payload))
+        ' "$CANARY_REPORT_DIR/release-request.json"
         release_id="$(jq --raw-output '.release_id' <<<"$response")"
         test -n "$release_id" && test "$release_id" != "null"
         echo "release_id=$release_id" >> "$GITHUB_OUTPUT"
