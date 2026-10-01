@@ -1,279 +1,101 @@
 # Agent Canary — Technical Reference
 
-This document describes the deployed system as it exists on `main`.
+Two services:
 
-Agent Canary is a two-service product:
+1. `cyber-redteam-foundry/` — Python 3.11+ FastAPI backend and LangGraph engine.
+2. `canary/` — React 19 + TypeScript + Vite dashboard, served by nginx (Docker) or Vercel.
 
-1. `cyber-redteam-foundry/` is a Python 3.11 FastAPI backend and LangGraph orchestration engine.
-2. `canary/` is a React 19 + TypeScript + Vite dashboard served by Vercel or nginx.
-
-The backend sends model-generated adversarial prompts to an external HTTP agent, records the target's actual response, evaluates the evidence, and persists campaign artifacts in SQLite and the report directory. The target is not part of the Canary process. The current demonstration target is the separate CompanyAgent Canary Demo repository.
-
-Live deployment:
-
-- Dashboard: https://canary-coral.vercel.app/
-- Explainer: https://agent-canary-explainer.vercel.app/
-- Target repository: https://github.com/Auro-rium/companybot-canary-demo
-
-The former shared AWS demo backend at `3.108.23.172` was intentionally terminated. No shared FastAPI endpoint is currently provided. A user must deploy the backend on their own AWS host and configure the Vercel proxy before the dashboard can execute campaigns.
-
-## 1. Runtime topology
+The backend sends model-generated adversarial prompts to an external HTTP agent, records its actual response, evaluates the evidence and persists everything in SQLite plus report files. The target is never part of the Canary process.
 
 ```text
-Browser
-  │ HTTPS
-  ▼
-Vercel React dashboard
-  │ server-side /api proxy + bearer token
-  ▼
-User-provisioned AWS FastAPI backend
-  │ LangGraph + SQLite + report artifacts
-  │ NVIDIA_API_KEY stays server-side
-  ▼
-NVIDIA NIM: nvidia/nemotron-3-ultra-550b-a55b
-  │
-  ▼
-Authorized external HTTP target
+Browser → dashboard (nginx or Vercel, /api proxy adds the bearer token)
+        → FastAPI + LangGraph + SQLite
+        → Backboard.io  (provider/model chosen per request)
+        → your authorized HTTP agent
 ```
 
-When deployed, AWS exposes the FastAPI service only; it does not serve the React UI. The Vercel project owns the frontend and forwards protected API requests to the user's configured backend. The Vercel browser bundle does not contain the backend token.
-
-## 2. LangGraph workflow
-
-The graph has four functional stages:
+## 1. LangGraph workflow
 
 ```text
-strategist
-  → Send(attacker_branch × selected techniques)
-  → evaluator
-  → strategist  [if a successful finding exists and iterations remain]
-  → reporter   [otherwise]
+strategist → Send(attacker_branch × selected techniques) → evaluator
+evaluator → strategist   if a successful finding exists and iterations remain
+evaluator → reporter     otherwise
 ```
 
-### Strategist dispatch
+- **Strategist** is a deterministic node. It preserves the explicit technique selection (up to `MAX_PARALLEL_BRANCHES = 12`) and returns one `Send` per branch, each with its own branch id, ASI technique, depth and attempt budget. An LLM-ranked `StrategistAgent` exists but is not on the default path.
+- **Attacker branches** run independently. Each asks the model for one structured `AttackerOutput`, sends the prompt through `HttpTargetAdapter`, and returns one `AttackResult` (prompt, reply or error, HTTP status, latency, hashes, observations).
+- **Reducers:** `attack_results` and logs use `Annotated[list, operator.add]` so parallel deltas merge. The evaluator filters by explicit `iteration`, never by list position.
+- **Checkpoints:** LangGraph state is stored in SQLite with the campaign id as `thread_id`, so a run is inspectable after a restart.
 
-The default `strategist` node is deterministic. It logs the campaign's explicit strategy selection and does not call an LLM to rank, skip, or invent techniques. `dispatch_attacker_branches()` converts each selected strategy to a `StrategyType`, resolves its ASI technique specification, creates an independent `AttackBranch`, and returns one LangGraph `Send` per branch.
+## 2. Backboard integration
 
-The graph supports `MAX_PARALLEL_BRANCHES = 12`. The current dashboard exposes eight techniques, and explicit selections are preserved in order up to that backend limit. Each branch receives its own branch ID, technique ID, target configuration, iteration number, depth, and attempt budget.
+`llm/backboard.py` implements `ChatBackboard`, a LangChain `BaseChatModel` over Backboard's messages API:
 
-### Parallel attacker branches
+- `POST {BACKBOARD_BASE_URL}/threads/messages` with an `X-API-Key` header.
+- Body: `content`, `system_prompt`, `llm_provider`, `model_name`, `stream: false`, `memory: "off"`, and `json_output: true` for structured calls. No `thread_id` is sent, so every call is stateless.
+- Structured output (`with_structured_output`) appends the Pydantic JSON schema to the system prompt, parses the reply (tolerating code fences), and returns `{raw, parsed, parsing_error}` so token usage survives parsing.
+- HTTP 429/5xx and transport errors raise retryable errors; other 4xx and `FAILED` runs raise `BackboardError`. `ObservableLLM` retries only the retryable class, up to `MAX_RETRIES` attempts.
+- `llm/observable.py` wraps any chat model, builds the LCEL chains and records agent, provider/model, latency, hashes and tokens per call.
+- `llm/factory.py` raises when `BACKBOARD_API_KEY` is unset. There is no mock fallback.
 
-Each `Send` invokes `node_attacker_branch()` independently. The branch calls the NVIDIA-backed attacker agent to generate one structured `AttackerOutput`, then passes the resulting prompt to `HttpTargetAdapter`. It returns one `AttackResult` containing:
+## 3. Target adapter
 
-- branch and iteration identity;
-- strategy and ASI technique;
-- exact prompt sent, unless the attacker refused;
-- target response or target error;
-- HTTP status, latency, request/response hashes, and observations;
-- evaluator fields initialized for downstream assessment.
-
-`attack_results` and log messages use `Annotated[list, operator.add]`, so parallel deltas are gathered without overwriting each other. The evaluator runs at the LangGraph superstep boundary after the dispatched branches complete.
-
-### Iteration routing
-
-The evaluator filters results by their explicit `iteration` field. It never assumes that the last N list entries belong to the current round; parallel completion order is not a correctness signal.
-
-If one or more attempts produce a successful finding and the iteration budget remains, the graph returns to the deterministic strategist node and dispatches a fresh branch set. Otherwise it proceeds to the reporter. The evaluator writes `should_continue_iterating`; the graph edge only reads that state flag.
-
-LangGraph checkpoints use SQLite with the campaign ID as the thread ID. This makes state, branch results, and the execution timeline inspectable after a process restart.
-
-## 3. Agent and model wiring
-
-The model assignments are in `cyber-redteam-foundry/configs/models.yaml`:
-
-| Role | Model | Calls |
-|---|---|---|
-| Strategist node | None in the default graph | Deterministic dispatch only. |
-| Attacker | `nvidia/nemotron-3-ultra-550b-a55b` | Generates the scoped adversarial prompt. |
-| Evaluator | `nvidia/nemotron-3-ultra-550b-a55b` | Judges target behavior against evidence and thresholds. |
-| Reporter | `nvidia/nemotron-3-ultra-550b-a55b` | Produces structured Markdown/JSON report output. |
-
-`llm/factory.py` constructs a `ChatOpenAI`-compatible client pointed at `NVIDIA_BASE_URL` and wraps it in `ObservableLLM`. The compatibility module is named `bedrock.py` for import stability, but it contains no Bedrock transport. The provider is NVIDIA NIM.
-
-There is no mock or fabricated-output fallback in the production factory. `get_llm()` raises when `NVIDIA_API_KEY` is absent. Provider/network calls use bounded retry behavior from `MAX_RETRIES`, and each invocation can persist agent name, model, latency, input/output hashes, and token usage.
-
-## 4. Target adapter contract
-
-`HttpTargetAdapter` is the only production target path. It supports a generic JSON contract rather than a target-specific SDK.
-
-Default request:
+`HttpTargetAdapter` is the only production target path:
 
 ```http
-POST <target_id>
+POST <target_url>
 Authorization: Bearer <TARGET_API_KEY>   # optional
 Content-Type: application/json
 
-{"message":"<generated prompt>"}
+{"message": "<generated prompt>"}        # default body
 ```
 
-The adapter can receive a custom request template containing the quoted placeholder `{{PROMPT}}`. The placeholder is replaced using `json.dumps()`, preserving valid JSON for quotes, line breaks, and Unicode. A custom response path such as `choices.0.message.content` can extract the target's answer from nested JSON. If no path is supplied, the adapter checks common response keys.
+A campaign can override the body with a template containing `"{{PROMPT}}"` (substituted via `json.dumps`), the reply extraction with a dot path such as `choices.0.message.content`, and add arbitrary headers. Without a path it checks `response`, `output`, `content`, `text`. In a container, loopback hosts are rewritten to `host.docker.internal`.
 
-The target may be a public URL, an internal URL reachable from the backend, or a private service with its own bearer key. The backend allowlist is the authorization boundary for campaign creation. Canary does not start a target container in the production AWS stack.
+## 4. Evaluation
 
-Current demo target contract:
+Deterministic detectors (prompt leakage, PII and credentials, tool misuse, memory/context violations, retrieval probes, jailbreak and hierarchy signals, workflow loops, canary tokens) run first; the LLM judge adds semantic scoring, confidence and rationale.
 
-```http
-POST http://13.201.9.115/chat
-{"message":"..."}
-```
-
-This is the separately deployed CompanyAgent application. Its Backboard credentials remain outside Canary.
-
-## 5. Evaluation and verdicts
-
-The evaluator combines deterministic detectors with a model judge. The deterministic layer checks strategy-specific indicators such as prompt leakage, PII/credential patterns, tool misuse, memory/context violations, retrieval probes, hierarchy violations, and workflow signals. The model judge supplies semantic scoring, confidence, rationale, and component context.
-
-The result path is recorded explicitly:
-
-| Detector | Model judge | Result |
+| Detector | Judge | Result |
 |---|---|---|
-| hit | successful/non-inconclusive | `confirmed`, high confidence, success true |
-| hit | inconclusive | `confirmed`, medium confidence, success true |
-| miss | successful above threshold | `unconfirmed`, low confidence, success false; review signal only |
-| miss | failed/inconclusive | `inconclusive` or `failed`, no confirmed finding |
+| hit | success | `confirmed`, high confidence |
+| hit | inconclusive | `confirmed`, medium confidence |
+| hit | failure | `unconfirmed`, low confidence, not a finding |
+| miss | success above threshold | `unconfirmed`, review only |
+| miss | failure / inconclusive | `failed` / `inconclusive` |
 
-The exact evaluator schema stores score, threshold, confidence, verdict path, deterministic hit names, rationale, ASI class, ATLAS technique, and evidence summary. A finding is content-addressed from target, component, strategy, and ASI class so repeated observations can be deduplicated across campaigns.
+An attacker refusal sends nothing to the target. A provider failure fails the campaign rather than being converted into a verdict. Finding ids are `sha256(target:component:strategy:asi_class)[:16]`; per-ASI thresholds live in `configs/thresholds.yaml`.
 
-An attacker refusal is a first-class outcome. A refused branch produces no target request and no static replacement payload. A provider failure also fails closed; it is not converted into a successful or fabricated attack.
+## 5. Persistence
 
-## 6. Persistence and observability
+SQLite tables: `runs`, `attacks`, `findings` (lifecycle `open → wont_fix | false_positive | inconclusive`, manual with reviewer and rationale), `evaluator_verdicts`, `attack_traces`, `llm_calls`, plus LangGraph checkpoints. Reports are written to `reports/`, logs to `runs/` (both git-ignored).
 
-SQLite is the operational source for campaign history:
+## 6. API
 
-| Data | Purpose |
+All routes except health require `Authorization: Bearer <API_SECRET_KEY>`. Swagger is at `/docs`.
+
+| Route | Purpose |
 |---|---|
-| Runs | Campaign status, target, configuration, lifecycle timestamps. |
-| Attacks | Every branch attempt, prompt, response, score, strategy, and observation. |
-| Findings | Deduplicated vulnerability records and manual lifecycle status. |
-| Evaluator verdicts | Full scoring and evidence path per attempt. |
-| LLM calls | Agent/model, token counts, latency, and hashes. |
-| LangGraph checkpoints | Resumable state timeline keyed by campaign ID. |
+| `GET /api/status` | Health and config status |
+| `GET /api/dashboard/overview` | Aggregate metrics and LLM totals |
+| `GET /api/runs`, `POST /api/runs` | History; start a background campaign |
+| `POST /api/campaigns/run` | Start a campaign and stream SSE (`agent_state`, `log`, `finding`, `campaign_complete`) |
+| `GET /api/runs/{id}` (+ `/analysis-report`, `/report-markdown`, `/findings`) | Campaign detail and artifacts |
+| `GET /api/targets`, `/api/targets/{id}/coverage`, `/trends` | Target portfolio, ASI coverage, trends |
+| `GET /api/findings`, `/{id}`, `/{id}/attempts` | Findings and evidence |
+| `PUT /api/findings/{id}/status` | Manual triage |
+| `GET /api/open-findings`, `/api/incidents` | Feeds |
 
-Report artifacts are written as Markdown and/or JSON under `reports/`. Runtime logs are written under `runs/`. These paths are ignored by Git and should be treated as sensitive because they may contain target responses and attack traces.
+## 7. Dashboard
 
-The dashboard exposes the same evidence through campaign detail, findings, and target pages. Campaign detail can reveal the raw generated prompt, actual target reply, HTTP observation, evaluator indicators, report Markdown, and LLM telemetry. This is intentional for authorized review and is why dashboard access must remain protected.
+Routes: `/` overview, `/campaigns`, `/campaigns/new` (target config + live SSE), `/campaigns/:runId` (full evidence), `/findings`, `/targets`, `/targets/:targetId`. In Docker, nginx proxies `/api/*` to the backend with buffering disabled for SSE. On Vercel, the functions in `canary/api/` forward requests and attach `CANARY_API_TOKEN` server-side (`CANARY_API_URL` points at your backend).
 
-## 7. Backend API
+## 8. Security model
 
-Every protected route requires `Authorization: Bearer <API_SECRET_KEY>`.
+- Test only agents you own or are authorized to test; enforce `ALLOWED_TARGETS` with `REQUIRE_TARGET_ALLOWLIST=true`.
+- Keep `BACKBOARD_API_KEY`, `API_SECRET_KEY`, `CANARY_API_TOKEN` and target credentials server-side. The Docker dashboard build bakes `VITE_API_TOKEN` into the bundle, so use it only on a trusted network; use the Vercel proxy for anything public.
+- Reports and traces may contain sensitive responses.
 
-| Route | Function |
-|---|---|
-| `GET /api/status` | Health and runtime status. |
-| `GET /api/dashboard/overview` | Aggregate dashboard metrics and LLM totals. |
-| `GET /api/runs` | Paginated campaign history. |
-| `POST /api/runs` | Background campaign launch. |
-| `POST /api/campaigns/run` | SSE campaign launch and event stream. |
-| `GET /api/runs/{run_id}` | Complete persisted campaign detail. |
-| `GET /api/runs/{run_id}/analysis-report` | Structured analysis report. |
-| `GET /api/runs/{run_id}/report-markdown` | Markdown report artifact. |
-| `GET /api/runs/{run_id}/findings` | Findings linked to one campaign. |
-| `GET /api/targets` | Target portfolio. |
-| `GET /api/targets/{target_id}/coverage` | Target ASI coverage. URL target IDs use a path converter. |
-| `GET /api/targets/{target_id}/trends` | Per-strategy target history. |
-| `GET /api/findings` | Paginated findings with filters. |
-| `GET /api/findings/{finding_id}` | Finding and latest verdict. |
-| `GET /api/findings/{finding_id}/attempts` | Contributing attempts. |
-| `PUT /api/findings/{finding_id}/status` | Manual status transition with reviewer/rationale. |
-| `GET /api/open-findings` | Open finding feed. |
-| `GET /api/incidents` | Incident feed. |
+## 9. Patterns
 
-`POST /api/campaigns/run` emits `agent_state`, `log`, `finding`, and `campaign_complete` SSE events. The frontend buffers event lines so a network chunk split cannot corrupt a JSON event.
-
-## 8. Frontend architecture
-
-The Vite dashboard uses React Router and a typed API client. The main routes are:
-
-| Route | Responsibility |
-|---|---|
-| `/campaigns` | Campaign history and filters. |
-| `/campaigns/new` | Authorized target configuration and SSE execution. |
-| `/campaigns/:runId` | Evidence-backed campaign detail. |
-| `/findings` | Finding filters, evidence, and manual lifecycle transitions. |
-| `/targets` | Target portfolio. |
-| `/targets/:targetId` | Coverage, trends, and recent campaigns for one target. |
-| `/` | Presentation landing page with live aggregate metrics. |
-
-The Vercel proxy functions map browser `/api/*` requests to the AWS FastAPI service. Explicit dynamic wrappers are used for dashboard, runs, targets, and slash-containing URL target IDs. The AWS backend remains UI-free.
-
-## 9. Security model
-
-- Only owned or explicitly authorized targets may be assessed.
-- Enable `REQUIRE_TARGET_ALLOWLIST=true` and set `ALLOWED_TARGETS` before exposing the backend.
-- Keep `NVIDIA_API_KEY`, `API_SECRET_KEY`, `CANARY_API_TOKEN`, and target credentials server-side.
-- Do not place secrets in `VITE_*` variables or campaign screenshots.
-- The target receives real generated prompts; do not use production systems without written authorization.
-- Canary reports findings but does not auto-fix or mutate the target.
-- Reports and SQLite traces may contain sensitive target responses; protect them like security logs.
-
-## 10. Deployment and operations
-
-### AWS backend
-
-The repository includes an AWS backend-only Compose override, but the shared demo instance has been terminated. Deploy it on your own host:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.aws.yml up -d --build redteam-backend
-```
-
-The backend is exposed on port 80 through the override and serves Swagger at `/docs`. The frontend profile is disabled in the AWS deployment. Set `CANARY_API_URL` in Vercel to your own backend URL and `CANARY_API_TOKEN` to the backend's `API_SECRET_KEY`.
-
-### Vercel dashboard
-
-The dashboard is deployed from `canary/` and uses production variables:
-
-```env
-CANARY_API_URL=http://<aws-backend-host>
-CANARY_API_TOKEN=<API_SECRET_KEY>
-```
-
-Build locally with:
-
-```bash
-cd canary
-npm install
-npm run lint
-npm run build
-```
-
-### Vercel explainer
-
-The explainer is a static Vercel project rooted at `explainer/`:
-
-```bash
-cd explainer
-npx vercel dev --local --listen 127.0.0.1:4173
-npx vercel link --project agent-canary-explainer --yes
-npx vercel --prod --yes
-```
-
-The folder intentionally contains only `explainer.html` and `vercel.json` in Git. Local Vercel metadata and `.env.local` files must remain ignored.
-
-## 11. Validation
-
-The current validation commands are:
-
-```bash
-cd canary
-npm run lint
-npm run build
-
-cd ../cyber-redteam-foundry
-uv run --extra dev pytest tests/test_api.py tests/test_auth.py
-```
-
-The focused backend suite covers API/auth behavior and URL target detail routing. Live production checks have verified the dashboard proxy, AWS backend health, campaign history, target coverage, target trends, and persisted LLM telemetry.
-
-## 12. Design patterns
-
-- **Orchestrator:** `GraphOrchestrator` owns run setup, checkpoint invocation, and persistence.
-- **Scatter-gather:** LangGraph `Send()` fans out independent attacker branches and gathers their deltas at the evaluator barrier.
-- **Strategy:** each `StrategyType` selects one scoped attack technique behind the common attacker contract.
-- **Adapter:** `HttpTargetAdapter` normalizes HTTP request templates, auth headers, response paths, and observations.
-- **Reducer:** `Annotated[..., operator.add]` merges parallel branch results and log events.
-- **Checkpoint:** SQLite-backed LangGraph state uses the campaign ID as `thread_id`.
-- **Proxy:** Vercel server functions isolate the browser from the AWS API credential.
-
-## License
-
-MIT. See [LICENSE](LICENSE).
+Orchestrator (`GraphOrchestrator`), scatter-gather (`Send`), strategy (`StrategyType`), adapter (`HttpTargetAdapter`), reducer (`operator.add`), checkpoint (SQLite `thread_id`), proxy (Vercel functions).

@@ -13,12 +13,6 @@ COPY src ./src
 COPY configs ./configs
 COPY prompts ./prompts
 
-# Pre-install CPU torch to avoid downloading the 4 GB CUDA wheel
-RUN pip install --no-cache-dir \
-    "torch>=2.0.0" \
-    --index-url https://download.pytorch.org/whl/cpu
-
-# Install the project (torch requirement already satisfied above)
 RUN pip install --no-cache-dir -e .
 
 ENV PYTHONPATH=/app:/app/src

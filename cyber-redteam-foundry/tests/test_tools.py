@@ -207,6 +207,7 @@ def test_extract_by_path():
 def test_http_adapter_default_contract_unchanged():
     """Regression: no template/response_path/headers → original {"message": ...} contract."""
     mock_resp = MagicMock()
+    mock_resp.content = b'{}'
     mock_resp.json.return_value = {"response": "hello back"}
     mock_resp.raise_for_status.return_value = None
 
@@ -225,6 +226,7 @@ def test_http_adapter_default_contract_unchanged():
 def test_http_adapter_custom_template_and_response_path():
     """A non-default schema (OpenAI-style) works via request_template + response_path."""
     mock_resp = MagicMock()
+    mock_resp.content = b'{}'
     mock_resp.json.return_value = {"choices": [{"message": {"content": "the answer"}}]}
     mock_resp.raise_for_status.return_value = None
 
@@ -244,6 +246,7 @@ def test_http_adapter_custom_template_and_response_path():
 def test_http_adapter_response_path_fallback_to_heuristic():
     """An unresolvable response_path falls back to the default key-guessing."""
     mock_resp = MagicMock()
+    mock_resp.content = b'{}'
     mock_resp.json.return_value = {"output": "fallback text"}
     mock_resp.raise_for_status.return_value = None
 
@@ -259,6 +262,7 @@ def test_http_adapter_response_path_fallback_to_heuristic():
 
 def test_http_adapter_custom_headers_merged_with_defaults():
     mock_resp = MagicMock()
+    mock_resp.content = b'{}'
     mock_resp.json.return_value = {"response": "ok"}
     mock_resp.raise_for_status.return_value = None
 

@@ -226,9 +226,9 @@ class TestParallelFanOut:
         final = compiled.invoke(state, config=config)
 
         results = final["attack_results"]
-        # Random sample of up to 3 from 4 candidates -> exactly 3 branches.
-        assert len(results) == 3
+        # Every explicitly selected technique gets its own branch.
+        assert len(results) == 4
         branch_ids = {r.branch_id for r in results}
-        assert len(branch_ids) == 3, "each branch must have a distinct branch_id"
+        assert len(branch_ids) == 4, "each branch must have a distinct branch_id"
         assert all(r.iteration == 0 for r in results), "results must be tagged with the dispatching iteration"
         assert all(r.technique_id for r in results), "results must carry a resolved ASI technique_id"

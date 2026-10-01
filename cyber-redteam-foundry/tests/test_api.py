@@ -55,7 +55,7 @@ def mock_db(tmp_path):
         session.add(LLMCallRecord(
             run_id="testrun123",
             agent_name="attacker",
-            deployment="nvidia/nemotron-test",
+            deployment="openai/test-model",
             latency=1.25,
             input_hash="input",
             output_hash="output",

@@ -1,5 +1,6 @@
 """Target adapter for executing attack cases against different deployment types."""
 
+import re
 import json
 import hashlib
 import time
@@ -87,7 +88,7 @@ class HttpTargetAdapter(TargetAdapter):
         """Initialize HTTP adapter.
 
         Args:
-            endpoint: Full URL to the agent's chat endpoint (e.g. http://localhost:9000/chat).
+            endpoint: Full URL to the agent's chat endpoint (e.g. https://agent.example.com/chat).
             api_key: Optional API key, sent as ``Authorization: Bearer {api_key}``.
             timeout: Request timeout in seconds.
             headers: Optional extra HTTP headers, merged on top of the default
@@ -104,9 +105,8 @@ class HttpTargetAdapter(TargetAdapter):
         import os
         is_docker = os.path.exists("/.dockerenv") or os.environ.get("RUNNING_IN_DOCKER") == "true"
         if is_docker:
-            for host in ["localhost:9000", "127.0.0.1:9000"]:
-                if host in endpoint:
-                    endpoint = endpoint.replace(host, "host.docker.internal:9000")
+            # A loopback target means "on the Docker host", not this container.
+            endpoint = re.sub(r"//(?:localhost|127\.0\.0\.1)(?=[:/]|$)", "//host.docker.internal", endpoint)
 
         self.endpoint = endpoint.rstrip("/")
         self.api_key = api_key

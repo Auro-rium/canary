@@ -6,21 +6,20 @@ from typing import Optional
 from dotenv import load_dotenv
 from pydantic_settings import BaseSettings
 
-# Load .env into the process environment so that libraries reading os.environ
-# directly — notably boto3's credential chain (AWS_ACCESS_KEY_ID, etc.) — pick
-# up values placed in .env. pydantic-settings reads .env for its own fields,
-# but does NOT export to os.environ; without this, AWS creds in .env are
-# ignored and boto3 falls back to the default ~/.aws profile. override=False
-# keeps any credentials already exported in the shell authoritative.
+# override=False keeps any value already exported in the shell authoritative.
 load_dotenv(override=False)
 
 
 class Settings(BaseSettings):
     """Application settings from environment variables."""
 
-    # NVIDIA NIM / build.nvidia.com (OpenAI-compatible API)
-    nvidia_api_key: Optional[str] = None
-    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
+    # Backboard.io — provider and model are selected per request; per-agent
+    # overrides live in configs/models.yaml.
+    backboard_api_key: Optional[str] = None
+    backboard_base_url: str = "https://app.backboard.io/api"
+    backboard_llm_provider: str = "openai"
+    backboard_model_name: str = "gpt-4o"
+    backboard_timeout_seconds: float = 60.0
 
     # API authentication — bearer token required on every API request.
     # Must match the VITE_API_TOKEN configured in the frontend.
@@ -62,7 +61,7 @@ class Settings(BaseSettings):
         env_file = ".env"
         env_file_encoding = "utf-8"
         case_sensitive = False
-        extra = "ignore"  # tolerate leftover AWS_*/legacy env vars
+        extra = "ignore"  # tolerate unrelated env vars
 
 
 def get_settings() -> Settings:

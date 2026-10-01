@@ -79,8 +79,6 @@ class FindingRecord(Base):
     first_seen_run = Column(String, nullable=True)
     last_seen_run = Column(String, nullable=True)
     seen_in_runs = Column(JSON, default=list)
-    embedding = Column(JSON, nullable=True)
-    trace_s3_uri = Column(String, nullable=True)
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -141,10 +139,6 @@ def _migrate_columns(engine) -> None:
             ("finding_id",     "VARCHAR"),
             ("score_threshold","REAL DEFAULT 0.5"),
             ("error",          "TEXT"),
-        ],
-        "findings": [
-            ("embedding",      "TEXT"),
-            ("trace_s3_uri",   "VARCHAR"),
         ],
         "runs": [
             ("error", "TEXT"),

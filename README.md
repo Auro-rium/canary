@@ -1,244 +1,123 @@
 # Agent Canary
 
-Agent Canary is an autonomous red-team platform for authorized HTTP-based AI agents. It uses a LangGraph workflow to generate adversarial prompts with NVIDIA Nemotron, send them to a real target, evaluate the target's real response, and persist evidence-backed findings for human review.
+Autonomous red-teaming for **any authorized AI agent that speaks HTTP**. Canary uses a LangGraph workflow to generate adversarial prompts with [Backboard.io](https://backboard.io), send them to your agent, evaluate the agent's real response, and persist evidence-backed findings for human review.
 
-There are no mock attack results, static attacker payloads, sandbox targets, or automatic remediation paths in the production workflow.
-
-![Agent Canary live dashboard demo](demo/demo.gif)
-
-## Live deployment
-
-- Explainer: [agent-canary-explainer.vercel.app](https://agent-canary-explainer.vercel.app/)
-- Interactive dashboard: [canary-coral.vercel.app](https://canary-coral.vercel.app/)
-- Source: [github.com/Auro-rium/canary](https://github.com/Auro-rium/canary)
-
-The dashboard is hosted on Vercel. The previous shared AWS FastAPI demo backend has been terminated. The dashboard will require a newly deployed backend and matching Vercel environment variables before it can run campaigns again. Deploy your own backend; do not rely on the retired address `3.108.23.172`.
-
-> **AWS deployment note:** The former demo instance `i-0120dbe4036377c33` in `ap-south-1` was intentionally terminated. To use Canary, provision your own AWS host, deploy `redteam-backend` with the AWS Compose override, configure `NVIDIA_API_KEY`, `API_SECRET_KEY`, `ALLOWED_TARGETS`, and set the Vercel `CANARY_API_URL`/`CANARY_API_TOKEN` variables.
-
-The demonstration target is a separate project: [CompanyAgent Canary Demo](https://github.com/Auro-rium/companybot-canary-demo). It is a real LangChain tool-calling agent backed by Backboard and is assessed over HTTP at its `/chat` endpoint. Canary does not embed, modify, or fabricate this target. Assess only systems you own or are explicitly authorized to test.
-
-## What happens during a campaign
+There are no mock attack results, canned payloads, bundled victim agents, or automatic remediation. If Backboard isn't configured, Canary fails closed instead of inventing output.
 
 ```mermaid
 flowchart LR
-    start([Campaign request]) --> strategy[Deterministic strategist node]
-    strategy -->|Send one branch per selected technique| attacker[Parallel Nemotron attackers]
-    attacker --> target[Authorized HTTP target]
-    target --> evaluator[Nemotron evaluator + deterministic detectors]
-    evaluator -->|Finding and iterations remain| strategy
-    evaluator -->|Complete| reporter[Nemotron reporter]
+    start([Campaign request]) --> strategy[Deterministic strategist]
+    strategy -->|one branch per technique| attacker[Parallel attackers]
+    attacker --> target[Your agent over HTTP]
+    target --> evaluator[Detectors + LLM judge]
+    evaluator -->|finding and iterations remain| strategy
+    evaluator -->|done| reporter[Reporter]
     reporter --> store[(SQLite evidence + reports)]
     store --> dashboard[React dashboard]
 ```
 
-The four roles are:
-
-| Role | Current behavior |
+| Role | Behavior |
 |---|---|
-| Strategist | Deterministic graph node. Preserves the user's explicit technique selection and dispatches parallel branches. It does not make an unrecorded LLM selection. |
-| Attacker | NVIDIA Nemotron generates one scoped adversarial prompt for one branch and sends it to the target adapter. |
-| Evaluator | Deterministic detectors plus an NVIDIA Nemotron judge assess the target response, score it, record evidence, and decide whether another iteration is needed. |
-| Reporter | NVIDIA Nemotron compiles the persisted campaign into Markdown and JSON report artifacts. |
+| Strategist | Deterministic graph node. Dispatches exactly the techniques you selected as parallel branches. |
+| Attacker | Backboard-hosted model writes one scoped adversarial prompt per branch and sends it to the target. Refusals never reach the target. |
+| Evaluator | Deterministic detectors plus an LLM judge score the response and own the iterate-or-report decision. |
+| Reporter | Compiles the persisted campaign into Markdown and JSON reports. |
 
-The default model for all model-powered roles is `nvidia/nemotron-3-ultra-550b-a55b` through NVIDIA's OpenAI-compatible NIM endpoint. If `NVIDIA_API_KEY` is missing, the backend fails closed; it does not invent output.
+## Quick start
 
-## Attack coverage
-
-The backend registry contains 12 strategy types. The current dashboard exposes these eight selectable techniques:
-
-| UI technique | ASI mapping | Purpose |
-|---|---|---|
-| Prompt Injection | ASI-01 | Override system or developer instructions through user input. |
-| Memory Poisoning | ASI-02 | Corrupt memory or state used in later reasoning. |
-| Tool & Plugin Abuse | ASI-03 | Manipulate tool parameters or induce unauthorized actions. |
-| Privilege Escalation | ASI-04 | Cross an authorization or role boundary. |
-| Goal Hijacking | ASI-05 | Redirect the agent away from its declared task. |
-| Data Exfiltration | ASI-06 | Probe for secrets, PII, prompts, or internal context. |
-| Supply Chain Attack | ASI-08 | Poison retrieved or third-party tool content. |
-| Agent DoS | ASI-09 | Induce runaway or resource-exhausting behavior. |
-
-Explicit selections are preserved. LangGraph supports up to 12 parallel attacker branches; the UI currently exposes eight. The ASI/ATLAS mapping and confidence thresholds are stored in `cyber-redteam-foundry/configs/`.
-
-## Target contract
-
-The generic `HttpTargetAdapter` sends a POST request to an authorized target. By default:
-
-```json
-{"message": "<adversarial prompt>"}
-```
-
-The default response extractor checks `response`, `output`, `content`, and `text`. Campaigns can instead provide a JSON request template containing `{{PROMPT}}` and a dot path such as `choices.0.message.content`. Optional target headers are forwarded by the backend and are never bundled into the frontend.
-
-The current demo target is:
-
-```text
-POST http://13.201.9.115/chat
-{"message":"..."}
-```
-
-This endpoint belongs to the separate CompanyAgent deployment and may require its own authorization key.
-
-## Local development
-
-### Full Docker stack
-
-Prerequisites: Docker Compose, an NVIDIA API key, an API bearer secret, and an authorized HTTP target.
+Prerequisites: Docker Compose, a [Backboard](https://app.backboard.io) API key, and an AI agent you own or are explicitly authorized to test.
 
 ```bash
 git clone https://github.com/Auro-rium/canary.git
 cd canary
 cp cyber-redteam-foundry/.env.example cyber-redteam-foundry/.env
-# Set NVIDIA_API_KEY, API_SECRET_KEY, and an authorized target configuration.
+# Set BACKBOARD_API_KEY, API_SECRET_KEY, VITE_API_TOKEN (same value), and ALLOWED_TARGETS
 docker compose up -d --build
 ```
 
-Local services:
+| Service | URL |
+|---|---|
+| Dashboard | http://localhost:8000 |
+| API + Swagger | http://localhost:8001/docs |
 
-| Service | URL | Purpose |
-|---|---|---|
-| React/nginx dashboard | http://localhost:8000 | Browser UI and `/api/*` proxy |
-| FastAPI backend | http://localhost:8001/docs | Direct local API and Swagger UI |
-| External target | configured by you | The agent being assessed; not bundled |
-
-The AWS-style backend-only stack is:
+Without Docker:
 
 ```bash
-docker compose -f docker-compose.yml -f docker-compose.aws.yml up -d --build redteam-backend
-```
-
-### Backend without Docker
-
-```bash
+# backend
 cd cyber-redteam-foundry
-uv venv --python 3.11
-source .venv/bin/activate
-uv pip install -e ".[dev]"
+uv sync --extra dev
 cp .env.example .env
-cyber-rt init
-cyber-rt doctor
-cyber-rt server --port 8001
+uv run cyber-rt doctor          # checks config and Backboard connectivity
+uv run cyber-rt server --port 8001
+
+# frontend (proxies /api to localhost:8001)
+cd canary && npm install && npm run dev
 ```
 
-### Frontend without Docker
+## Choosing the models
 
-```bash
-cd canary
-npm install
-npm run dev
-```
-
-Vite serves the dashboard at `http://localhost:5173` and proxies `/api` to the configured local backend. Production Vercel requests use the server-side proxy instead.
-
-### Explainer locally and with Vercel CLI
-
-The static explainer lives in `explainer/`:
-
-```bash
-cd explainer
-npx vercel dev --local --listen 127.0.0.1:4173
-```
-
-For a production deployment, link the folder to the existing project once, then deploy:
-
-```bash
-npx vercel link --project agent-canary-explainer --yes
-npx vercel --prod --yes
-```
-
-Do not commit `.vercel/`, `.env.local`, or provider credentials.
-
-## Environment variables
-
-The backend reads `cyber-redteam-foundry/.env`:
+Backboard routes each request to a provider and model, so any model Backboard supports can power Canary. Set the defaults in `.env`:
 
 ```env
-NVIDIA_API_KEY=
-NVIDIA_BASE_URL=https://integrate.api.nvidia.com/v1
-API_SECRET_KEY=
-ALLOWED_TARGETS=http://13.201.9.115/chat
-REQUIRE_TARGET_ALLOWLIST=true
-TARGET_MODE=http
-TARGET_ENDPOINT=http://13.201.9.115/chat
-TARGET_API_KEY=
-MAX_RETRIES=3
-MAX_CONCURRENT_RUNS=3
-TIMEOUT_SECONDS=30
-DB_PATH=runs/redteam.db
-REPORT_OUTPUT_DIR=reports
-REPORT_FORMAT=both
+BACKBOARD_LLM_PROVIDER=openai
+BACKBOARD_MODEL_NAME=gpt-4o
 ```
 
-Production Vercel variables are server-only:
+Override per role in `cyber-redteam-foundry/configs/models.yaml`:
 
-```env
-CANARY_API_URL=http://<aws-backend-host>
-CANARY_API_TOKEN=<same value as API_SECRET_KEY>
+```yaml
+attacker:
+  provider: openai
+  model: gpt-4o
+evaluator:
+  provider: anthropic
+  model: claude-3-5-sonnet-20241022
 ```
 
-Never commit `.env` files, API keys, target credentials, or tokens in `VITE_*` variables.
+## Pointing Canary at your agent
 
-## API surface
+`HttpTargetAdapter` is a generic JSON-over-HTTP client. By default it posts `{"message": "<prompt>"}` and reads the reply from `response`, `output`, `content` or `text`. For any other shape, supply a request template and response path per campaign:
 
-All protected backend routes require `Authorization: Bearer <API_SECRET_KEY>`.
+```json
+{
+  "target_url": "https://agent.example.com/v1/chat/completions",
+  "headers": {"Authorization": "Bearer <target-key>"},
+  "request_template": "{\"messages\": [{\"role\": \"user\", \"content\": \"{{PROMPT}}\"}]}",
+  "response_path": "choices.0.message.content"
+}
+```
 
-| Method | Route | Purpose |
-|---|---|---|
-| GET | `/api/status` | Backend health and configuration status. |
-| GET | `/api/dashboard/overview` | Aggregate campaigns, findings, targets, and LLM telemetry. |
-| GET | `/api/runs` | Paginated campaign history with target/status filters. |
-| POST | `/api/runs` | Start a background campaign. |
-| POST | `/api/campaigns/run` | Start a campaign and stream SSE events. |
-| GET | `/api/runs/{run_id}` | Complete campaign detail and evidence. |
-| GET | `/api/runs/{run_id}/analysis-report` | Structured analysis report. |
-| GET | `/api/runs/{run_id}/report-markdown` | Reporter Markdown artifact. |
-| GET | `/api/runs/{run_id}/findings` | Findings linked to a campaign. |
-| GET | `/api/targets` | Target portfolio summary. |
-| GET | `/api/targets/{target_id}/coverage` | ASI coverage for a target; URL target IDs are supported. |
-| GET | `/api/targets/{target_id}/trends` | Strategy success trends for a target. |
-| GET | `/api/findings` | Paginated findings with severity/status/ASI filters. |
-| GET | `/api/findings/{finding_id}` | Finding and latest evaluator verdict. |
-| GET | `/api/findings/{finding_id}/attempts` | Contributing attempts. |
-| PUT | `/api/findings/{finding_id}/status` | Manual finding lifecycle transition. |
-| GET | `/api/open-findings` | All open findings. |
-| GET | `/api/incidents` | Incident feed. |
+`{{PROMPT}}` is JSON-escaped, and target headers stay on the backend. Loopback URLs (`localhost`, `127.0.0.1`) are mapped to the Docker host when Canary runs in a container.
 
-## Evidence and safety boundaries
+**Authorization:** set `ALLOWED_TARGETS` (comma-separated endpoints) and `REQUIRE_TARGET_ALLOWLIST=true` before exposing the API. Only test agents you own or have written permission to test.
 
-- The raw generated prompt, target reply, HTTP status, latency, request/response observations, detector indicators, evaluator verdict, and LLM call telemetry are persisted when available.
-- Finding IDs are content-addressed from target, component, strategy, and ASI class so repeated observations can be deduplicated across runs.
-- The attacker never decides whether an attack succeeded. The evaluator owns scores, verdict paths, and iteration routing.
-- A refused attacker branch does not contact the target.
-- Findings are manually triaged. Canary does not patch, disable, or remediate the target.
-- Campaigns are only authorized assessments. The target allowlist should be enabled before exposing the API.
+## Attack coverage
+
+The backend registers 12 strategy types mapped to OWASP agentic (ASI) classes and MITRE ATLAS techniques (`cyber-redteam-foundry/configs/`). The dashboard exposes eight: prompt injection, memory poisoning, tool and plugin abuse, privilege escalation, goal hijacking, data exfiltration, supply-chain attack and agent DoS. Up to 12 branches run in parallel.
+
+## Evidence and safety
+
+- Every prompt, reply, HTTP observation, detector hit, verdict and LLM call (tokens, latency, hashes) is persisted.
+- The attacker never judges success; the evaluator does. A detector hit that the judge contradicts is kept only as an *unconfirmed* review signal.
+- Findings are deduplicated by a content hash of target, component, strategy and ASI class, and triaged by a human. Canary never patches or modifies your agent.
+- Reports and SQLite traces can contain sensitive responses. Protect `runs/` and `reports/` like security logs.
 
 ## Repository layout
 
 ```text
-explainer/                  Static case-file explainer and Vercel config
-canary/                     React 19 + TypeScript + Vite dashboard
+canary/                     React 19 + TypeScript + Vite dashboard (+ Vercel proxy in api/)
 cyber-redteam-foundry/      FastAPI + LangGraph engine
-  src/cyberredteam/         Agents, graph, adapters, LLM, storage, API
-  configs/                  Models, taxonomy, technique specs, thresholds
-  prompts/                  Agent system prompts and report contracts
-demo/demo.gif               Live dashboard GIF used in this README
-runs/                       Local SQLite databases and logs; ignored
-reports/                    Generated reports; ignored
+  src/cyberredteam/         agents, graph, adapters, LLM (Backboard), storage, API
+  configs/                  models, ASI taxonomy, technique specs, thresholds
+  prompts/                  agent system prompts
+docker-compose.yml          backend + dashboard
 ```
+
+More detail: [TECHNICAL.md](TECHNICAL.md), [engine README](cyber-redteam-foundry/README.md), [dashboard README](canary/README.md).
 
 ## Validation
 
 ```bash
-cd canary
-npm run lint
-npm run build
-
-cd ../cyber-redteam-foundry
-uv run --extra dev pytest tests/test_api.py tests/test_auth.py
+cd cyber-redteam-foundry && uv run --extra dev pytest
+cd canary && npm run lint && npm run build
 ```
-
-The focused backend suite covers the API/auth surface, including URL target detail routes. Production inference is NVIDIA NIM; tests may inject fake LLMs or stores for isolation, but the deployed factory has no fabricated-output fallback.
-
-## License
-
-MIT. See [LICENSE](LICENSE).

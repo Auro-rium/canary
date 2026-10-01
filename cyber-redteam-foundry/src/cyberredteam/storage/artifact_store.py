@@ -179,8 +179,6 @@ class SQLiteStore:
         On update: updates last_seen_run, appends run_id to seen_in_runs.
         Status is never changed here — use transition_finding_status().
         """
-        from cyberredteam.storage.embedder import embed, semantic_similarity
-
         fid = finding_data["finding_id"]
         run_id = finding_data["run_id"]
 
@@ -188,26 +186,6 @@ class SQLiteStore:
             existing = session.get(FindingRecord, fid)
 
             if existing is None:
-                # Compute embedding for deduplication
-                emb = embed(finding_data.get("adversarial_input", finding_data.get("finding_id", "")))
-
-                # Check semantic similarity against open findings for same target
-                if emb is not None:
-                    similar_q = select(FindingRecord).where(
-                        FindingRecord.target_id == finding_data.get("target_id", ""),
-                        FindingRecord.status == "open",
-                        FindingRecord.embedding.isnot(None),
-                    )
-                    for candidate in session.scalars(similar_q):
-                        if candidate.embedding:
-                            sim = semantic_similarity(emb, candidate.embedding)
-                            if sim >= 0.92:
-                                logger.warning(
-                                    f"Potential duplicate finding: {fid} ~= {candidate.finding_id} "
-                                    f"(similarity={sim:.3f}). Surfaced for review."
-                                )
-                                finding_data["_duplicate_candidate"] = candidate.finding_id
-
                 record = FindingRecord(
                     finding_id=fid,
                     target_id=finding_data.get("target_id", ""),
@@ -220,7 +198,6 @@ class SQLiteStore:
                     first_seen_run=run_id,
                     last_seen_run=run_id,
                     seen_in_runs=[run_id],
-                    embedding=emb,
                     created_at=datetime.utcnow(),
                     updated_at=datetime.utcnow(),
                 )

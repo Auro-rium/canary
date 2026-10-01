@@ -1,13 +1,10 @@
-
-
-strategist:
-  model: nvidia/nemotron-3-ultra-550b-a55b
-
-attacker:
-  model: nvidia/nemotron-3-ultra-550b-a55b
-
-evaluator:
-  model: nvidia/nemotron-3-ultra-550b-a55b
-
-reporter:
-  model: nvidia/nemotron-3-ultra-550b-a55b
+# Optional per-agent overrides. Anything unset falls back to
+# BACKBOARD_LLM_PROVIDER / BACKBOARD_MODEL_NAME from the environment.
+# Provider and model names are whatever Backboard.io routes to, e.g.:
+#
+# attacker:
+#   provider: openai
+#   model: gpt-4o
+# evaluator:
+#   provider: anthropic
+#   model: claude-3-5-sonnet-20241022

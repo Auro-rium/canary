@@ -4,14 +4,15 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
-import botocore.exceptions
+import httpx
 import pytest
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
-from cyberredteam.llm.bedrock import ObservableLLM
-from cyberredteam.llm.factory import get_llm_for_agent, get_model_for_agent, load_prompt
+from cyberredteam.llm.backboard import BackboardRetryableError, ChatBackboard, extract_json
+from cyberredteam.llm.observable import ObservableLLM
+from cyberredteam.llm.factory import get_llm_for_agent, load_prompt
 from cyberredteam.llm.schemas import (
     AttackerOutput,
     AttackPlan,
@@ -30,7 +31,7 @@ def test_factory_returns_observable_llm():
     llm = get_llm_for_agent("strategist")
     assert llm is not None
     assert llm.agent_name == "strategist"
-    assert llm.deployment == get_model_for_agent("strategist")
+    assert llm.deployment == "test-model"
 
     # Test load prompt
     prompt = load_prompt("strategist")
@@ -97,22 +98,22 @@ def test_observability_logging_to_db():
             assert record.completion_tokens == 50
 
 
-# ─── Bedrock throttling retry ──────────────────────────────────────
+# ─── Provider throttling retry ──────────────────────────────────────
 #
 # The autouse `_inject_fake_llm` fixture (conftest.py) always succeeds, so it
 # never exercises `.with_retry()`. These tests construct `ObservableLLM`
 # directly with a flaky fake `BaseChatModel` that raises
-# `botocore.exceptions.ClientError` a controlled number of times, bypassing
+# `BackboardRetryableError` a controlled number of times, bypassing
 # the fixture entirely. `max_retries` is patched small (2-3) since
 # `wait_exponential_jitter=True` sleeps real time between attempts.
 
 
 class _FlakyLLM(BaseChatModel):
-    """Real `BaseChatModel` subclass (like `ChatBedrockConverse`) that raises
-    a throttling `ClientError` on the first ``fail_times`` calls, then
+    """Real `BaseChatModel` subclass (like `ChatBackboard`) that raises
+    a throttling error on the first ``fail_times`` calls, then
     returns a valid message. Subclassing `BaseChatModel` (rather than duck
     typing `invoke`/`__or__`) means it composes into LCEL pipe chains
-    (``prompt | llm | StrOutputParser()``) exactly the way the real Bedrock
+    (``prompt | llm | StrOutputParser()``) exactly the way the real Backboard
     client does, since raw pipe-composition requires the object to itself be
     a `Runnable`.
     """
@@ -123,10 +124,7 @@ class _FlakyLLM(BaseChatModel):
     def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
         self.calls += 1
         if self.calls <= self.fail_times:
-            raise botocore.exceptions.ClientError(
-                {"Error": {"Code": "ThrottlingException", "Message": "rate exceeded"}},
-                "Converse",
-            )
+            raise BackboardRetryableError("Backboard returned HTTP 429")
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content="ok"))])
 
     @property
@@ -135,10 +133,10 @@ class _FlakyLLM(BaseChatModel):
 
 
 def test_build_text_chain_retries_throttling_and_succeeds(monkeypatch):
-    """A ClientError on the first N-1 attempts is retried and swallowed when
+    """A throttling error on the first N-1 attempts is retried and swallowed when
     N-1 < max_retries; the chain ultimately returns the successful result."""
     monkeypatch.setattr(
-        "cyberredteam.llm.bedrock.get_settings",
+        "cyberredteam.llm.observable.get_settings",
         lambda: SimpleNamespace(max_retries=3),
     )
     flaky = _FlakyLLM(fail_times=2)  # fails twice, succeeds on the 3rd call
@@ -151,18 +149,115 @@ def test_build_text_chain_retries_throttling_and_succeeds(monkeypatch):
     assert flaky.calls == 3
 
 
-def test_build_text_chain_reraises_clienterror_after_exhausting_retries(monkeypatch):
-    """When failures >= max_retries, the original ClientError propagates
+def test_build_text_chain_reraises_error_after_exhausting_retries(monkeypatch):
+    """When failures >= max_retries, the original error propagates
     (not a tenacity.RetryError)."""
     monkeypatch.setattr(
-        "cyberredteam.llm.bedrock.get_settings",
+        "cyberredteam.llm.observable.get_settings",
         lambda: SimpleNamespace(max_retries=2),
     )
     flaky = _FlakyLLM(fail_times=5)  # always throttles, well past max_retries
     llm = ObservableLLM(llm=flaky, agent_name="test", deployment="test-model")
 
     chain = llm.build_text_chain("system prompt")
-    with pytest.raises(botocore.exceptions.ClientError):
+    with pytest.raises(BackboardRetryableError):
         llm.invoke_chain(chain, "hello")
 
     assert flaky.calls == 2
+
+
+# ─── ChatBackboard transport ──────────────────────────────────────
+
+
+def _backboard_response(monkeypatch, status_code=200, body=None):
+    """Patch httpx.post to return a canned Backboard reply and capture the request."""
+    captured = {}
+
+    def _post(url, headers=None, json=None, timeout=None):
+        captured.update(url=url, headers=headers, json=json)
+        return httpx.Response(status_code, json=body or {}, request=httpx.Request("POST", url))
+
+    monkeypatch.setattr("cyberredteam.llm.backboard.httpx.post", _post)
+    return captured
+
+
+def _client():
+    return ChatBackboard(api_key="k", provider="anthropic", model_name="claude-test")
+
+
+def test_backboard_sends_expected_request(monkeypatch):
+    from langchain_core.messages import HumanMessage, SystemMessage
+
+    captured = _backboard_response(monkeypatch, body={
+        "content": "hello", "status": "COMPLETED",
+        "input_tokens": 3, "output_tokens": 2, "total_tokens": 5,
+    })
+    message = _client().invoke([SystemMessage(content="be brief"), HumanMessage(content="hi")])
+
+    assert captured["url"] == "https://app.backboard.io/api/threads/messages"
+    assert captured["headers"]["X-API-Key"] == "k"
+    assert captured["json"]["llm_provider"] == "anthropic"
+    assert captured["json"]["model_name"] == "claude-test"
+    assert captured["json"]["system_prompt"] == "be brief"
+    assert captured["json"]["content"] == "hi"
+    assert "thread_id" not in captured["json"]
+    assert message.content == "hello"
+    assert message.usage_metadata["total_tokens"] == 5
+
+
+def test_backboard_structured_output_parses_fenced_json(monkeypatch):
+    captured = _backboard_response(monkeypatch, body={
+        "content": '```json\n{"categories": ["prompt_injection"], "priorities": ["high"], "rationale": "r"}\n```',
+        "status": "COMPLETED", "total_tokens": 9, "input_tokens": 4, "output_tokens": 5,
+    })
+    from langchain_core.prompt_values import StringPromptValue
+
+    chain = _client().with_structured_output(AttackPlan, include_raw=True)
+    result = chain.invoke(StringPromptValue(text="plan"))
+    assert isinstance(result["parsed"], AttackPlan)
+    assert result["parsing_error"] is None
+    assert result["raw"].usage_metadata["total_tokens"] == 9
+    assert captured["json"]["json_output"] is True
+
+
+def test_backboard_structured_output_reports_parse_failure(monkeypatch):
+    _backboard_response(monkeypatch, body={"content": "not json", "status": "COMPLETED"})
+    from langchain_core.prompt_values import StringPromptValue
+
+    result = _client().with_structured_output(AttackPlan, include_raw=True).invoke(
+        StringPromptValue(text="plan")
+    )
+    assert result["parsed"] is None
+    assert result["parsing_error"] is not None
+
+
+def test_backboard_error_classification(monkeypatch):
+    from cyberredteam.llm.backboard import BackboardError
+
+    _backboard_response(monkeypatch, status_code=503)
+    with pytest.raises(BackboardRetryableError):
+        _client().invoke("hi")
+
+    _backboard_response(monkeypatch, status_code=401, body={"detail": "bad key"})
+    with pytest.raises(BackboardError) as exc:
+        _client().invoke("hi")
+    assert not isinstance(exc.value, BackboardRetryableError)
+
+
+def test_extract_json_finds_object_in_prose():
+    assert extract_json('Sure! {"a": 1} hope that helps') == {"a": 1}
+
+
+def test_factory_requires_backboard_key(monkeypatch):
+    """With no key configured the real factory fails closed instead of faking output."""
+    import importlib
+
+    import cyberredteam.llm.factory as factory
+
+    real = importlib.reload(factory)
+    monkeypatch.setattr(
+        "cyberredteam.settings.get_settings",
+        lambda: SimpleNamespace(backboard_api_key=None),
+    )
+    with pytest.raises(RuntimeError, match="BACKBOARD_API_KEY"):
+        real.get_llm("gpt-4o", agent_name="attacker")

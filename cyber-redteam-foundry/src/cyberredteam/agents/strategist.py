@@ -12,7 +12,7 @@ logger = setup_logging()
 
 
 class StrategistAgent:
-    """Selects attack strategies using the configured NVIDIA reasoning model."""
+    """Selects attack strategies using the configured Backboard model."""
 
     def __init__(self, llm=None, store=None):
         """Initialize strategist agent.

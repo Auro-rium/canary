@@ -25,7 +25,7 @@ class WorkflowManipulationTool:
         target_role = "the system"
         if target_description:
             desc_lower = target_description.lower()
-            if "hr" in desc_lower or "employee" in desc_lower:
+            if "human resources" in desc_lower or re.search(r"\bhr\b", desc_lower):
                 target_role = "HR assistant"
             elif "finance" in desc_lower or "budget" in desc_lower:
                 target_role = "Finance assistant"

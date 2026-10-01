@@ -6,24 +6,9 @@
 
 mappings:
   - strategy: indirect_injection
-    component: document_search
-    asi_class: ASI01
-    atlas_technique: "AML.T0051.000"
-
-  - strategy: indirect_injection
-    component: email_reader
-    asi_class: ASI01
-    atlas_technique: "AML.T0051.000"
-
-  - strategy: indirect_injection
     component: "*"
     asi_class: ASI01
     atlas_technique: "AML.T0051.000"
-
-  - strategy: tool_misuse
-    component: employee_lookup
-    asi_class: ASI02
-    atlas_technique: "AML.T0051.002"
 
   - strategy: tool_misuse
     component: code_executor

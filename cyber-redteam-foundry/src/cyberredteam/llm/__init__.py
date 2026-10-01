@@ -1,4 +1,4 @@
-"""LLM abstraction layer for NVIDIA's OpenAI-compatible endpoint.
+"""LLM abstraction layer backed by Backboard.io.
 
 Provides per-agent model factories and structured output support.
 """

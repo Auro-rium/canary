@@ -1,5 +1,6 @@
 """Jailbreak tool for generating persona/role-play bypass payloads and checking responses."""
 
+import re
 from typing import Dict, List, Any, Optional
 
 from langchain_core.tools import tool
@@ -22,7 +23,7 @@ class JailbreakTool:
         target_role = "the system"
         if target_description:
             desc_lower = target_description.lower()
-            if "hr" in desc_lower or "employee" in desc_lower:
+            if "human resources" in desc_lower or re.search(r"\bhr\b", desc_lower):
                 target_role = "HR assistant"
             elif "finance" in desc_lower or "budget" in desc_lower:
                 target_role = "Finance assistant"

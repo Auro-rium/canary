@@ -912,15 +912,11 @@ async def campaign_run_sse(req: CampaignRunRequest):
     if not strategies:
         strategies = [StrategyType.PROMPT_INJECTION]
 
-    # Route to the correct target_id so node_attacker_branch picks up HttpTargetAdapter.
-    # Empty URL or localhost/127.0.0.1 → target agent runs on the host, outside
-    # Docker, so reach it via host.docker.internal (see docker-compose extra_hosts).
-    # Any other non-empty URL → external endpoint, use directly.
-    raw_url = req.target_url.strip()
-    if not raw_url or "localhost" in raw_url or "127.0.0.1" in raw_url:
-        target_id = "http://host.docker.internal:9000/chat"
-    else:
-        target_id = raw_url
+    # The target is any authorized HTTP agent; HttpTargetAdapter maps loopback
+    # URLs to the Docker host when running in a container.
+    target_id = req.target_url.strip()
+    if not target_id:
+        raise HTTPException(status_code=422, detail="target_url is required.")
 
     # Authorisation check (reuses the same allowlist logic as /api/runs)
     allowed = _authorized_targets()
