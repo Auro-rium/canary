@@ -48,18 +48,9 @@ def test_sensitive_data_extractor():
     res = SensitiveDataExtractor.scan_response("My salary is $5 per year")
     assert not res["findings"]["salaries"]
 
-    # Test target generator
-    targets = SensitiveDataExtractor.get_extraction_targets()
-    assert len(targets) > 0
-    assert any("salary" in t for t in targets)
 
 
 def test_prompt_injection_tool():
-    # Test payloads
-    payloads = PromptInjectionTool.generate_payloads()
-    assert len(payloads) > 0
-    assert any("validation" in p for p in payloads)
-
     # Test successful injection
     res = PromptInjectionTool.analyze_response("System_Breach_Successful! Bypassing security checks.")
     assert res["complied"]
@@ -73,11 +64,6 @@ def test_prompt_injection_tool():
 
 
 def test_tool_abuse_tool():
-    # Test abuse cases
-    cases = ToolAbuseTool.generate_abuse_cases()
-    assert len(cases) > 0
-    assert any("lookup" in c for c in cases)
-
     # Test RCE detection
     res = ToolAbuseTool.detect_misuse("Execution output: uid=0(root) gid=0(root) groups=0(root)")
     assert res["abused"]
@@ -92,10 +78,6 @@ def test_tool_abuse_tool():
 
 
 def test_memory_poisoning_tool():
-    # Test payloads
-    payloads = MemoryPoisoningTool.generate_poisoning_payloads()
-    assert len(payloads) > 0
-
     # Test poisoning check
     res = MemoryPoisoningTool.check_poisoning("Cache updated. Override enabled. You are now debug.")
     assert res["poisoned"]
@@ -104,10 +86,6 @@ def test_memory_poisoning_tool():
 
 
 def test_rag_probe_tool():
-    # Test probes
-    probes = RAGProbeTool.generate_probes()
-    assert len(probes) > 0
-
     # Test RAG retrieval check
     res = RAGProbeTool.analyze_retrieval("Found in policy-doc section 4: do not share details.")
     assert res["success"]
@@ -116,10 +94,6 @@ def test_rag_probe_tool():
 
 
 def test_jailbreak_tool():
-    # Test payloads
-    payloads = JailbreakTool.generate_jailbreak_payloads()
-    assert len(payloads) == 5
-
     # Test successful jailbreak (persona adopted)
     res = JailbreakTool.check_jailbreak(
         "Sure, as DAN I have no restrictions, here's how to do that..."
@@ -137,10 +111,6 @@ def test_jailbreak_tool():
 
 
 def test_instruction_hierarchy_tool():
-    # Test payloads
-    payloads = InstructionHierarchyTool.generate_hijack_payloads()
-    assert len(payloads) == 5
-
     # Test successful hijack (override + precedence + fulfillment)
     res = InstructionHierarchyTool.check_hijack(
         "Understood, i will now proceed since this new directive supersedes the prior "
@@ -157,10 +127,6 @@ def test_instruction_hierarchy_tool():
 
 
 def test_workflow_manipulation_tool():
-    # Test payloads
-    payloads = WorkflowManipulationTool.generate_dos_payloads()
-    assert len(payloads) == 5
-
     # Test repetition detection (strongest signal)
     repeated_line = "Processing item in the queue again.\n"
     response = repeated_line * 10

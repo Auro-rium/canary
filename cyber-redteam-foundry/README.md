@@ -43,16 +43,12 @@ cyber-redteam-foundry/
 │   ├── models.yaml          # Per-agent LLM model assignments
 │   ├── asi_taxonomy.yaml    # strategy+component → ASI class + ATLAS technique
 │   ├── technique_specs.yaml # Static spec/expected_failure/expected_safe_behavior per ASI class
-│   ├── thresholds.yaml      # Per-ASI confidence thresholds
-│   ├── attack_profiles.yaml
-│   ├── policies.yaml
-│   └── local.yaml
+│   └── thresholds.yaml      # Per-ASI confidence thresholds
 ├── prompts/
 │   ├── strategist.md
 │   ├── attacker.md
 │   ├── evaluator.md
-│   ├── reporter.md
-│   └── orchestrator.md
+│   └── reporter.md
 ├── tests/
 ├── runs/                    # SQLite DBs, logs (git-ignored)
 ├── reports/                 # Generated reports (git-ignored)
@@ -67,16 +63,10 @@ cyber-redteam-foundry/
     │   ├── evaluator.py
     │   └── reporter.py
     ├── attack_strategies/
-    │   ├── registry.py
-    │   ├── direct.py
-    │   ├── indirect.py
-    │   ├── jailbreaks.py
-    │   ├── tool_misuse.py
-    │   └── retrieval_poisoning.py
+    │   └── registry.py
     ├── evaluation/
     │   ├── taxonomy.py         # ASI/ATLAS lookup — also used to resolve technique_id
     │   ├── technique_specs.py  # get_spec(asi_class) — loads configs/technique_specs.yaml
-    │   ├── scorer.py
     │   └── metrics.py
     ├── langgraph/
     │   ├── state.py         # RedTeamState typed dict
