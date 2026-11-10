@@ -178,26 +178,6 @@ def check_target_url(
 
 # ── Auth URL host binding ────────────────────────────────────────────────────
 
-# Second-level labels that, under a two-letter ccTLD, form a public suffix
-# (``co.uk``, ``com.au``...). An approximation of the Public Suffix List, which
-# is not a dependency; when unsure it errs towards the *longer* (stricter) base.
-_SLD_SUFFIXES = frozenset({"co", "com", "net", "org", "ac", "gov", "edu", "ne", "or", "go"})
-
-
-def registrable_domain(hostname: str) -> str:
-    """Best-effort registrable domain (eTLD+1) of ``hostname``; IPs are returned as-is."""
-    hostname = hostname.rstrip(".").lower()
-    try:
-        ipaddress.ip_address(hostname)
-        return hostname
-    except ValueError:
-        pass
-    labels = hostname.split(".")
-    if len(labels) >= 3 and len(labels[-1]) == 2 and labels[-2] in _SLD_SUFFIXES:
-        return ".".join(labels[-3:])
-    return ".".join(labels[-2:])
-
-
 def _auth_urls(auth: object) -> list[tuple[str, str]]:
     """``(field, url)`` pairs of an auth config that receive credentials."""
     pairs = []
@@ -219,10 +199,12 @@ def check_target_urls(
     """Guard every URL of a target that Canary will send traffic or credentials to.
 
     The endpoint and any ``token_url`` / ``login_url`` must pass
-    :func:`check_target_url`. Each auth URL must also share the endpoint's
-    registrable domain or be listed exactly in ``allowed_auth_hosts``, so
-    credentials cannot be sent to an arbitrary third-party host. Raises
-    :class:`TargetRefused`.
+    :func:`check_target_url`. Each auth URL's host must also **equal** the
+    endpoint's host or be listed exactly in ``allowed_auth_hosts``, so
+    credentials cannot be sent to a third-party host. Same-"registrable domain"
+    is deliberately not used: without the Public Suffix List it fails open on
+    shared hosting (``victim.herokuapp.com`` vs ``attacker.herokuapp.com``).
+    Raises :class:`TargetRefused`.
     """
     _, endpoint_host = check_target_url(
         endpoint, allow_private_targets=allow_private_targets, resolve_host=resolve_host
@@ -235,11 +217,9 @@ def check_target_urls(
             )
         except TargetRefused as exc:
             raise TargetRefused(f"{name}: {exc}") from None
-        if host in allowed:
-            continue
-        if registrable_domain(host) != registrable_domain(endpoint_host):
+        if host != endpoint_host and host not in allowed:
             raise TargetRefused(
-                f"{name} host {host!r} is not on the endpoint's domain; "
+                f"{name} host {host!r} is not the endpoint's host; "
                 "list it in allowed_auth_hosts to permit it"
             )
 

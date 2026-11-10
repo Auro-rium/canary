@@ -171,9 +171,31 @@ def oauth(token_url):
     }
 
 
-def test_oauth_token_url_on_same_registrable_domain_allowed(owned):
-    data = register(auth=oauth("https://auth.example.com/oauth/token"))
+def test_oauth_token_url_on_endpoint_host_allowed(owned):
+    data = register(auth=oauth("https://agent.example.com/oauth/token"))
     assert data["target"]["auth"]["client_secret"] == "**********"
+
+
+def test_oauth_token_url_on_sibling_subdomain_needs_listing(owned):
+    resp = client.post(
+        "/api/v2/targets", json=target_body(auth=oauth("https://auth.example.com/oauth/token"))
+    )
+    assert resp.status_code == 422
+    data = register(
+        auth=oauth("https://auth.example.com/oauth/token"), allowed_auth_hosts=["auth.example.com"]
+    )
+    assert data["target"]["allowed_auth_hosts"] == ["auth.example.com"]
+
+
+def test_oauth_token_url_cross_tenant_shared_hosting_refused(owned):
+    resp = client.post(
+        "/api/v2/targets",
+        json=target_body(
+            endpoint="https://victim.herokuapp.com/chat",
+            auth=oauth("https://attacker.herokuapp.com/token"),
+        ),
+    )
+    assert resp.status_code == 422
 
 
 def test_oauth_token_url_on_foreign_host_refused(owned):

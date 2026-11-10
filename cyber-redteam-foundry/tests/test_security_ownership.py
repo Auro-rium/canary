@@ -386,23 +386,26 @@ class _Auth:
         self.__dict__.update(urls)
 
 
-@pytest.mark.parametrize(
-    "host, expected",
-    [
-        ("agent.example.com", "example.com"),
-        ("a.b.example.co.uk", "example.co.uk"),
-        ("example.com", "example.com"),
-        ("93.184.216.34", "93.184.216.34"),
-    ],
-)
-def test_registrable_domain(host, expected):
-    assert ownership.registrable_domain(host) == expected
-
-
-def test_auth_url_same_domain_ok():
+def test_auth_url_same_host_ok():
     ownership.check_target_urls(
-        ENDPOINT, _Auth(token_url="https://auth.example.com/t"), resolve_host=public_resolver
+        ENDPOINT, _Auth(token_url="https://agent.example.com/oauth/t"), resolve_host=public_resolver
     )
+
+
+def test_auth_url_sibling_subdomain_needs_listing():
+    auth = _Auth(token_url="https://auth.example.com/t")
+    with pytest.raises(TargetRefused, match="allowed_auth_hosts"):
+        ownership.check_target_urls(ENDPOINT, auth, resolve_host=public_resolver)
+    ownership.check_target_urls(ENDPOINT, auth, ["auth.example.com"], resolve_host=public_resolver)
+
+
+def test_auth_url_cross_tenant_on_shared_hosting_refused():
+    with pytest.raises(TargetRefused):
+        ownership.check_target_urls(
+            "https://victim.herokuapp.com/chat",
+            _Auth(token_url="https://attacker.herokuapp.com/token"),
+            resolve_host=public_resolver,
+        )
 
 
 def test_auth_url_foreign_domain_refused_unless_listed():

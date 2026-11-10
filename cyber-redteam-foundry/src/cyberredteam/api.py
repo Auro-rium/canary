@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Literal, Optional
 
 from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, HttpUrl, TypeAdapter, ValidationError
@@ -1332,7 +1333,10 @@ async def create_target_v2(
     # Endpoint, token_url and login_url must be safe, public and host-bound.
     url_opts = {k: v for k, v in ownership_options.items() if k in _URL_CHECK_OPTIONS}
     try:
-        check_target_urls(str(config.endpoint), config.auth, allowed_auth_hosts, **url_opts)
+        # DNS resolution is blocking; keep it off the event loop.
+        await run_in_threadpool(
+            check_target_urls, str(config.endpoint), config.auth, allowed_auth_hosts, **url_opts
+        )
     except TargetRefused as exc:
         raise HTTPException(status_code=422, detail=f"target refused: {exc}") from None
 
