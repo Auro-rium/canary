@@ -188,6 +188,9 @@ There are no scripted or cosmetic events (fixes D8).
 - **Env:** `BACKBOARD_API_KEY` (required, fail closed), `BACKBOARD_BASE_URL`, `BACKBOARD_TIMEOUT_SECONDS`, plus per-role overrides `BACKBOARD_<ROLE>_PROVIDER` / `_MODEL_NAME`. `cyber-rt doctor` pings Backboard.
 - **Tests:** a fake Backboard transport (`httpx.MockTransport`), with no network calls.
 - **Done when:** every agent role runs through Backboard, the NVIDIA code is gone, and the doctor command plus the tests are green.
+- **Status: merged.** Two known deviations:
+  - **No temperature control.** Backboard's `POST /threads/messages` has no temperature parameter (https://docs.backboard.io/concepts/messages), so judge temperature 0 is **not enforceable**. Temperature stays in the role config for information only. WP5 must get stable verdicts another way: k ≥ 3 judge votes with majority, judge agreement recorded, and low agreement treated as inconclusive. It must not rely on determinism.
+  - **Model IDs unconfirmed.** `anthropic/claude-sonnet-5-5` (evaluator, judge) and `openai/gpt-4o` (other roles) still need confirming with a live `cyber-rt doctor` run against a real `BACKBOARD_API_KEY`. `test_all_roles_configured` hard-codes these IDs, so update it when they change.
 
 ### WP1: Target registration and ownership verification (Opus) — C4, C6
 - `POST /api/v2/targets` creates an unverified target.
