@@ -215,6 +215,12 @@ There are no scripted or cosmetic events (fixes D8).
 - **Errors are typed results, never reply text.** This fixes D3, where error strings were sent to the judge.
 - **Tool observability:** if `tool_trace_path` is set, parse structured tool calls. The regex extraction in `attacker.py:20-36` is kept only as a labelled `heuristic` fallback.
 - **Done when:** it works against `fake_target` in all session modes, rate-limit tests pass, and a 2xx response is never retried.
+- **WP2 status / deviations:**
+  - HTTP/2 is not enabled (no `h2` dependency); the client is pooled HTTP/1.1.
+  - The distributed rate limiter is deferred to WP7; `InProcessTokenBucket` implements the `RateLimiter` protocol (`acquire`, `penalize`).
+  - Heuristic tool calls carry `source="heuristic"` and must never count as evidence in WP5.
+  - WP1 must validate the `endpoint`, `token_url` and `login_url` hosts (SSRF): the adapter does not.
+  - Once a status line arrives the request is never re-sent; bodies are capped at 2 MiB and each attempt has an overall `timeout_s` deadline.
 
 ### WP3: Conversation engine (Opus) — A1, A2, A3
 - New graph node `conversation_branch`. It replaces `attacker_branch` and runs a bounded loop:
