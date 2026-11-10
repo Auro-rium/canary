@@ -47,6 +47,17 @@ class Settings(BaseSettings):
 
     # Database
     db_path: Path = Path("runs/redteam.db")
+    # v2 data layer (WP6). SQLAlchemy URL, e.g.
+    # postgresql+psycopg://canary:canary@localhost:55432/canary
+    # Unset → v2 storage uses sqlite:///runs/canary_v2.db (dev/tests only).
+    database_url: Optional[str] = None
+
+    # Encryption at rest for target secrets (WP1) and evidence (WP6).
+    # A urlsafe-base64 Fernet key; required (fail closed) for any code path
+    # that stores secrets or evidence.
+    canary_encryption_key: Optional[str] = None
+    # Evidence retention in days (WP6 purge job).
+    evidence_retention_days: int = 30
 
     # Report
     report_output_dir: Path = Path("reports")
