@@ -14,12 +14,14 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy import func, select
 
+from cyberredteam.contracts import normalize_asi_code
+from cyberredteam.evaluation.taxonomy import lookup as taxonomy_lookup
 from cyberredteam.langgraph.orchestrator import GraphOrchestrator
+from cyberredteam.logging import setup_logging
 from cyberredteam.schemas import RunConfig, StrategyType
 from cyberredteam.settings import get_settings
 from cyberredteam.storage.artifact_store import SQLiteStore
 from cyberredteam.storage.models import AttackRecord, FindingRecord, LLMCallRecord, RunRecord
-from cyberredteam.logging import setup_logging
 
 logger = logging.getLogger("cyberredteam.api")
 logging.basicConfig(level=logging.INFO)
@@ -811,17 +813,22 @@ _TECHNIQUE_TO_STRATEGY: Dict[str, StrategyType] = {
     "denial-of-service":    StrategyType.WORKFLOW_MANIPULATION,
 }
 
+# Fallback ASI class per strategy, derived from configs/asi_taxonomy.yaml (the
+# source of truth) so the UI and the evaluator never disagree. Canonical form
+# is "ASI01".."ASI10".
 _STRATEGY_TO_ASI: Dict[str, str] = {
-    "prompt_injection":       "ASI-01",
-    "indirect_injection":     "ASI-01",
-    "memory_poisoning":       "ASI-02",
-    "tool_misuse":            "ASI-03",
-    "jailbreak":              "ASI-04",
-    "instruction_hierarchy":  "ASI-05",
-    "sensitive_data_exposure": "ASI-06",
-    "retrieval_poisoning":    "ASI-08",
-    "workflow_manipulation":  "ASI-09",
+    s.value: taxonomy_lookup(s.value, "*")[0] for s in StrategyType
 }
+
+
+def _finding_asi_code(indicators: dict, strategy: str) -> str:
+    """Canonical ASI code for a finding; legacy "ASI-01" values are normalised."""
+    try:
+        code = normalize_asi_code(indicators.get("asi_class"))
+    except ValueError:
+        code = None
+    return code or _STRATEGY_TO_ASI.get(strategy) or taxonomy_lookup(strategy, "*")[0]
+
 
 _STRATEGY_TO_UI_TYPE: Dict[str, str] = {
     "prompt_injection": "Prompt Injection",
@@ -878,7 +885,7 @@ def _build_finding(atk: AttackRecord, run_id: str) -> dict:
     return {
         "finding_id": atk.finding_id or f"{run_id}{atk.id:04x}",
         "technique_id": atk.strategy_type,
-        "asi_code": indicators.get("asi_class") or _STRATEGY_TO_ASI.get(atk.strategy_type, "ASI-01"),
+        "asi_code": _finding_asi_code(indicators, atk.strategy_type),
         "severity": sev,
         "verdict": verdict,
         "verdict_path": vp,
