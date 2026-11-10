@@ -17,6 +17,15 @@ Goal: make Canary a production-grade, **multi-turn** safety-testing product for 
   - Commit after every green step (tests and lint pass). Never leave work uncommitted at the end of a session.
   - Parallel agents each work in their own git worktree on a sub-branch (`multiturn-wp2`, …) and commit there. The lead (Opus) merges them into `multiturn` locally with `git merge --no-ff` after review. No PRs.
 - **Checks that must pass:** `uv run pytest -q`, `uv run ruff check .`, and in `canary/` both `npm run build` and `npm run lint`.
+- **Review gate (mandatory).** Every WP branch is reviewed by a separate, read-only review subagent before the lead merges it.
+  - The reviewer checks: the diff against the plan, the contracts, tests and lint run independently, security (no secrets in logs or bundles, fail-closed behaviour), and dead code left behind.
+  - The reviewer returns findings marked must-fix or nice-to-have. The build agent fixes every must-fix in new commits, then the reviewer re-checks.
+  - Nothing merges with an open must-fix.
+- **Purge subagent.** A dedicated agent deletes old and redundant code on branch `multiturn-purge`.
+  - Each deletion needs evidence: a grep showing it has no references, and a test run.
+  - It never touches files an active WP owns.
+  - It runs once at the start (legacy cleanup), then again after each phase, to remove code that phase replaced (e.g. `HttpTargetAdapter` after WP2, the v1 routes after WP8).
+  - Its branch goes through the same review gate.
 - **WP0 freezes the contracts in section 2.** Later WPs change them only by editing this file in the same commit.
 - **Keep:**
   - FastAPI, LangGraph fan-out, and `ObservableLLM` structured output
