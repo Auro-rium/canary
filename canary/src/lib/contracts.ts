@@ -23,9 +23,12 @@ export type StreamingMode = 'none' | 'sse' | 'ndjson'
 
 /**
  * Secret fields are write-only. Send the real value when creating or updating
- * a target; the API always returns the mask "**********".
+ * a target; the API always returns the mask "**********". Sending the mask (or
+ * an empty string) back as a secret is rejected.
  */
 export type WriteOnlySecret = string
+
+export const SECRET_MASK = '**********'
 
 // ── Target auth (discriminated on `type`) ────────────────────────────────────
 
@@ -91,6 +94,28 @@ export interface TargetConfig {
   environment: Environment
 }
 
+/**
+ * Body for creating a target: fields with a server default are optional.
+ * `verified` is omitted on purpose; only the ownership check (WP1) sets it.
+ */
+export type TargetConfigInput = Pick<
+  TargetConfig,
+  'target_id' | 'name' | 'endpoint' | 'session_mode' | 'environment'
+> &
+  Partial<
+    Pick<
+      TargetConfig,
+      | 'method'
+      | 'auth'
+      | 'request_template'
+      | 'response_path'
+      | 'session_id_path'
+      | 'tool_trace_path'
+      | 'streaming'
+      | 'timeout_s'
+    >
+  >
+
 // ── Campaign policy ──────────────────────────────────────────────────────────
 
 export interface CampaignPolicy {
@@ -103,6 +128,24 @@ export interface CampaignPolicy {
   max_llm_cost_usd: number
   stop_on_first_confirmed: boolean
   allow_destructive_tools: boolean
+}
+
+/** Body for a policy: only `techniques` is required; the rest have server defaults. */
+export type CampaignPolicyInput = Pick<CampaignPolicy, 'techniques'> &
+  Partial<Omit<CampaignPolicy, 'techniques'>>
+
+/**
+ * A campaign launch. Campaign creation always validates through this shape, so
+ * the production rules below are applied against the target's environment.
+ */
+export interface CampaignRequest {
+  target: TargetConfig
+  policy: CampaignPolicy
+}
+
+export interface CampaignRequestInput {
+  target: TargetConfigInput
+  policy: CampaignPolicyInput
 }
 
 /** Section-4 limits; production policies above these are rejected by the API. */
@@ -168,7 +211,8 @@ export interface JudgeVote {
   confidence: number
   rationale: string
   model_name: string | null
-  temperature: 0
+  /** Informational: Backboard has no temperature parameter. Defaults to 0. */
+  temperature: number
 }
 
 export interface ConversationVerdict {
@@ -209,7 +253,15 @@ export const SSE_EVENT_TYPES = [
 
 export type SseEventType = (typeof SSE_EVENT_TYPES)[number]
 
+/** Turn previews are truncated (not rejected) to this length. */
 export const PREVIEW_MAX_CHARS = 280
+/** turn.error, the verdict event's rationale and campaign_failed.message are truncated to this length. */
+export const TEXT_MAX_CHARS = 500
+
+/** Same rule as the backend's truncate_preview(): cut to `limit` chars, ending in "…". */
+export function truncatePreview(text: string, limit: number = PREVIEW_MAX_CHARS): string {
+  return text.length <= limit ? text : text.slice(0, limit - 1) + '…'
+}
 
 export interface CampaignStartedPayload {
   campaign_id: string
