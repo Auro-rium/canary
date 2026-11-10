@@ -1,4 +1,4 @@
-"""NVIDIA Nemotron Cyber Red Team Framework."""
+"""Canary: cyber red-team framework for AI agents."""
 
 __version__ = "0.1.0"
 __author__ = "Cyber Red Team"

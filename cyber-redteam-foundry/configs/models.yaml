@@ -2,6 +2,9 @@
 #   provider:    Backboard llm_provider (openai, anthropic, google, ...)
 #   model_name:  provider model id
 #   temperature: sampling temperature (evaluator/judge are forced to 0 in code)
+# NOTE: Backboard docs only show claude-sonnet-4-20250514 as an anthropic example;
+# "claude-sonnet-5-5" must be confirmed with a live `cyber-rt doctor`.
+# temperature is NOT sent to Backboard (undocumented parameter).
 # Override at runtime with BACKBOARD_<ROLE>_PROVIDER / BACKBOARD_<ROLE>_MODEL_NAME.
 
 planner:
@@ -21,12 +24,12 @@ attacker:
 
 evaluator:
   provider: anthropic
-  model_name: claude-3-5-sonnet-20241022
+  model_name: claude-sonnet-5-5
   temperature: 0
 
 judge:
   provider: anthropic
-  model_name: claude-3-5-sonnet-20241022
+  model_name: claude-sonnet-5-5
   temperature: 0
 
 reporter:

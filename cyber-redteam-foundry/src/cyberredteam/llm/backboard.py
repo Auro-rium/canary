@@ -25,7 +25,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableLambda
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, SecretStr
 
 
 class BackboardError(RuntimeError):
@@ -64,17 +64,42 @@ def _content_text(content: Any) -> str:
     return "" if content is None else str(content).strip()
 
 
+def _error_detail(response: httpx.Response) -> str:
+    """Short sanitized error code/message (max 120 chars); never raw body text."""
+    try:
+        body = response.json()
+    except ValueError:
+        return ""
+    if not isinstance(body, dict):
+        return ""
+    err = body.get("error")
+    if isinstance(err, dict):
+        err = err.get("code") or err.get("message")
+    detail = err or body.get("code") or body.get("detail") or body.get("message")
+    if not isinstance(detail, str):
+        return ""
+    cleaned = re.sub(r"[^\w .:,/-]", "", detail)[:120]
+    return f": {cleaned}" if cleaned else ""
+
+
 class ChatBackboard(BaseChatModel):
     """LangChain chat model backed by the Backboard.io messages API."""
 
-    api_key: str
+    api_key: SecretStr = Field(repr=False)
     base_url: str = "https://app.backboard.io/api"
     provider: str = "openai"
     model_name: str = "gpt-4o"
+    # Recorded for observability only. Backboard's POST /threads/messages does not
+    # document a temperature field (https://docs.backboard.io/concepts/messages),
+    # so it is NOT sent: temperature-0 for judge/evaluator cannot be enforced yet.
     temperature: Optional[float] = None
     timeout: float = 60.0
     # Injectable ``httpx.BaseTransport`` (tests use ``httpx.MockTransport``).
-    transport: Any = None
+    transport: Any = Field(default=None, exclude=True, repr=False)
+
+    @property
+    def lc_secrets(self) -> Dict[str, str]:
+        return {"api_key": "BACKBOARD_API_KEY"}
 
     @property
     def _llm_type(self) -> str:
@@ -102,14 +127,12 @@ class ChatBackboard(BaseChatModel):
             payload["system_prompt"] = system
         if json_output:
             payload["json_output"] = True
-        if self.temperature is not None:
-            payload["temperature"] = self.temperature
 
         try:
             with httpx.Client(transport=self.transport, timeout=self.timeout) as client:
                 response = client.post(
                     f"{self.base_url.rstrip('/')}/threads/messages",
-                    headers={"X-API-Key": self.api_key, "Content-Type": "application/json"},
+                    headers={"X-API-Key": self.api_key.get_secret_value(), "Content-Type": "application/json"},
                     json=payload,
                 )
         except httpx.TransportError as exc:  # timeouts, connection resets
@@ -118,9 +141,12 @@ class ChatBackboard(BaseChatModel):
             raise BackboardRetryableError(f"Backboard returned HTTP {response.status_code}")
         if response.status_code >= 400:
             raise BackboardError(
-                f"Backboard returned HTTP {response.status_code}: {response.text[:300]}"
+                f"Backboard returned HTTP {response.status_code}{_error_detail(response)}"
             )
-        body = response.json()
+        try:
+            body = response.json()
+        except ValueError as exc:
+            raise BackboardError("Backboard returned a non-JSON response body") from exc
         if not isinstance(body, dict):
             raise BackboardError("Backboard returned an invalid response body")
         if body.get("status") in ("FAILED", "CANCELLED"):
@@ -208,12 +234,12 @@ class ChatBackboard(BaseChatModel):
 
 
 def _merge_usage(first: AIMessage, second: AIMessage) -> AIMessage:
-    """Return ``second`` carrying the summed token usage of both calls."""
+    """Return ``second`` carrying the summed token usage of whichever calls reported it."""
     a, b = first.usage_metadata, second.usage_metadata
     if a and b:
         second.usage_metadata = {
-            "input_tokens": a["input_tokens"] + b["input_tokens"],
-            "output_tokens": a["output_tokens"] + b["output_tokens"],
-            "total_tokens": a["total_tokens"] + b["total_tokens"],
+            k: a[k] + b[k] for k in ("input_tokens", "output_tokens", "total_tokens")
         }
+    elif a:
+        second.usage_metadata = a
     return second

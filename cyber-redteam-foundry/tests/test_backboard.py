@@ -83,7 +83,7 @@ def test_text_request_shape_and_headers():
     assert body["system_prompt"] == "be brief"
     assert body["content"] == "hi"
     assert "thread_id" not in body
-    assert body["temperature"] == 0.0
+    assert "temperature" not in body  # undocumented by Backboard; not sent
 
 
 def test_structured_success():
@@ -187,7 +187,79 @@ def test_env_overrides_per_role(real_get_llm, monkeypatch):
     assert llm.deployment == "google/gemini-x"
 
 
-def test_all_roles_configured():
+def test_all_roles_configured(monkeypatch):
     for role in factory.ROLES:
+        monkeypatch.delenv(f"BACKBOARD_{role.upper()}_PROVIDER", raising=False)
+        monkeypatch.delenv(f"BACKBOARD_{role.upper()}_MODEL_NAME", raising=False)
+    # Values must come from configs/models.yaml, not the settings fallbacks.
+    assert factory._load_models_config(), "configs/models.yaml was not loaded"
+    for role in ("evaluator", "judge"):
         cfg = factory.get_role_config(role)
-        assert cfg["provider"] and cfg["model_name"]
+        assert (cfg["provider"], cfg["model_name"]) == ("anthropic", "claude-sonnet-5-5")
+        assert cfg["temperature"] == 0.0
+    for role in ("planner", "strategist", "attacker", "reporter"):
+        cfg = factory.get_role_config(role)
+        assert (cfg["provider"], cfg["model_name"]) == ("openai", "gpt-4o")
+        assert cfg["temperature"] is not None
+
+
+def test_api_key_never_leaks():
+    llm = ChatBackboard(api_key="sk-super-secret", transport=httpx.MockTransport(_Server()))
+    for text in (repr(llm), str(llm), str(llm.model_dump()), llm.model_dump_json()):
+        assert "sk-super-secret" not in text
+
+
+def test_api_key_sent_in_header():
+    server = _Server(_reply("x"))
+    ChatBackboard(
+        api_key="sk-header", transport=httpx.MockTransport(server)
+    ).invoke("hi")
+    assert server.requests[0].headers["X-API-Key"] == "sk-header"
+
+
+def test_non_json_200_body_is_backboard_error():
+    server = _Server(httpx.Response(200, text="<html>oops</html>"))
+    with pytest.raises(BackboardError, match="non-JSON"):
+        _observable(server).invoke_text("s", "m")
+
+
+def test_error_message_does_not_echo_raw_body():
+    secret_body = "x" * 500 + "SENSITIVE"
+    server = _Server(httpx.Response(400, text=secret_body))
+    with pytest.raises(BackboardError) as exc:
+        _observable(server).invoke_text("s", "m")
+    assert "SENSITIVE" not in str(exc.value)
+    server = _Server(httpx.Response(400, json={"error": {"code": "bad_model"}}))
+    with pytest.raises(BackboardError, match="bad_model"):
+        _observable(server).invoke_text("s", "m")
+
+
+def test_transport_error_retried_then_success():
+    calls = {"n": 0}
+
+    def handler(request):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise httpx.ConnectError("boom", request=request)
+        return _reply("recovered")
+
+    assert _observable(handler).invoke_text("s", "m") == "recovered"
+    assert calls["n"] == 2
+
+
+def test_empty_body_retried_then_success():
+    server = _Server(_reply(""), _reply("filled"))
+    assert _observable(server).invoke_text("s", "m") == "filled"
+    assert len(server.requests) == 2
+
+
+def test_merge_usage_sums_or_keeps_available_side():
+    from langchain_core.messages import AIMessage
+
+    from cyberredteam.llm.backboard import _merge_usage
+
+    u = {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3}
+    both = _merge_usage(AIMessage(content="a", usage_metadata=u), AIMessage(content="b", usage_metadata=u))
+    assert both.usage_metadata["total_tokens"] == 6
+    only_first = _merge_usage(AIMessage(content="a", usage_metadata=u), AIMessage(content="b"))
+    assert only_first.usage_metadata == u

@@ -4,7 +4,11 @@ Per-role ``{provider, model_name, temperature}`` live in ``configs/models.yaml``
 and can be overridden with ``BACKBOARD_<ROLE>_PROVIDER`` /
 ``BACKBOARD_<ROLE>_MODEL_NAME``. Roles without an entry fall back to
 ``BACKBOARD_LLM_PROVIDER`` / ``BACKBOARD_MODEL_NAME``. The judge and evaluator
-always run at temperature 0.
+always run at temperature 0 in role config.
+
+NOTE: Backboard's POST /threads/messages documents no temperature parameter
+(https://docs.backboard.io/concepts/messages), so temperature is carried in the
+config but NOT sent; judge temperature-0 cannot be enforced through Backboard yet.
 
 There is **no** mock fallback: if Backboard is not configured the factory
 raises, so a misconfigured deployment fails loudly instead of fabricating
@@ -23,6 +27,9 @@ from cyberredteam.logging import setup_logging
 
 logger = setup_logging()
 
+# configs/ sits at the project root: .../src/cyberredteam/llm/factory.py -> parents[3]
+_CONFIG_PATH = Path(__file__).resolve().parents[3] / "configs" / "models.yaml"
+
 ROLES = ("planner", "strategist", "attacker", "evaluator", "judge", "reporter")
 # Roles whose output is a verdict: sampling noise is never acceptable.
 DETERMINISTIC_ROLES = frozenset({"evaluator", "judge"})
@@ -36,7 +43,7 @@ def _load_models_config() -> dict:
     if _models_config is not None:
         return _models_config
 
-    config_path = Path("configs/models.yaml")
+    config_path = _CONFIG_PATH
     if config_path.exists():
         with open(config_path) as f:
             _models_config = yaml.safe_load(f) or {}
@@ -89,11 +96,6 @@ def get_role_config(agent_name: str) -> dict:
 def get_model_for_agent(agent_name: str) -> str:
     """Backboard ``model_name`` configured for a role."""
     return get_role_config(agent_name)["model_name"]
-
-
-def get_provider_for_agent(agent_name: str) -> str:
-    """Backboard ``llm_provider`` configured for a role."""
-    return get_role_config(agent_name)["provider"]
 
 
 def get_llm(
