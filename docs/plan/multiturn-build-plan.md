@@ -67,10 +67,10 @@ A **conversation** replaces today's single attack. A **turn** is one request–r
 All are Pydantic v2 models in `contracts.py` (frozen in WP0; the legacy single-turn models stay in `schemas.py`). They are mirrored in `canary/src/lib/contracts.ts`. The code is authoritative for field bounds; this section is the summary.
 
 - Every model forbids unknown fields. ASI classes match `^ASI(0[1-9]|10)$`; `normalize_asi_code()` converts legacy `ASI-01` values.
-- `TargetAuth` is a union discriminated on `type`: `none`, `bearer {token}`, `header {header_name, value}`, `oauth_client_credentials {token_url, client_id, client_secret, scope?, audience?}`, `cookie_login {login_url, username, password, username_field, password_field}`. Secret fields are `SecretStr` and serialise masked (`**********`); they never round-trip.
-- `request_template` must be valid JSON containing the quoted `"{{MESSAGE}}"`. `"{{SESSION_ID}}"` and `"{{HISTORY}}"` must also be quoted; each quoted placeholder is replaced whole by `json.dumps(value)`. Unknown placeholders (including the legacy `{{PROMPT}}`) are rejected. `server_session` requires `session_id_path`.
-- Production rules (section 4) are **rejected, not clamped**: validate with `CampaignPolicy.model_validate(data, context={"environment": ...})` or `validate_policy_for_target(policy, target)`. Note the default policy is invalid for production.
-- Models not spelled out below: `ToolCallObservation {name, arguments, call_id?, source: "structured"|"heuristic"}` and `JudgeVote {vote_index, judgement: "unsafe"|"safe"|"inconclusive", first_failing_turn?, asi_class?, severity, confidence, rationale, model_name?, temperature=0}`.
+- `TargetAuth` is a union discriminated on `type`: `none`, `bearer {token}`, `header {header_name, value}`, `oauth_client_credentials {token_url, client_id, client_secret, scope?, audience?}`, `cookie_login {login_url, username, password, username_field, password_field}`. Secret fields are `SecretStr` and serialise masked (`**********`); they never round-trip. Validation **rejects** the literal mask and empty strings as secret values, so a dumped config cannot be reloaded with `**********` as a credential (WP1 adds keep-existing semantics for updates).
+- `request_template` must be valid JSON. Every `{{...}}` token must exactly equal one of `{{MESSAGE}}`, `{{SESSION_ID}}`, `{{HISTORY}}` (no inner whitespace; unknown names, including the legacy `{{PROMPT}}`, are rejected). A placeholder may only be a whole quoted JSON string **value**: never a key, never part of a longer string. `"{{MESSAGE}}"` appears exactly once; the other two at most once. Each quoted placeholder is replaced whole by `json.dumps(value)`. `server_session` requires `session_id_path`.
+- Production rules (section 4) are **rejected, not clamped**. A bare `CampaignPolicy` cannot see the target's environment and does **not** enforce them. **Campaign creation MUST validate through `CampaignRequest {target: TargetConfig, policy: CampaignPolicy}`**, whose validator always applies the rules. (`CampaignPolicy.model_validate(data, context={"environment": ...})` and `validate_policy_for_target(policy, target)` exist for callers that already hold both halves.) Note the default policy is invalid for production.
+- Models not spelled out below: `ToolCallObservation {name, arguments, call_id?, source: "structured"|"heuristic"}` and `JudgeVote {vote_index, judgement: "unsafe"|"safe"|"inconclusive", first_failing_turn?, asi_class?, severity, confidence, rationale, model_name?, temperature=0}`. `temperature` is informational only (Backboard has no temperature parameter).
 - `TechniqueResult.from_counts()` computes the Wilson interval.
 
 ```python
@@ -143,7 +143,7 @@ class TechniqueResult(BaseModel):       # aggregate over trials
     ci95_high: float
 ```
 
-**SSE events (v2).** Every event is `{"type", "payload", "timestamp", "seq"}`, with a typed payload per type (`parse_sse_event()`); on the wire, `to_sse()` writes `id: <seq>` so clients resume with `Last-Event-ID`. Types:
+**SSE events (v2).** Every event is `{"type", "payload", "timestamp", "seq"}`, with a typed payload per type (`parse_sse_event()`); on the wire, `to_sse()` writes `id: <seq>` so clients resume with `Last-Event-ID`. Event text is **truncated, never rejected** (`truncate_preview()`): turn previews to 280 characters; `turn.error`, the `verdict` event's rationale and `campaign_failed.message` to 500. Types:
 - `campaign_started`
 - `conversation_started`
 - `turn` (redacted preview)

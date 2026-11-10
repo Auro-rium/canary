@@ -7,11 +7,15 @@ import pytest
 from pydantic import ValidationError
 
 from cyberredteam.contracts import (
+    PREVIEW_MAX_CHARS,
     SSE_EVENT_TYPES,
+    TEXT_MAX_CHARS,
     BearerAuth,
     CampaignCancelledEvent,
     CampaignCancelledPayload,
+    CampaignFailedPayload,
     CampaignPolicy,
+    CampaignRequest,
     Conversation,
     ConversationVerdict,
     CookieLoginAuth,
@@ -24,8 +28,10 @@ from cyberredteam.contracts import (
     ToolCallObservation,
     Turn,
     TurnEvent,
+    VerdictPayload,
     normalize_asi_code,
     parse_sse_event,
+    truncate_preview,
     validate_policy_for_target,
     wilson_interval,
 )
@@ -91,6 +97,7 @@ def test_server_session_requires_session_id_path():
     [
         '{"message": "{{MESSAGE}}"}',
         '{"input": {"text": "{{MESSAGE}}"}, "history": "{{HISTORY}}"}',
+        '{"inputs": [{"role": "user", "content": "{{MESSAGE}}"}], "stream": false}',
     ],
 )
 def test_request_template_valid(template):
@@ -109,10 +116,22 @@ def test_request_template_with_session_id():
     "template,reason",
     [
         ('{"message": {{MESSAGE}}}', "quoted"),  # unquoted placeholder
-        ('{"message": "hello"}', "quoted"),  # missing placeholder
+        ('{"message": "hello"}', "exactly once"),  # missing placeholder
         ('{"message": "{{PROMPT}}"}', "unknown placeholder"),  # legacy placeholder
         ('{"message": "{{MESSAGE}}",}', "not valid JSON"),
         ('{"message": "{{MESSAGE}}", "h": {{HISTORY}}}', "quoted"),
+        # inner whitespace is not a valid placeholder
+        ('{"message": "{{ MESSAGE }}"}', "unknown placeholder"),
+        # names with digits, or any other unknown name
+        ('{"message": "{{MESSAGE}}", "x": "{{FOO1}}"}', "unknown placeholder"),
+        ('{"message": "{{message}}"}', "unknown placeholder"),
+        # placeholder used as a JSON key
+        ('{"{{MESSAGE}}": "hi"}', "keys"),
+        ('{"message": "{{MESSAGE}}", "{{SESSION_ID}}": 1}', "keys"),
+        # embedded in a longer string
+        ('{"message": "say {{MESSAGE}} now"}', "quoted"),
+        ('{"message": ["{{MESSAGE}}", "{{MESSAGE}}"]}', "exactly once"),
+        ('{"message": "{{MESSAGE}}", "a": "{{HISTORY}}", "b": "{{HISTORY}}"}', "at most once"),
     ],
 )
 def test_request_template_invalid(template, reason):
@@ -327,10 +346,12 @@ def _verdict(**kw):
     return ConversationVerdict(**data)
 
 
-def test_judge_vote_temperature_is_zero():
+def test_judge_vote_temperature_defaults_to_zero_and_is_informational():
     assert JudgeVote(vote_index=0, judgement="safe", confidence=0.5).temperature == 0.0
+    # Backboard has no temperature parameter; the field only records intent.
+    assert JudgeVote(vote_index=0, judgement="safe", confidence=0.5, temperature=0.7).temperature == 0.7
     with pytest.raises(ValidationError):
-        JudgeVote(vote_index=0, judgement="safe", confidence=0.5, temperature=0.7)
+        JudgeVote(vote_index=0, judgement="safe", confidence=0.5, temperature=-0.1)
 
 
 def test_verdict_agreement_bounds():
@@ -416,11 +437,33 @@ def test_sse_rejects_unknown_type_and_mismatched_payload():
         CampaignCancelledEvent(seq=-1, payload=CampaignCancelledPayload(campaign_id="k"))
 
 
-def test_turn_event_preview_is_capped():
-    with pytest.raises(ValidationError):
-        TurnEvent(seq=0, payload={
-            "campaign_id": "k", "conversation_id": "c", "index": 0, "message_preview": "x" * 281,
-            "response_preview": "", "latency_ms": 0})
+def test_truncate_preview():
+    assert truncate_preview(None) is None
+    assert truncate_preview("short") == "short"
+    assert truncate_preview("x" * PREVIEW_MAX_CHARS) == "x" * PREVIEW_MAX_CHARS
+    cut = truncate_preview("x" * 1000)
+    assert len(cut) == PREVIEW_MAX_CHARS and cut.endswith("…")
+    assert len(truncate_preview("y" * 1000, 10)) == 10
+
+
+def test_turn_event_previews_and_error_are_truncated_not_rejected():
+    event = TurnEvent(seq=0, payload={
+        "campaign_id": "k", "conversation_id": "c", "index": 0, "message_preview": "x" * 281,
+        "response_preview": "y" * 5000, "latency_ms": 0, "error": "e" * 900})
+    p = event.payload
+    assert len(p.message_preview) == PREVIEW_MAX_CHARS and p.message_preview.endswith("…")
+    assert len(p.response_preview) == PREVIEW_MAX_CHARS
+    assert len(p.error) == TEXT_MAX_CHARS and p.error.endswith("…")
+
+
+def test_verdict_and_failed_payload_text_truncated():
+    full = _verdict(rationale="r" * 2000)
+    payload = VerdictPayload(campaign_id="k", verdict=full)
+    assert len(payload.verdict.rationale) == TEXT_MAX_CHARS
+    assert len(full.rationale) == 2000  # the stored verdict is untouched
+    assert VerdictPayload(campaign_id="k", verdict=_verdict()).verdict.rationale == "r"
+    failed = CampaignFailedPayload(campaign_id="k", message="m" * 900)
+    assert len(failed.message) == TEXT_MAX_CHARS
 
 
 # ── JSON round-trips for the data models ─────────────────────────────────────
@@ -448,7 +491,64 @@ def test_target_round_trip_masks_secrets():
     t = _target(auth={"type": "bearer", "token": "tok-123"})
     data = json.loads(t.model_dump_json())
     assert data["auth"] == {"type": "bearer", "token": "**********"}
+    # Secrets never round-trip: reloading the dump refuses the mask as a credential.
+    with pytest.raises(ValidationError, match="redaction mask"):
+        TargetConfig.model_validate(data)
+    data["auth"] = {"type": "none"}
     restored = TargetConfig.model_validate(data)
-    # Secrets never round-trip: the restored token is the mask, not the value.
-    assert restored.auth.token.get_secret_value() == "**********"
     assert restored.model_dump(exclude={"auth"}) == t.model_dump(exclude={"auth"})
+
+
+@pytest.mark.parametrize(
+    "auth",
+    [
+        {"type": "bearer", "token": "**********"},
+        {"type": "header", "header_name": "X-Api-Key", "value": "**********"},
+        {"type": "oauth_client_credentials", "token_url": "https://idp.example.test/t",
+         "client_id": "c", "client_secret": "**********"},
+        {"type": "cookie_login", "login_url": "https://a.example.test/login",
+         "username": "u", "password": "**********"},
+    ],
+    ids=lambda a: a["type"],
+)
+def test_every_secret_field_rejects_the_mask(auth):
+    with pytest.raises(ValidationError, match="redaction mask"):
+        _target(auth=auth)
+
+
+def test_secret_must_not_be_empty():
+    with pytest.raises(ValidationError, match="empty"):
+        _target(auth={"type": "bearer", "token": ""})
+
+
+# ── CampaignRequest: production rules always apply ───────────────────────────
+
+
+def test_campaign_request_rejects_default_policy_on_production_target():
+    with pytest.raises(ValidationError, match="production policy rejected"):
+        CampaignRequest(
+            target=_target(environment="production"),
+            policy=CampaignPolicy(techniques=["prompt_injection"]),
+        )
+
+
+def test_campaign_request_from_raw_json_rejects_production_violation():
+    raw = {
+        "target": _target(environment="production").model_dump(mode="json"),
+        "policy": {"techniques": ["prompt_injection"], "allow_destructive_tools": True,
+                   "max_parallel_conversations": 1, "max_total_requests": 10},
+    }
+    with pytest.raises(ValidationError, match="allow_destructive_tools"):
+        CampaignRequest.model_validate(raw)  # no context needed
+
+
+def test_campaign_request_allows_staging_defaults_and_compliant_production():
+    staging = CampaignRequest(
+        target=_target(), policy=CampaignPolicy(techniques=["prompt_injection"])
+    )
+    assert staging.policy.max_total_requests == 500
+    prod = CampaignRequest(
+        target=_target(environment="production"),
+        policy=CampaignPolicy(**_prod_ok()),
+    )
+    assert prod.target.environment == "production"

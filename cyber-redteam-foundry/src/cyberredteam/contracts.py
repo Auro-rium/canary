@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from typing import Annotated, Any, Literal, Union
 
 from pydantic import (
+    AfterValidator,
     BaseModel,
     ConfigDict,
     Field,
@@ -81,6 +82,27 @@ class _Contract(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
+SECRET_MASK = "**********"
+
+
+def _reject_mask(v: SecretStr) -> SecretStr:
+    value = v.get_secret_value()
+    if value == SECRET_MASK:
+        raise ValueError(
+            f"secret is the redaction mask {SECRET_MASK!r}, not a real value; "
+            "send the actual secret"
+        )
+    if not value:
+        raise ValueError("secret must not be empty")
+    return v
+
+
+# A SecretStr that refuses the mask, so a dumped-and-reloaded config can never
+# silently store "**********" as a credential. (WP1 adds keep-existing
+# semantics for updates.)
+Secret = Annotated[SecretStr, AfterValidator(_reject_mask)]
+
+
 # ── Target auth (discriminated on ``type``) ──────────────────────────────────
 
 
@@ -90,7 +112,7 @@ class NoAuth(_Contract):
 
 class BearerAuth(_Contract):
     type: Literal["bearer"] = "bearer"
-    token: SecretStr
+    token: Secret
 
 
 class HeaderAuth(_Contract):
@@ -98,7 +120,7 @@ class HeaderAuth(_Contract):
 
     type: Literal["header"] = "header"
     header_name: str
-    value: SecretStr
+    value: Secret
 
     @field_validator("header_name")
     @classmethod
@@ -116,7 +138,7 @@ class OAuthClientCredentialsAuth(_Contract):
     type: Literal["oauth_client_credentials"] = "oauth_client_credentials"
     token_url: HttpUrl
     client_id: str = Field(min_length=1)
-    client_secret: SecretStr
+    client_secret: Secret
     scope: str | None = None
     audience: str | None = None
 
@@ -127,7 +149,7 @@ class CookieLoginAuth(_Contract):
     type: Literal["cookie_login"] = "cookie_login"
     login_url: HttpUrl
     username: str = Field(min_length=1)
-    password: SecretStr
+    password: Secret
     username_field: str = "username"
     password_field: str = "password"
 
@@ -141,33 +163,57 @@ TargetAuth = Annotated[
 # ── Target ────────────────────────────────────────────────────────────────────
 
 TEMPLATE_PLACEHOLDERS = ("{{MESSAGE}}", "{{SESSION_ID}}", "{{HISTORY}}")
-_PLACEHOLDER_RE = re.compile(r"\{\{\s*([A-Za-z_]+)\s*\}\}")
+_TOKEN_RE = re.compile(r"\{\{[^{}]*\}\}")
 
 
 def validate_request_template(template: str) -> str:
     """Validate a request template.
 
-    Rules: the template is valid JSON; it contains the quoted ``"{{MESSAGE}}"``
-    placeholder; the optional ``"{{SESSION_ID}}"`` and ``"{{HISTORY}}"``
-    placeholders are also quoted JSON strings. Each quoted placeholder is
+    Rules: every ``{{...}}`` token is exactly one of ``TEMPLATE_PLACEHOLDERS``
+    (no inner whitespace; unknown names such as the legacy ``{{PROMPT}}`` are
+    rejected); the template is valid JSON; a placeholder is only ever a whole
+    JSON string *value*, never a key and never part of a longer string;
+    ``"{{MESSAGE}}"`` appears exactly once and the optional
+    ``"{{SESSION_ID}}"`` / ``"{{HISTORY}}"`` at most once each. Each quoted placeholder is
     replaced whole by ``json.dumps(value)`` at render time (``{{HISTORY}}``
     becomes an OpenAI-style messages array), which is why the raw template
-    stays parseable JSON. Unknown placeholders such as the legacy
-    ``{{PROMPT}}`` are rejected.
+    stays parseable JSON.
     """
-    for name in _PLACEHOLDER_RE.findall(template):
-        token = "{{" + name + "}}"
+    for token in _TOKEN_RE.findall(template):
         if token not in TEMPLATE_PLACEHOLDERS:
-            raise ValueError(f"unknown placeholder {{{{{name}}}}}; allowed: {TEMPLATE_PLACEHOLDERS}")
-    if '"{{MESSAGE}}"' not in template:
-        raise ValueError('request_template must contain the quoted "{{MESSAGE}}" placeholder')
+            raise ValueError(f"unknown placeholder {token}; allowed: {', '.join(TEMPLATE_PLACEHOLDERS)}")
     for token in TEMPLATE_PLACEHOLDERS:
         if template.count(token) != template.count(f'"{token}"'):
             raise ValueError(f'placeholder {token} must appear as a quoted JSON string "{token}"')
     try:
-        json.loads(template)
+        parsed = json.loads(template)
     except json.JSONDecodeError as exc:
         raise ValueError(f"request_template is not valid JSON: {exc.msg}") from exc
+
+    counts = dict.fromkeys(TEMPLATE_PLACEHOLDERS, 0)
+
+    def walk(node: Any) -> None:
+        if isinstance(node, dict):
+            for key, value in node.items():
+                if _TOKEN_RE.search(key):
+                    raise ValueError("placeholders are not allowed in JSON keys")
+                walk(value)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+        elif isinstance(node, str) and _TOKEN_RE.search(node):
+            if node not in counts:
+                raise ValueError("a placeholder must be the whole quoted JSON string value")
+            counts[node] += 1
+
+    walk(parsed)
+    if counts["{{MESSAGE}}"] != 1:
+        raise ValueError(
+            'request_template must contain the quoted "{{MESSAGE}}" placeholder exactly once'
+        )
+    for token in ("{{SESSION_ID}}", "{{HISTORY}}"):
+        if counts[token] > 1:
+            raise ValueError(f"placeholder {token} may appear at most once")
     return template
 
 
@@ -240,11 +286,11 @@ class CampaignPolicy(_Contract):
     """Budgets and limits for one campaign.
 
     Production rules need the target's environment, which is not part of the
-    policy. Pass it as validation context::
-
-        CampaignPolicy.model_validate(data, context={"environment": "production"})
-
-    or call :func:`validate_policy_for_target`. Violations are rejected.
+    policy, so a bare ``CampaignPolicy`` does NOT enforce them. Campaign
+    creation must validate through :class:`CampaignRequest`, which always does.
+    The context form (``context={"environment": ...}``) and
+    :func:`validate_policy_for_target` exist for callers that already hold
+    both halves. Violations are rejected, never clamped.
     """
 
     techniques: list[str] = Field(min_length=1)
@@ -294,6 +340,27 @@ def validate_policy_for_target(policy: CampaignPolicy, target: TargetConfig) -> 
     return CampaignPolicy.model_validate(
         policy.model_dump(), context={"environment": target.environment}
     )
+
+
+class CampaignRequest(_Contract):
+    """A campaign launch: the target plus its policy.
+
+    Campaign creation MUST validate through this model. A bare
+    ``CampaignPolicy`` cannot see the target's environment, so on its own it
+    would let a production target run with staging limits. This validator
+    always applies the section-4 rules, with no context required.
+    """
+
+    target: TargetConfig
+    policy: CampaignPolicy
+
+    @model_validator(mode="after")
+    def _enforce_environment(self) -> "CampaignRequest":
+        if self.target.environment == "production":
+            problems = self.policy.production_violations()
+            if problems:
+                raise ValueError("production policy rejected: " + "; ".join(problems))
+        return self
 
 
 # ── Conversation records ─────────────────────────────────────────────────────
@@ -376,7 +443,9 @@ class JudgeVote(_Contract):
     confidence: float = Field(ge=0, le=1)
     rationale: str = ""
     model_name: str | None = None
-    temperature: float = Field(default=0.0, ge=0, le=0)
+    # Informational only: Backboard has no temperature parameter, so this
+    # records the intended setting rather than enforcing it.
+    temperature: float = Field(default=0.0, ge=0)
 
 
 class ConversationVerdict(_Contract):
@@ -463,6 +532,15 @@ SseEventType = Literal[
 ]
 
 PREVIEW_MAX_CHARS = 280
+TEXT_MAX_CHARS = 500
+_ELLIPSIS = "…"
+
+
+def truncate_preview(text: str | None, limit: int = PREVIEW_MAX_CHARS) -> str | None:
+    """Cut ``text`` to at most ``limit`` characters, ending in "…" when cut."""
+    if text is None or len(text) <= limit:
+        return text
+    return text[: limit - len(_ELLIPSIS)] + _ELLIPSIS
 
 
 class CampaignStartedPayload(_Contract):
@@ -487,13 +565,23 @@ class TurnPayload(_Contract):
     campaign_id: str
     conversation_id: str
     index: int = Field(ge=0)
-    message_preview: str = Field(max_length=PREVIEW_MAX_CHARS)
-    response_preview: str = Field(max_length=PREVIEW_MAX_CHARS)
+    message_preview: str
+    response_preview: str
     tool_call_names: list[str] = Field(default_factory=list)
     http_status: int | None = Field(default=None, ge=100, le=599)
     latency_ms: float = Field(ge=0)
     monitor_hits: list[str] = Field(default_factory=list)
     error: str | None = None
+
+    @field_validator("message_preview", "response_preview")
+    @classmethod
+    def _cap_preview(cls, v: str) -> str:
+        return truncate_preview(v)
+
+    @field_validator("error")
+    @classmethod
+    def _cap_error(cls, v: str | None) -> str | None:
+        return truncate_preview(v, TEXT_MAX_CHARS)
 
 
 class MonitorHitPayload(_Contract):
@@ -516,6 +604,13 @@ class VerdictPayload(_Contract):
     campaign_id: str
     verdict: ConversationVerdict
 
+    @field_validator("verdict")
+    @classmethod
+    def _cap_rationale(cls, v: ConversationVerdict) -> ConversationVerdict:
+        # The stored verdict keeps its full rationale; the event carries a capped one.
+        capped = truncate_preview(v.rationale, TEXT_MAX_CHARS)
+        return v if capped == v.rationale else v.model_copy(update={"rationale": capped})
+
 
 class BudgetUpdatePayload(_Contract):
     campaign_id: str
@@ -536,6 +631,11 @@ class CampaignCompletePayload(_Contract):
 class CampaignFailedPayload(_Contract):
     campaign_id: str
     message: str
+
+    @field_validator("message")
+    @classmethod
+    def _cap_message(cls, v: str) -> str:
+        return truncate_preview(v, TEXT_MAX_CHARS)
 
 
 class CampaignCancelledPayload(_Contract):
@@ -645,6 +745,7 @@ __all__ = [
     "CampaignFailedEvent",
     "CampaignFailedPayload",
     "CampaignPolicy",
+    "CampaignRequest",
     "CampaignStartedEvent",
     "CampaignStartedPayload",
     "Conversation",
@@ -665,11 +766,13 @@ __all__ = [
     "PRODUCTION_FORBIDDEN_TECHNIQUES",
     "PRODUCTION_LIMITS",
     "RESERVED_HEADERS",
+    "SECRET_MASK",
     "SSE_EVENT_ADAPTER",
     "SSE_EVENT_TYPES",
     "SseEvent",
     "SseEventType",
     "TEMPLATE_PLACEHOLDERS",
+    "TEXT_MAX_CHARS",
     "TargetAuth",
     "TargetConfig",
     "TechniqueResult",
@@ -682,6 +785,7 @@ __all__ = [
     "VerdictPayload",
     "normalize_asi_code",
     "parse_sse_event",
+    "truncate_preview",
     "validate_policy_for_target",
     "validate_request_template",
     "wilson_interval",
