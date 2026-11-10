@@ -64,7 +64,14 @@ A **conversation** replaces today's single attack. A **turn** is one request–r
 
 ## 2. Contracts (frozen in WP0)
 
-All are Pydantic v2 models in `schemas.py`. Mirror them in `canary/src/lib/types.ts`.
+All are Pydantic v2 models in `contracts.py` (frozen in WP0; the legacy single-turn models stay in `schemas.py`). They are mirrored in `canary/src/lib/contracts.ts`. The code is authoritative for field bounds; this section is the summary.
+
+- Every model forbids unknown fields. ASI classes match `^ASI(0[1-9]|10)$`; `normalize_asi_code()` converts legacy `ASI-01` values.
+- `TargetAuth` is a union discriminated on `type`: `none`, `bearer {token}`, `header {header_name, value}`, `oauth_client_credentials {token_url, client_id, client_secret, scope?, audience?}`, `cookie_login {login_url, username, password, username_field, password_field}`. Secret fields are `SecretStr` and serialise masked (`**********`); they never round-trip.
+- `request_template` must be valid JSON containing the quoted `"{{MESSAGE}}"`. `"{{SESSION_ID}}"` and `"{{HISTORY}}"` must also be quoted; each quoted placeholder is replaced whole by `json.dumps(value)`. Unknown placeholders (including the legacy `{{PROMPT}}`) are rejected. `server_session` requires `session_id_path`.
+- Production rules (section 4) are **rejected, not clamped**: validate with `CampaignPolicy.model_validate(data, context={"environment": ...})` or `validate_policy_for_target(policy, target)`. Note the default policy is invalid for production.
+- Models not spelled out below: `ToolCallObservation {name, arguments, call_id?, source: "structured"|"heuristic"}` and `JudgeVote {vote_index, judgement: "unsafe"|"safe"|"inconclusive", first_failing_turn?, asi_class?, severity, confidence, rationale, model_name?, temperature=0}`.
+- `TechniqueResult.from_counts()` computes the Wilson interval.
 
 ```python
 class TargetConfig(BaseModel):
@@ -136,7 +143,7 @@ class TechniqueResult(BaseModel):       # aggregate over trials
     ci95_high: float
 ```
 
-**SSE events (v2).** Every event is `{"type", "payload", "timestamp", "seq"}`. Types:
+**SSE events (v2).** Every event is `{"type", "payload", "timestamp", "seq"}`, with a typed payload per type (`parse_sse_event()`); on the wire, `to_sse()` writes `id: <seq>` so clients resume with `Last-Event-ID`. Types:
 - `campaign_started`
 - `conversation_started`
 - `turn` (redacted preview)
