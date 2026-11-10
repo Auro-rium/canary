@@ -1,6 +1,6 @@
 """Shared pytest fixtures.
 
-Two autouse fixtures keep the suite runnable without AWS credentials while
+Two autouse fixtures keep the suite runnable without Backboard credentials while
 ensuring the *runtime* code path never fabricates output:
 
 1. ``_inject_fake_llm`` patches ``factory.get_llm`` to return an
@@ -15,12 +15,12 @@ ensuring the *runtime* code path never fabricates output:
 import pytest
 from fixtures.fake_llm import FakeStructuredLLM
 
-from cyberredteam.llm.bedrock import ObservableLLM
+from cyberredteam.llm.observable import ObservableLLM
 
 
 @pytest.fixture(autouse=True)
 def _inject_fake_llm(monkeypatch):
-    def _fake_get_llm(model, agent_name="unknown", store=None):
+    def _fake_get_llm(model=None, agent_name="unknown", store=None, provider=None, temperature=None):
         return ObservableLLM(
             llm=FakeStructuredLLM(),
             agent_name=agent_name,

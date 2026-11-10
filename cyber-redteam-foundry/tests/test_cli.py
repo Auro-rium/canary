@@ -24,18 +24,18 @@ def test_cli_graph():
     assert "StateGraph" in result.stdout or "state" in result.stdout or "strategist" in result.stdout
 
 
-@patch.dict("os.environ", {"AWS_REGION": ""})
-def test_cli_doctor_missing_region():
-    """Doctor fails with diagnostics when AWS_REGION is missing."""
+@patch.dict("os.environ", {"BACKBOARD_API_KEY": ""})
+def test_cli_doctor_missing_api_key():
+    """Doctor fails with diagnostics when BACKBOARD_API_KEY is missing."""
     runner = CliRunner()
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 1
-    assert "AWS_REGION is not set" in result.stdout
+    assert "BACKBOARD_API_KEY is not set" in result.stdout
 
 
-@patch.dict("os.environ", {"AWS_REGION": "us-east-1"})
+@patch.dict("os.environ", {"BACKBOARD_API_KEY": "test-key"})
 def test_cli_doctor_success():
-    """Doctor passes when Bedrock is configured and connectivity succeeds.
+    """Doctor passes when Backboard is configured and the ping succeeds.
 
     The conftest autouse fixture patches ``factory.get_llm`` to a fake, so
     the connectivity probe returns the fake's canned response.
@@ -43,5 +43,6 @@ def test_cli_doctor_success():
     runner = CliRunner()
     result = runner.invoke(app, ["doctor"])
     assert result.exit_code == 0
+    assert "evaluator: " in result.stdout
     assert "Connection test succeeded" in result.stdout
     assert "All systems nominal" in result.stdout

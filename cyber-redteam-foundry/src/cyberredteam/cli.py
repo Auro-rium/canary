@@ -207,25 +207,28 @@ def graph(
 
 @app.command()
 def doctor() -> None:
-    """Verify environment variables and test NVIDIA endpoint connectivity."""
+    """Verify environment variables and test Backboard connectivity."""
     console.print("[bold blue]Running Diagnostics / Doctor Command[/bold blue]\n")
     settings = get_settings()
-    from cyberredteam.llm.factory import get_model_for_agent
+    from cyberredteam.llm.factory import ROLES, get_role_config
 
     errors = []
 
-    # Check NVIDIA configuration
-    console.print("[bold]Checking NVIDIA NIM Configuration...[/bold]")
-    if not settings.nvidia_api_key:
-        console.print("[red]✗ NVIDIA_API_KEY is not set.[/red]")
-        errors.append("NVIDIA_API_KEY missing")
+    # Check Backboard configuration
+    console.print("[bold]Checking Backboard Configuration...[/bold]")
+    if not settings.backboard_api_key:
+        console.print("[red]✗ BACKBOARD_API_KEY is not set.[/red]")
+        errors.append("BACKBOARD_API_KEY missing")
     else:
-        console.print(f"✓ NVIDIA endpoint: {settings.nvidia_base_url}")
+        console.print(f"✓ Backboard endpoint: {settings.backboard_base_url}")
 
-    # Show per-agent model assignment
-    console.print("\n[bold]Model assignment per agent:[/bold]")
-    for agent in ("strategist", "attacker", "evaluator", "reporter"):
-        console.print(f"✓ {agent}: {get_model_for_agent(agent)}")
+    # Show per-role provider/model assignment
+    console.print("\n[bold]Provider/model per role:[/bold]")
+    for role in ROLES:
+        cfg = get_role_config(role)
+        console.print(
+            f"✓ {role}: {cfg['provider']}/{cfg['model_name']} (temperature={cfg['temperature']})"
+        )
 
     # Check API auth configuration
     console.print("\n[bold]Checking API Authentication...[/bold]")
@@ -238,22 +241,22 @@ def doctor() -> None:
         console.print("\n[bold red]Diagnostics failed. Please set required variables in your .env file.[/bold red]")
         raise typer.Exit(code=1)
 
-    # Test actual connectivity
-    console.print("\n[bold]Testing connectivity to NVIDIA NIM...[/bold]")
+    # Live ping through the evaluator model
+    console.print("\n[bold]Testing connectivity to Backboard (evaluator model)...[/bold]")
     try:
         from langchain_core.messages import HumanMessage
 
-        from cyberredteam.llm.factory import get_llm
+        from cyberredteam.llm.factory import get_llm_for_agent
 
-        llm = get_llm(get_model_for_agent("evaluator"), agent_name="doctor")
+        llm = get_llm_for_agent("evaluator")
         response = llm.llm.invoke([HumanMessage(content="Hello, connection check.")])
         console.print("[green]✓ Connection test succeeded![/green]")
-        console.print(f"Response: {response.content.strip()}")
+        console.print(f"Response: {str(response.content).strip()}")
     except Exception as e:
         console.print(f"[red]✗ Connection test failed: {e}[/red]")
         console.print(
-            "\n[bold red]Verify NVIDIA_API_KEY, NVIDIA_BASE_URL, model availability, "
-            "and network access to the NVIDIA endpoint.[/bold red]"
+            "\n[bold red]Verify BACKBOARD_API_KEY, BACKBOARD_BASE_URL, provider/model "
+            "availability, and network access to Backboard.[/bold red]"
         )
         raise typer.Exit(code=1)
 

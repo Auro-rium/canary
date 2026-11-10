@@ -4,14 +4,14 @@ import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 
-import botocore.exceptions
 import pytest
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langchain_core.outputs import ChatGeneration, ChatResult
 
-from cyberredteam.llm.bedrock import ObservableLLM
+from cyberredteam.llm.backboard import BackboardError, BackboardRetryableError
 from cyberredteam.llm.factory import get_llm_for_agent, get_model_for_agent, load_prompt
+from cyberredteam.llm.observable import ObservableLLM
 from cyberredteam.llm.schemas import (
     AttackerOutput,
     AttackPlan,
@@ -97,22 +97,22 @@ def test_observability_logging_to_db():
             assert record.completion_tokens == 50
 
 
-# ─── Bedrock throttling retry ──────────────────────────────────────
+# ─── Backboard retry ──────────────────────────────────────
 #
 # The autouse `_inject_fake_llm` fixture (conftest.py) always succeeds, so it
 # never exercises `.with_retry()`. These tests construct `ObservableLLM`
 # directly with a flaky fake `BaseChatModel` that raises
-# `botocore.exceptions.ClientError` a controlled number of times, bypassing
+# `BackboardRetryableError` a controlled number of times, bypassing
 # the fixture entirely. `max_retries` is patched small (2-3) since
 # `wait_exponential_jitter=True` sleeps real time between attempts.
 
 
 class _FlakyLLM(BaseChatModel):
-    """Real `BaseChatModel` subclass (like `ChatBedrockConverse`) that raises
-    a throttling `ClientError` on the first ``fail_times`` calls, then
+    """Real `BaseChatModel` subclass (like `ChatBackboard`) that raises
+    a retryable `BackboardRetryableError` on the first ``fail_times`` calls, then
     returns a valid message. Subclassing `BaseChatModel` (rather than duck
     typing `invoke`/`__or__`) means it composes into LCEL pipe chains
-    (``prompt | llm | StrOutputParser()``) exactly the way the real Bedrock
+    (``prompt | llm | StrOutputParser()``) exactly the way the real Backboard
     client does, since raw pipe-composition requires the object to itself be
     a `Runnable`.
     """
@@ -123,10 +123,7 @@ class _FlakyLLM(BaseChatModel):
     def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
         self.calls += 1
         if self.calls <= self.fail_times:
-            raise botocore.exceptions.ClientError(
-                {"Error": {"Code": "ThrottlingException", "Message": "rate exceeded"}},
-                "Converse",
-            )
+            raise BackboardRetryableError("Backboard returned HTTP 429")
         return ChatResult(generations=[ChatGeneration(message=AIMessage(content="ok"))])
 
     @property
@@ -135,10 +132,10 @@ class _FlakyLLM(BaseChatModel):
 
 
 def test_build_text_chain_retries_throttling_and_succeeds(monkeypatch):
-    """A ClientError on the first N-1 attempts is retried and swallowed when
+    """A BackboardRetryableError on the first N-1 attempts is retried and swallowed when
     N-1 < max_retries; the chain ultimately returns the successful result."""
     monkeypatch.setattr(
-        "cyberredteam.llm.bedrock.get_settings",
+        "cyberredteam.llm.observable.get_settings",
         lambda: SimpleNamespace(max_retries=3),
     )
     flaky = _FlakyLLM(fail_times=2)  # fails twice, succeeds on the 3rd call
@@ -151,18 +148,36 @@ def test_build_text_chain_retries_throttling_and_succeeds(monkeypatch):
     assert flaky.calls == 3
 
 
-def test_build_text_chain_reraises_clienterror_after_exhausting_retries(monkeypatch):
-    """When failures >= max_retries, the original ClientError propagates
+def test_build_text_chain_reraises_after_exhausting_retries(monkeypatch):
+    """When failures >= max_retries, the original error propagates
     (not a tenacity.RetryError)."""
     monkeypatch.setattr(
-        "cyberredteam.llm.bedrock.get_settings",
+        "cyberredteam.llm.observable.get_settings",
         lambda: SimpleNamespace(max_retries=2),
     )
     flaky = _FlakyLLM(fail_times=5)  # always throttles, well past max_retries
     llm = ObservableLLM(llm=flaky, agent_name="test", deployment="test-model")
 
     chain = llm.build_text_chain("system prompt")
-    with pytest.raises(botocore.exceptions.ClientError):
+    with pytest.raises(BackboardRetryableError):
         llm.invoke_chain(chain, "hello")
 
     assert flaky.calls == 2
+
+
+class _AuthFailLLM(_FlakyLLM):
+    def _generate(self, messages, stop=None, run_manager=None, **kwargs) -> ChatResult:
+        self.calls += 1
+        raise BackboardError("Backboard returned HTTP 401")
+
+
+def test_non_retryable_error_is_not_retried(monkeypatch):
+    monkeypatch.setattr(
+        "cyberredteam.llm.observable.get_settings",
+        lambda: SimpleNamespace(max_retries=3),
+    )
+    bad = _AuthFailLLM()
+    llm = ObservableLLM(llm=bad, agent_name="test", deployment="test-model")
+    with pytest.raises(BackboardError):
+        llm.invoke_chain(llm.build_text_chain("system prompt"), "hello")
+    assert bad.calls == 1

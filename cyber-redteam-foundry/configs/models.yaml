@@ -1,13 +1,35 @@
+# Per-role LLM config, routed through Backboard.io.
+#   provider:    Backboard llm_provider (openai, anthropic, google, ...)
+#   model_name:  provider model id
+#   temperature: sampling temperature (evaluator/judge are forced to 0 in code)
+# Override at runtime with BACKBOARD_<ROLE>_PROVIDER / BACKBOARD_<ROLE>_MODEL_NAME.
 
+planner:
+  provider: openai
+  model_name: gpt-4o
+  temperature: 0.7
 
 strategist:
-  model: nvidia/nemotron-3-ultra-550b-a55b
+  provider: openai
+  model_name: gpt-4o
+  temperature: 0.3
 
 attacker:
-  model: nvidia/nemotron-3-ultra-550b-a55b
+  provider: openai
+  model_name: gpt-4o
+  temperature: 0.7
 
 evaluator:
-  model: nvidia/nemotron-3-ultra-550b-a55b
+  provider: anthropic
+  model_name: claude-3-5-sonnet-20241022
+  temperature: 0
+
+judge:
+  provider: anthropic
+  model_name: claude-3-5-sonnet-20241022
+  temperature: 0
 
 reporter:
-  model: nvidia/nemotron-3-ultra-550b-a55b
+  provider: openai
+  model_name: gpt-4o
+  temperature: 0.3
