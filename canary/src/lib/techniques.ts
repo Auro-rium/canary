@@ -1,17 +1,21 @@
+import type { AsiCode } from './contracts'
+
 export interface Technique {
   id: string
-  asiCode: string
+  asiCode: AsiCode
   name: string
   description: string
   severity: 'CRITICAL' | 'HIGH' | 'MEDIUM'
   estimatedDuration: string
 }
 
-// Slugs must match api.py's _TECHNIQUE_TO_STRATEGY mapping.
+// Slugs must match api.py's _TECHNIQUE_TO_STRATEGY mapping. asiCode is the
+// backend taxonomy class (configs/asi_taxonomy.yaml) for that strategy;
+// tests/test_asi_normalisation.py fails if the two drift.
 export const TECHNIQUES: Technique[] = [
   {
     id: 'prompt-injection',
-    asiCode: 'ASI-01',
+    asiCode: 'ASI01',
     name: 'Prompt Injection',
     description: 'Adversarial inputs overriding system instructions via user turn manipulation.',
     severity: 'CRITICAL',
@@ -19,7 +23,7 @@ export const TECHNIQUES: Technique[] = [
   },
   {
     id: 'memory-poisoning',
-    asiCode: 'ASI-02',
+    asiCode: 'ASI05',
     name: 'Memory Poisoning',
     description: 'Corrupting agent long-term memory stores to alter future reasoning chains.',
     severity: 'CRITICAL',
@@ -27,7 +31,7 @@ export const TECHNIQUES: Technique[] = [
   },
   {
     id: 'tool-abuse',
-    asiCode: 'ASI-03',
+    asiCode: 'ASI02',
     name: 'Tool & Plugin Abuse',
     description: 'Exploiting tool-call interfaces to invoke unintended external actions.',
     severity: 'HIGH',
@@ -35,7 +39,7 @@ export const TECHNIQUES: Technique[] = [
   },
   {
     id: 'privilege-escalation',
-    asiCode: 'ASI-04',
+    asiCode: 'ASI01',
     name: 'Privilege Escalation',
     description: 'Manipulating agent context to exceed authorized permission boundaries.',
     severity: 'CRITICAL',
@@ -43,7 +47,7 @@ export const TECHNIQUES: Technique[] = [
   },
   {
     id: 'goal-hijacking',
-    asiCode: 'ASI-05',
+    asiCode: 'ASI01',
     name: 'Goal Hijacking',
     description: 'Redirecting agent objective mid-session via indirect instruction channels.',
     severity: 'HIGH',
@@ -51,7 +55,7 @@ export const TECHNIQUES: Technique[] = [
   },
   {
     id: 'data-exfiltration',
-    asiCode: 'ASI-06',
+    asiCode: 'ASI04',
     name: 'Data Exfiltration',
     description: 'Probing agent for leakage of system prompts, PII, or internal context.',
     severity: 'HIGH',
@@ -59,7 +63,7 @@ export const TECHNIQUES: Technique[] = [
   },
   {
     id: 'supply-chain',
-    asiCode: 'ASI-08',
+    asiCode: 'ASI08',
     name: 'Supply Chain Attack',
     description: 'Injecting malicious content via third-party tool responses or RAG sources.',
     severity: 'HIGH',
@@ -67,7 +71,7 @@ export const TECHNIQUES: Technique[] = [
   },
   {
     id: 'denial-of-service',
-    asiCode: 'ASI-09',
+    asiCode: 'ASI09',
     name: 'Agent DoS',
     description: 'Overloading agent reasoning loops via recursive or infinitely deferred tasks.',
     severity: 'MEDIUM',

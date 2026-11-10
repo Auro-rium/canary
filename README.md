@@ -49,14 +49,14 @@ The backend registry contains 12 strategy types. The current dashboard exposes t
 
 | UI technique | ASI mapping | Purpose |
 |---|---|---|
-| Prompt Injection | ASI-01 | Override system or developer instructions through user input. |
-| Memory Poisoning | ASI-02 | Corrupt memory or state used in later reasoning. |
-| Tool & Plugin Abuse | ASI-03 | Manipulate tool parameters or induce unauthorized actions. |
-| Privilege Escalation | ASI-04 | Cross an authorization or role boundary. |
-| Goal Hijacking | ASI-05 | Redirect the agent away from its declared task. |
-| Data Exfiltration | ASI-06 | Probe for secrets, PII, prompts, or internal context. |
-| Supply Chain Attack | ASI-08 | Poison retrieved or third-party tool content. |
-| Agent DoS | ASI-09 | Induce runaway or resource-exhausting behavior. |
+| Prompt Injection | ASI01 | Override system or developer instructions through user input. |
+| Memory Poisoning | ASI05 | Corrupt memory or state used in later reasoning. |
+| Tool & Plugin Abuse | ASI02 | Manipulate tool parameters or induce unauthorized actions. |
+| Privilege Escalation | ASI01 | Cross an authorization or role boundary. |
+| Goal Hijacking | ASI01 | Redirect the agent away from its declared task. |
+| Data Exfiltration | ASI04 | Probe for secrets, PII, prompts, or internal context. |
+| Supply Chain Attack | ASI08 | Poison retrieved or third-party tool content. |
+| Agent DoS | ASI09 | Induce runaway or resource-exhausting behavior. |
 
 Explicit selections are preserved. LangGraph supports up to 12 parallel attacker branches; the UI currently exposes eight. The ASI/ATLAS mapping and confidence thresholds are stored in `cyber-redteam-foundry/configs/`.
 
