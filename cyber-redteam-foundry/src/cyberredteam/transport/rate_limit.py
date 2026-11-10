@@ -19,6 +19,11 @@ class RateLimiter(Protocol):
         """Return once one request to ``target_id`` may be sent."""
         ...
 
+    async def penalize(self, target_id: str, seconds: float) -> None:
+        """The target asked us to back off (429/503 Retry-After): hold every
+        caller for ``target_id`` for at least ``seconds``."""
+        ...
+
 
 class InProcessTokenBucket:
     """Token bucket keyed by ``target_id``: ``rps`` tokens/s, up to ``burst`` stored.
@@ -47,12 +52,21 @@ class InProcessTokenBucket:
         self._tokens: dict[str, float] = {}
         self._stamp: dict[str, float] = {}
         self._locks: dict[str, asyncio.Lock] = {}
+        self._blocked_until: dict[str, float] = {}
+
+    async def penalize(self, target_id: str, seconds: float) -> None:
+        until = self._clock() + max(0.0, seconds)
+        self._blocked_until[target_id] = max(self._blocked_until.get(target_id, 0.0), until)
 
     async def acquire(self, target_id: str) -> None:
         lock = self._locks.setdefault(target_id, asyncio.Lock())
         async with lock:
             while True:
                 now = self._clock()
+                blocked = self._blocked_until.get(target_id, 0.0) - now
+                if blocked > 0:
+                    await self._sleep(blocked)
+                    continue
                 tokens = self._tokens.get(target_id, self._burst)
                 last = self._stamp.get(target_id, now)
                 tokens = min(self._burst, tokens + (now - last) * self._rps)

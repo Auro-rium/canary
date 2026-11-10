@@ -31,6 +31,12 @@ class FakeClock:
 
 
 class NoLimit:
+    def __init__(self) -> None:
+        self.penalties: list[tuple[str, float]] = []
+
+    async def penalize(self, target_id: str, seconds: float) -> None:
+        self.penalties.append((target_id, seconds))
+
     async def acquire(self, target_id: str) -> None:
         return None
 

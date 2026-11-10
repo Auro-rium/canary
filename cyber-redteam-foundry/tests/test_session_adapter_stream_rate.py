@@ -206,6 +206,9 @@ def test_each_retry_acquires_a_token():
         async def acquire(self, target_id: str) -> None:
             acquired.append(target_id)
 
+        async def penalize(self, target_id: str, seconds: float) -> None:
+            return None
+
     def handler(req, n):
         return httpx.Response(500 if n == 1 else 200, json={"response": "ok"})
 

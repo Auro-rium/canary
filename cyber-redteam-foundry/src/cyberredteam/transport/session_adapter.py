@@ -17,7 +17,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-import logging
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -39,21 +38,26 @@ from cyberredteam.transport.streaming import (
     parse_stream,
 )
 
-logger = logging.getLogger("cyberredteam.transport")
-
 CAMPAIGN_HEADER = "X-Canary-Campaign"
 FALLBACK_KEYS = ("response", "output", "content", "text")
+MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 MAX_RETRIES = 2
 MAX_RATE_LIMIT_WAITS = 2
 BACKOFF_BASE_S = 0.5
 
-_RETRYABLE_NETWORK = (
+# Only failures that prove no status line arrived. ReadError / RemoteProtocolError
+# are NOT here: they may follow a delivered request, and a message must never be
+# re-sent once the target might have processed it.
+_RETRYABLE_BEFORE_RESPONSE = (
     httpx.ConnectError,
     httpx.ConnectTimeout,
-    httpx.ReadError,
+    httpx.PoolTimeout,
     httpx.WriteError,
-    httpx.RemoteProtocolError,
 )
+
+
+class _TooLarge(Exception):
+    pass
 
 _TOOL_HEURISTICS = (
     re.compile(
@@ -72,6 +76,8 @@ class TargetErrorKind(str, Enum):
     BAD_JSON = "bad_json"
     EXTRACT_FAILED = "extract_failed"
     RATE_LIMITED = "rate_limited"
+    HTTP_REDIRECT = "http_redirect"
+    RESPONSE_TOO_LARGE = "response_too_large"
     CANCELLED = "cancelled"
 
 
@@ -197,6 +203,8 @@ class SessionAdapter:
         self._history: list[dict[str, str]] = []
         self._session_id: str | None = None
         self._cancelled = False
+        self._send_lock = asyncio.Lock()
+        self._deadline_s = float(config.timeout_s)
         self._client = httpx.AsyncClient(
             transport=transport,
             timeout=float(config.timeout_s),
@@ -242,6 +250,10 @@ class SessionAdapter:
     # ── Send ─────────────────────────────────────────────────────────────────
 
     async def send(self, message: str) -> TurnResult:
+        async with self._send_lock:
+            return await self._send_locked(message)
+
+    async def _send_locked(self, message: str) -> TurnResult:
         started = time.perf_counter()
         result = TurnResult()
         body = json.dumps(self._build_body(message), separators=(",", ":")).encode()
@@ -269,27 +281,48 @@ class SessionAdapter:
                 return
 
             result.attempts += 1
+            got_response = False
             try:
                 headers = {"Content-Type": "application/json", "Accept": "*/*"}
                 headers.update(await self._auth.headers(self._client))
                 request = self._client.build_request(
                     "POST", str(self._config.endpoint), content=body, headers=headers
                 )
-                resp = await self._client.send(request)
+                async with asyncio.timeout(self._deadline_s):
+                    resp = await self._client.send(request, stream=True)
+                    got_response = True
+                    try:
+                        raw, digest = await self._read_capped(resp)
+                    finally:
+                        await resp.aclose()
             except AuthFailure as exc:
                 result.error = TargetError(TargetErrorKind(exc.kind), str(exc))
                 return
-            except httpx.TimeoutException as exc:
-                if isinstance(exc, httpx.ConnectTimeout) and net_retries < MAX_RETRIES:
+            except _TooLarge:
+                result.http_status = resp.status_code
+                result.error = TargetError(
+                    TargetErrorKind.RESPONSE_TOO_LARGE, f"response exceeded {MAX_RESPONSE_BYTES} bytes"
+                )
+                return
+            except (TimeoutError, httpx.TimeoutException) as exc:
+                if (
+                    not got_response
+                    and isinstance(exc, (httpx.ConnectTimeout, httpx.PoolTimeout))
+                    and net_retries < MAX_RETRIES
+                ):
                     net_retries += 1
                     await self._backoff(net_retries)
                     continue
                 result.error = TargetError(
-                    TargetErrorKind.TIMEOUT, f"no response within {self._config.timeout_s}s"
+                    TargetErrorKind.TIMEOUT, f"no complete response within {self._config.timeout_s}s"
                 )
                 return
             except httpx.HTTPError as exc:
-                if isinstance(exc, _RETRYABLE_NETWORK) and net_retries < MAX_RETRIES:
+                if (
+                    not got_response
+                    and isinstance(exc, _RETRYABLE_BEFORE_RESPONSE)
+                    and net_retries < MAX_RETRIES
+                ):
                     net_retries += 1
                     await self._backoff(net_retries)
                     continue
@@ -300,11 +333,11 @@ class SessionAdapter:
 
             status = resp.status_code
             result.http_status = status
-            result.response_bytes = len(resp.content)
-            result.response_hash = _sha16(resp.content)
+            result.response_bytes = len(raw)
+            result.response_hash = digest
 
             if 200 <= status < 300:
-                self._parse_success(resp, result)
+                self._parse_success(raw, result)
                 return
 
             if status == 401 and not reauthed:
@@ -318,10 +351,16 @@ class SessionAdapter:
 
             retry_after = parse_retry_after(resp.headers.get("retry-after"))
             if status == 429 or (status == 503 and retry_after is not None):
+                wait = retry_after if retry_after is not None else BACKOFF_BASE_S * 2 ** (rate_waits + 1)
+                if wait > self._config.timeout_s:
+                    result.error = TargetError(
+                        TargetErrorKind.RATE_LIMITED, f"HTTP {status}, Retry-After {wait:.0f}s too long"
+                    )
+                    return
                 if rate_waits < MAX_RATE_LIMIT_WAITS:
                     rate_waits += 1
-                    wait = retry_after if retry_after is not None else BACKOFF_BASE_S * 2**rate_waits
-                    await self._sleep(min(wait, float(self._config.timeout_s)))
+                    await self._limiter.penalize(self._config.target_id, wait)
+                    await self._sleep(wait)
                     continue
                 kind = TargetErrorKind.RATE_LIMITED
                 result.error = TargetError(kind, f"HTTP {status} after {rate_waits} waits")
@@ -335,27 +374,43 @@ class SessionAdapter:
                 result.error = TargetError(TargetErrorKind.HTTP_5XX, f"HTTP {status}")
                 return
 
+            if 300 <= status < 400:
+                result.error = TargetError(TargetErrorKind.HTTP_REDIRECT, f"HTTP {status}")
+                return
             result.error = TargetError(TargetErrorKind.HTTP_4XX, f"HTTP {status}")
             return
+
+    @staticmethod
+    async def _read_capped(resp: httpx.Response) -> tuple[bytes, str]:
+        hasher = hashlib.sha256()
+        chunks: list[bytes] = []
+        size = 0
+        async for chunk in resp.aiter_bytes():
+            size += len(chunk)
+            if size > MAX_RESPONSE_BYTES:
+                raise _TooLarge
+            hasher.update(chunk)
+            chunks.append(chunk)
+        return b"".join(chunks), hasher.hexdigest()[:16]
 
     async def _backoff(self, attempt: int) -> None:
         await self._sleep(BACKOFF_BASE_S * 2 ** (attempt - 1))
 
     # ── Response parsing ─────────────────────────────────────────────────────
 
-    def _parse_success(self, resp: httpx.Response, result: TurnResult) -> None:
+    def _parse_success(self, raw: bytes, result: TurnResult) -> None:
         cfg = self._config
         if cfg.streaming == "none":
             try:
-                data: Any = resp.json()
-            except ValueError:
+                data: Any = json.loads(raw)
+            except (ValueError, RecursionError):
                 result.error = TargetError(TargetErrorKind.BAD_JSON, "response is not valid JSON")
                 return
             chunks = [data]
             text = self._extract_text(data)
         else:
             try:
-                chunks = parse_stream(cfg.streaming, resp.content)
+                chunks = parse_stream(cfg.streaming, raw)
             except StreamParseError:
                 result.error = TargetError(TargetErrorKind.BAD_JSON, "stream is not valid NDJSON")
                 return

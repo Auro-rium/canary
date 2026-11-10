@@ -60,7 +60,7 @@ def parse_sse(body: bytes) -> list[Any]:
             break
         try:
             chunks.append(json.loads(payload))
-        except ValueError:
+        except (ValueError, RecursionError):
             chunks.append(payload)
     return chunks
 
@@ -73,7 +73,7 @@ def parse_ndjson(body: bytes) -> list[Any]:
             continue
         try:
             chunks.append(json.loads(line))
-        except ValueError as exc:
+        except (ValueError, RecursionError) as exc:
             raise StreamParseError("invalid NDJSON line") from exc
     return chunks
 
@@ -86,11 +86,23 @@ def parse_stream(mode: str, body: bytes) -> list[Any]:
     raise ValueError(f"not a streaming mode: {mode}")
 
 
+def _is_final_event(chunk: Any) -> bool:
+    """Full-text summary events (``*.done``, ``*.completed``) that repeat the deltas."""
+    if not isinstance(chunk, dict):
+        return False
+    kind = chunk.get("type") or chunk.get("event")
+    return isinstance(kind, str) and kind.endswith((".done", ".completed", "_done", "done"))
+
+
 def chunk_text(chunk: Any, response_path: str | None) -> str | None:
-    """Text carried by one chunk, or ``None`` if it carries none."""
+    """Text carried by one chunk, or ``None`` if it carries none.
+
+    With ``response_path`` only that path is consulted; otherwise the first
+    fallback path that yields text.
+    """
     if isinstance(chunk, str):
         return chunk
-    paths = ([response_path] if response_path else []) + list(DELTA_FALLBACK_PATHS)
+    paths = [response_path] if response_path else DELTA_FALLBACK_PATHS
     for path in paths:
         value = get_path(chunk, path)
         if isinstance(value, str):
@@ -98,7 +110,33 @@ def chunk_text(chunk: Any, response_path: str | None) -> str | None:
     return None
 
 
+def _lock_path(chunks: list[Any]) -> str | None:
+    """The fallback path used for the whole stream: the first one that yields
+    text on a non-final chunk (final chunks only if nothing else does)."""
+    for candidates in ([c for c in chunks if not _is_final_event(c)], chunks):
+        for chunk in candidates:
+            if isinstance(chunk, str):
+                continue
+            for path in DELTA_FALLBACK_PATHS:
+                if isinstance(get_path(chunk, path), str):
+                    return path
+    return None
+
+
 def assemble_text(chunks: list[Any], response_path: str | None) -> str | None:
-    """Concatenate per-chunk text; ``None`` if no chunk carried any."""
-    parts = [t for c in chunks if (t := chunk_text(c, response_path)) is not None]
+    """Concatenate per-chunk text; ``None`` if no chunk carried any.
+
+    Without ``response_path`` the stream locks onto one fallback path and
+    ignores final full-text events, so Responses-API style streams
+    (deltas then ``done`` with the whole text) are not duplicated.
+    """
+    path = response_path or _lock_path(chunks)
+    parts: list[str] = []
+    for chunk in chunks:
+        if isinstance(chunk, str):
+            parts.append(chunk)
+        elif path:
+            value = get_path(chunk, path)
+            if isinstance(value, str) and (response_path or not _is_final_event(chunk) or not parts):
+                parts.append(value)
     return "".join(parts) if parts else None
