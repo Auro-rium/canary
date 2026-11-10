@@ -1,33 +1,38 @@
-"""LLM factory — creates per-agent NVIDIA NIM clients.
+"""LLM factory — creates per-role Backboard.io clients.
 
-Reads model IDs from ``configs/models.yaml`` and NVIDIA configuration from
-environment variables.  Each agent maps to a NVIDIA model; high-volume
-roles (attacker) can use a faster/cheaper model while judgment roles
-(evaluator, reporter) use a stronger one.
+Per-role ``{provider, model_name, temperature}`` live in ``configs/models.yaml``
+and can be overridden with ``BACKBOARD_<ROLE>_PROVIDER`` /
+``BACKBOARD_<ROLE>_MODEL_NAME``. Roles without an entry fall back to
+``BACKBOARD_LLM_PROVIDER`` / ``BACKBOARD_MODEL_NAME``. The judge and evaluator
+always run at temperature 0 in role config.
 
-Inference runs server-side through NVIDIA's OpenAI-compatible endpoint.
-There is **no** mock fallback: if NVIDIA is not configured the factory
+NOTE: Backboard's POST /threads/messages documents no temperature parameter
+(https://docs.backboard.io/concepts/messages), so temperature is carried in the
+config but NOT sent; judge temperature-0 cannot be enforced through Backboard yet.
+
+There is **no** mock fallback: if Backboard is not configured the factory
 raises, so a misconfigured deployment fails loudly instead of fabricating
 security findings.
 """
 
+import os
 from pathlib import Path
 from typing import Optional
 
 import yaml
 
-from cyberredteam.llm.bedrock import ObservableLLM
+from cyberredteam.llm.backboard import ChatBackboard
+from cyberredteam.llm.observable import ObservableLLM
 from cyberredteam.logging import setup_logging
 
 logger = setup_logging()
 
-# NVIDIA model IDs per agent. Overridable per agent via configs/models.yaml.
-_DEFAULT_MODELS = {
-    "strategist": {"model": "nvidia/nemotron-3-ultra-550b-a55b"},
-    "attacker": {"model": "nvidia/nemotron-3-ultra-550b-a55b"},
-    "evaluator": {"model": "nvidia/nemotron-3-ultra-550b-a55b"},
-    "reporter": {"model": "nvidia/nemotron-3-ultra-550b-a55b"},
-}
+# configs/ sits at the project root: .../src/cyberredteam/llm/factory.py -> parents[3]
+_CONFIG_PATH = Path(__file__).resolve().parents[3] / "configs" / "models.yaml"
+
+ROLES = ("planner", "strategist", "attacker", "evaluator", "judge", "reporter")
+# Roles whose output is a verdict: sampling noise is never acceptable.
+DETERMINISTIC_ROLES = frozenset({"evaluator", "judge"})
 
 _models_config: Optional[dict] = None
 
@@ -38,7 +43,7 @@ def _load_models_config() -> dict:
     if _models_config is not None:
         return _models_config
 
-    config_path = Path("configs/models.yaml")
+    config_path = _CONFIG_PATH
     if config_path.exists():
         with open(config_path) as f:
             _models_config = yaml.safe_load(f) or {}
@@ -50,50 +55,67 @@ def _load_models_config() -> dict:
     return _models_config
 
 
-def get_model_for_agent(agent_name: str) -> str:
-    """Get the NVIDIA model ID for a given agent.
+def _agent_config(agent_name: str) -> dict:
+    config = _load_models_config().get(agent_name, {})
+    return config if isinstance(config, dict) else {"model_name": str(config)}
 
-    Args:
-        agent_name: One of strategist, attacker, evaluator, reporter.
 
-    Returns:
-        NVIDIA model ID string.
+def _env_override(agent_name: str, field: str) -> Optional[str]:
+    return os.environ.get(f"BACKBOARD_{agent_name.upper()}_{field}") or None
+
+
+def get_role_config(agent_name: str) -> dict:
+    """Resolve ``{provider, model_name, temperature}`` for a role.
+
+    Precedence: ``BACKBOARD_<ROLE>_*`` env > ``configs/models.yaml`` >
+    ``BACKBOARD_LLM_PROVIDER`` / ``BACKBOARD_MODEL_NAME`` settings.
     """
-    config = _load_models_config()
-    agent_config = config.get(agent_name, _DEFAULT_MODELS.get(agent_name, {}))
+    from cyberredteam.settings import get_settings
 
-    if isinstance(agent_config, dict):
-        # Accept either "model" (preferred) or legacy "deployment" key.
-        return agent_config.get("model") or agent_config.get(
-            "deployment", _DEFAULT_MODELS["evaluator"]["model"]
-        )
-    return str(agent_config)
+    settings = get_settings()
+    cfg = _agent_config(agent_name)
+    temperature = cfg.get("temperature")
+    if agent_name in DETERMINISTIC_ROLES:
+        temperature = 0.0
+    return {
+        "provider": (
+            _env_override(agent_name, "PROVIDER")
+            or cfg.get("provider")
+            or settings.backboard_llm_provider
+        ),
+        "model_name": (
+            _env_override(agent_name, "MODEL_NAME")
+            or cfg.get("model_name")
+            or cfg.get("model")  # legacy key
+            or settings.backboard_model_name
+        ),
+        "temperature": None if temperature is None else float(temperature),
+    }
 
 
-# Backwards-compatible alias — callers that predate the provider migration
-# still ask for a "deployment"; it now resolves to a NVIDIA model ID.
-def get_deployment_for_agent(agent_name: str) -> str:
-    """Deprecated alias for :func:`get_model_for_agent`."""
-    return get_model_for_agent(agent_name)
+def get_model_for_agent(agent_name: str) -> str:
+    """Backboard ``model_name`` configured for a role."""
+    return get_role_config(agent_name)["model_name"]
 
 
 def get_llm(
-    model: str,
+    model: Optional[str] = None,
     agent_name: str = "unknown",
     store: object = None,
+    provider: Optional[str] = None,
+    temperature: Optional[float] = None,
 ) -> ObservableLLM:
-    """Create an ObservableLLM for a specific NVIDIA model.
+    """Create an ObservableLLM backed by Backboard.io.
 
     Args:
-        model: NVIDIA model ID.
+        model: Backboard ``model_name``; defaults to ``BACKBOARD_MODEL_NAME``.
         agent_name: Name for logging.
         store: Optional SQLiteStore for call logging.
-
-    Returns:
-        ``ObservableLLM`` wrapping ``ChatOpenAI`` pointed at NVIDIA NIM.
+        provider: Backboard ``llm_provider``; defaults to ``BACKBOARD_LLM_PROVIDER``.
+        temperature: Sampling temperature; forced to 0 for evaluator/judge roles.
 
     Raises:
-        RuntimeError: If the NVIDIA API key is not configured. We never
+        RuntimeError: If ``BACKBOARD_API_KEY`` is not configured. We never
         fall back to fabricated output — a security tool that invents
         findings is worse than one that fails.
     """
@@ -101,36 +123,30 @@ def get_llm(
 
     settings = get_settings()
 
-    if not settings.nvidia_api_key:
+    if not settings.backboard_api_key:
         raise RuntimeError(
-            "NVIDIA NIM is not configured: NVIDIA_API_KEY is unset. "
-            "Set NVIDIA_API_KEY before running. Refusing to fabricate LLM output."
+            "Backboard is not configured: BACKBOARD_API_KEY is unset. "
+            "Set BACKBOARD_API_KEY before running. Refusing to fabricate LLM output."
         )
 
-    try:
-        from langchain_openai import ChatOpenAI
-    except ImportError as exc:  # pragma: no cover - import guard
-        raise RuntimeError(
-            "langchain-openai is required for NVIDIA NIM inference. "
-            "Install it with: pip install langchain-openai"
-        ) from exc
-
-    llm = ChatOpenAI(
-        model=model,
-        api_key=settings.nvidia_api_key,
-        base_url=settings.nvidia_base_url,
-        temperature=0.7,
-        # Nemotron may include reasoning before its structured response. Keep
-        # enough completion headroom so the JSON object is not truncated.
-        max_tokens=8192,
+    model = model or settings.backboard_model_name
+    provider = provider or settings.backboard_llm_provider
+    if agent_name in DETERMINISTIC_ROLES:
+        temperature = 0.0
+    llm = ChatBackboard(
+        api_key=settings.backboard_api_key,
+        base_url=settings.backboard_base_url,
+        provider=provider,
+        model_name=model,
+        temperature=temperature,
+        timeout=settings.backboard_timeout_seconds,
     )
-
-    logger.info(f"Created NVIDIA ChatOpenAI client for {agent_name} (model={model})")
+    logger.info(f"Created Backboard client for {agent_name} ({provider}/{model})")
 
     return ObservableLLM(
         llm=llm,
         agent_name=agent_name,
-        deployment=model,
+        deployment=f"{provider}/{model}",
         store=store,
     )
 
@@ -139,17 +155,15 @@ def get_llm_for_agent(
     agent_name: str,
     store: object = None,
 ) -> ObservableLLM:
-    """Create an ObservableLLM using the configured model for an agent.
-
-    Args:
-        agent_name: One of strategist, attacker, evaluator, reporter.
-        store: Optional SQLiteStore for call logging.
-
-    Returns:
-        ``ObservableLLM`` wrapping ``ChatOpenAI`` pointed at NVIDIA NIM.
-    """
-    model = get_model_for_agent(agent_name)
-    return get_llm(model, agent_name=agent_name, store=store)
+    """Create an ObservableLLM using the configured provider/model for a role."""
+    cfg = get_role_config(agent_name)
+    return get_llm(
+        cfg["model_name"],
+        agent_name=agent_name,
+        store=store,
+        provider=cfg["provider"],
+        temperature=cfg["temperature"],
+    )
 
 
 def load_prompt(agent_name: str) -> str:

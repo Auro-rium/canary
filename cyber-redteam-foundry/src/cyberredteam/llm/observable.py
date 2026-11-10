@@ -1,6 +1,6 @@
 """Provider-compatible LLM client with LCEL chains and observability.
 
-Wraps any LangChain ``BaseChatModel`` (currently NVIDIA ``ChatOpenAI``) and
+Wraps any LangChain ``BaseChatModel`` (in production ``ChatBackboard``) and
 builds LCEL chains for every invocation:
 
   structured:  ChatPromptTemplate | llm.with_structured_output(schema)
@@ -14,7 +14,6 @@ import hashlib
 import time
 from typing import Any, Dict, Optional, Type
 
-import botocore.exceptions
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import SystemMessage
 from langchain_core.output_parsers import StrOutputParser
@@ -22,6 +21,7 @@ from langchain_core.prompts import ChatPromptTemplate, HumanMessagePromptTemplat
 from langchain_core.runnables import Runnable
 from pydantic import BaseModel
 
+from cyberredteam.llm.backboard import BackboardRetryableError
 from cyberredteam.logging import log_event, setup_logging
 from cyberredteam.settings import get_settings
 
@@ -29,21 +29,15 @@ logger = setup_logging()
 
 
 def _retryable_errors() -> tuple[type[BaseException], ...]:
-    """Return provider errors that are safe to retry for NVIDIA/OpenAI."""
-    errors: list[type[BaseException]] = [botocore.exceptions.ClientError]
-    try:
-        import openai
-        errors.append(openai.APIError)
-    except ImportError:  # pragma: no cover - dependency exists in production
-        pass
-    return tuple(errors)
+    """Only transient Backboard failures (429/5xx/empty body) are retried."""
+    return (BackboardRetryableError,)
 
 
 class ObservableLLM:
     """Chat model wrapper that builds LCEL chains and logs every call.
 
     Args:
-        llm: Underlying ``BaseChatModel`` (e.g. ``ChatOpenAI``).
+        llm: Underlying ``BaseChatModel`` (e.g. ``ChatBackboard``).
         agent_name: Name of the calling agent (for observability).
         deployment: Provider model ID (for observability).
         store: Optional ``SQLiteStore`` for persisting call logs.
@@ -248,7 +242,7 @@ class ObservableLLM:
     def _extract_tokens(result: Any) -> Optional[Dict[str, int]]:
         """Try to extract token usage from a response object.
 
-        Handles LangChain's ``usage_metadata`` (OpenAI-compatible responses) and the
+        Handles LangChain's ``usage_metadata`` (Backboard responses) and the
         older ``response_metadata`` shapes.  Returns ``None`` for structured
         Pydantic outputs which carry no usage information.
         """
