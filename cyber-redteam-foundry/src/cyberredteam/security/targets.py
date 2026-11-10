@@ -40,6 +40,12 @@ class TargetStore(Protocol):
 
     def get_verification_token_hash(self, target_id: str) -> str | None: ...
 
+    # Added for the auth-URL host binding (WP2 review): extra hosts, beyond the
+    # endpoint's registrable domain, that may receive token_url/login_url traffic.
+    def set_allowed_auth_hosts(self, target_id: str, hosts: list[str]) -> None: ...
+
+    def get_allowed_auth_hosts(self, target_id: str) -> list[str]: ...
+
 
 def split_auth_secrets(config: TargetConfig) -> tuple[dict[str, Any], dict[str, str]]:
     """Split ``config.auth`` into (non-secret fields as JSON, plaintext secrets)."""
@@ -61,6 +67,7 @@ class _Record:
     verified_method: str | None = None
     verified_at: datetime | None = None
     token_hash: str | None = None
+    allowed_auth_hosts: list[str] = field(default_factory=list)
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
 
 
@@ -125,3 +132,15 @@ class InMemoryTargetStore:
         with self._lock:
             record = self._records.get(target_id)
             return record.token_hash if record else None
+
+    def set_allowed_auth_hosts(self, target_id: str, hosts: list[str]) -> None:
+        with self._lock:
+            record = self._records.get(target_id)
+            if record is None:
+                raise KeyError(target_id)
+            record.allowed_auth_hosts = sorted({h.strip().lower() for h in hosts if h.strip()})
+
+    def get_allowed_auth_hosts(self, target_id: str) -> list[str]:
+        with self._lock:
+            record = self._records.get(target_id)
+            return list(record.allowed_auth_hosts) if record else []

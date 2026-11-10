@@ -376,3 +376,58 @@ def test_unknown_method_rejected(token_hash):
 def test_missing_token_hash_fails(token):
     result = verify_ownership(ENDPOINT, "", HTTP_WELLKNOWN, resolve_host=public_resolver)
     assert not result.verified
+
+
+# ── auth URL host binding ────────────────────────────────────────────────────
+
+
+class _Auth:
+    def __init__(self, **urls):
+        self.__dict__.update(urls)
+
+
+@pytest.mark.parametrize(
+    "host, expected",
+    [
+        ("agent.example.com", "example.com"),
+        ("a.b.example.co.uk", "example.co.uk"),
+        ("example.com", "example.com"),
+        ("93.184.216.34", "93.184.216.34"),
+    ],
+)
+def test_registrable_domain(host, expected):
+    assert ownership.registrable_domain(host) == expected
+
+
+def test_auth_url_same_domain_ok():
+    ownership.check_target_urls(
+        ENDPOINT, _Auth(token_url="https://auth.example.com/t"), resolve_host=public_resolver
+    )
+
+
+def test_auth_url_foreign_domain_refused_unless_listed():
+    auth = _Auth(login_url="https://evil.example.net/login")
+    with pytest.raises(TargetRefused, match="allowed_auth_hosts"):
+        ownership.check_target_urls(ENDPOINT, auth, resolve_host=public_resolver)
+    ownership.check_target_urls(ENDPOINT, auth, ["evil.example.net"], resolve_host=public_resolver)
+
+
+def test_auth_url_private_refused_even_if_listed():
+    auth = _Auth(token_url="http://10.0.0.1/token")
+    with pytest.raises(TargetRefused, match="token_url"):
+        ownership.check_target_urls(ENDPOINT, auth, ["10.0.0.1"], resolve_host=public_resolver)
+
+
+def test_auth_url_non_http_refused():
+    with pytest.raises(TargetRefused):
+        ownership.check_target_urls(
+            ENDPOINT, _Auth(token_url="file:///etc/passwd"), resolve_host=public_resolver
+        )
+
+
+def test_auth_url_private_allowed_with_explicit_flag():
+    ownership.check_target_urls(
+        "http://localhost:9000/chat",
+        _Auth(token_url="http://localhost:9001/token"),
+        allow_private_targets=True,
+    )
