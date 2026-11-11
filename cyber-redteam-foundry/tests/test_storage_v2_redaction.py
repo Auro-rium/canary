@@ -67,3 +67,38 @@ def test_hits_deduplicated_in_order():
 def test_idempotent():
     once = redact("a@b.io 123-45-6789").text
     assert redact(once).text == once
+
+
+def test_json_quoted_keys():
+    r = redact('{"api_key": "abcd1234efgh", "password":"hunter2hunter2", "client_secret":"s3cr3tvalue"}')
+    for leaked in ("abcd1234efgh", "hunter2hunter2", "s3cr3tvalue"):
+        assert leaked not in r.text
+    assert r.hits == ["secret"]
+    assert redact('{"max_tokens": 1000}').hits == []
+
+
+def test_pem_private_key():
+    pem = "-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\nabcdef\n-----END RSA PRIVATE KEY-----"
+    r = redact(f"here: {pem} done")
+    assert "MIIEow" not in r.text and r.hits == ["private_key"] and r.text.endswith("done")
+    assert "MIIEow" not in redact("-----BEGIN PRIVATE KEY-----\nMIIEow").text  # truncated block
+
+
+def test_basic_auth_header():
+    r = redact("Authorization: Basic dXNlcjpwYXNzd29yZA==")
+    assert "dXNlcjpw" not in r.text and r.hits == ["basic_auth"]
+    assert redact("a basic understanding of things").hits == []
+
+
+def test_aws_credentials():
+    r = redact("aws_secret_access_key = wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY and ASIAIOSFODNN7EXAMPLE")
+    assert "wJalrXUtnFEMI" not in r.text and "ASIAIOSFODNN7" not in r.text
+    assert set(r.hits) == {"secret", "api_key"}
+    assert "wJalr" not in redact("AWS_SECRET_ACCESS_KEY=wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY").text
+
+
+def test_url_credentials():
+    r = redact("connect postgres://admin:s3cretpw@db.internal:5432/app now")
+    assert "s3cretpw" not in r.text and "admin" not in r.text and r.hits == ["url_credentials"]
+    assert "db.internal" in r.text
+    assert redact("https://example.com/path").text == "https://example.com/path"

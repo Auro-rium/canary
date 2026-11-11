@@ -28,18 +28,24 @@ def _luhn_ok(digits: str) -> bool:
     return total % 10 == 0
 
 
+_PEM = re.compile(
+    r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)"
+)
+_URL_CREDS = re.compile(r"\b([A-Za-z][A-Za-z0-9+.-]*://)[^\s/:@]+:[^\s/@]+@")
+_BASIC = re.compile(r"(?i)(authorization[\"']?\s*[:=]\s*[\"']?basic\s+)[A-Za-z0-9+/=]{6,}")
 _JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}")
 _BEARER = re.compile(r"(?i)\b(bearer)(\s+)[A-Za-z0-9._~+/=-]{8,}")
 _KEY_PATTERNS = re.compile(
     r"\b(?:"
     r"sk-ant-[A-Za-z0-9_-]{16,}|sk-[A-Za-z0-9_-]{20,}|sk_(?:live|test)_[A-Za-z0-9]{16,}"
     r"|gh[pousr]_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}"
-    r"|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}|xox[abprs]-[A-Za-z0-9-]{10,}"
+    r"|(?:AKIA|ASIA)[0-9A-Z]{16}|AIza[0-9A-Za-z_-]{30,}|xox[abprs]-[A-Za-z0-9-]{10,}"
     r")\b"
 )
 _KV_SECRET = re.compile(
-    r"(?i)\b((?:api[_-]?key|secret(?:[_-]?key)?|access[_-]?token|auth[_-]?token|token|password"
-    r"|passwd|client[_-]?secret)\s*[:=]\s*)(?:\"([^\"\s]{4,})\"|'([^'\s]{4,})'|([^\s\"',;]{4,}))"
+    r"(?i)((?:[\w-]*?)(?:api[_-]?key|secret[_-]?access[_-]?key|secret(?:[_-]?key)?|access[_-]?token"
+    r"|auth[_-]?token|token|password|passwd|client[_-]?secret)[\"']?\s*[:=]\s*[\"']?)"
+    r"(?:([^\"'\s,;}\]]{4,}))"
 )
 _EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b")
 _SSN = re.compile(r"(?<![\d-])\d{3}-\d{2}-\d{4}(?![\d-])")
@@ -64,6 +70,9 @@ def redact(text: str | None, canary_values: Iterable[str] = ()) -> RedactionResu
     for value in sorted({v for v in canary_values if v}, key=len, reverse=True):
         if value in out:
             out = out.replace(value, note("canary"))
+    out = _PEM.sub(lambda m: note("private_key"), out)
+    out = _URL_CREDS.sub(lambda m: f"{m.group(1)}{note('url_credentials')}@", out)
+    out = _BASIC.sub(lambda m: f"{m.group(1)}{note('basic_auth')}", out)
     out = _JWT.sub(lambda m: note("jwt"), out)
     out = _BEARER.sub(lambda m: f"{m.group(1)}{m.group(2)}{note('bearer_token')}", out)
     out = _KEY_PATTERNS.sub(lambda m: note("api_key"), out)
