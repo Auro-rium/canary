@@ -202,6 +202,13 @@ There are no scripted or cosmetic events (fixes D8).
 - **Campaigns are refused on unverified targets.** Delete the localhost rewrite in `api.py:916-921` and the optional-allowlist fail-open path.
 - Secrets in `TargetAuth` are encrypted at rest (Fernet, key from env), never returned by the API, and never logged.
 - **Done when:** a campaign against an unverified target returns 403, and tests cover all three verification methods.
+- **WP1 status/deviations (branch `multiturn-wp1`):**
+  - `security/` = `crypto.py`, `tokens.py`, `ownership.py` (URL/IP guard ported from the differential-gate `target.py` into it), `targets.py`. `TargetStore` has the six agreed methods **plus** `set_allowed_auth_hosts` / `get_allowed_auth_hosts` (WP2-review addition); the WP6 SQL store must implement all eight.
+  - `token_url` / `login_url` must be public http(s) and on **exactly** the endpoint's host, or be listed in `allowed_auth_hosts`. This is stricter than "same registrable domain": without the Public Suffix List, eTLD+1 fails open on shared hosting such as `*.herokuapp.com`. The rule is checked at registration (422) and again at verify. The default A/AAAA resolver (`getaddrinfo`) has no timeout of its own.
+  - The IP guard runs at registration/verify time only (DNS-rebinding gap). WP2's `SessionAdapter` must re-run `ownership.check_target_url` / `check_target_urls` before sending.
+  - The legacy `/api/runs` and `/api/campaigns/run` now need a verified registered target (`target_id`, or an exact `target_url` match for the old UI), else 403. `ALLOWED_TARGETS` only narrows that further; `REQUIRE_TARGET_ALLOWLIST` is no longer read. The legacy runner still gets the client's headers/template, not the stored auth (left to WP2).
+  - `POST /verify` returns 200 with `verified: true|false` and a reason. A failed check is not an HTTP error.
+  - Not done (out of scope): `tools/target_adapter.py` still has its own Docker localhost→`host.docker.internal` rewrite. The in-memory store is lost on restart until WP6.
 
 ### WP2: SessionAdapter — stateful HTTP client (Sonnet) — A1, D3, D4, C1
 - Replace `HttpTargetAdapter` with `SessionAdapter`, using `httpx` with async, a connection pool and HTTP/1.1 + 2.

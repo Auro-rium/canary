@@ -1,24 +1,36 @@
 """FastAPI web server for integrating the red team backend with the React frontend."""
 
+import hmac
 import json
 import logging
 import threading
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Literal, Optional
 
-from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException
+from fastapi import BackgroundTasks, Depends, FastAPI, Header, HTTPException, Request
+from fastapi.concurrency import run_in_threadpool
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict, HttpUrl, TypeAdapter, ValidationError
 from sqlalchemy import func, select
 
-from cyberredteam.contracts import normalize_asi_code
+from cyberredteam.contracts import TargetConfig, normalize_asi_code
 from cyberredteam.evaluation.taxonomy import lookup as taxonomy_lookup
 from cyberredteam.langgraph.orchestrator import GraphOrchestrator
 from cyberredteam.logging import setup_logging
 from cyberredteam.schemas import RunConfig, StrategyType
+from cyberredteam.security.ownership import (
+    DNS_TXT_PREFIX,
+    VERIFY_HEADER,
+    WELL_KNOWN_PATH,
+    TargetRefused,
+    check_target_urls,
+    verify_ownership,
+)
+from cyberredteam.security.targets import InMemoryTargetStore, TargetStore
+from cyberredteam.security.tokens import hash_verification_token, issue_verification_token
 from cyberredteam.settings import get_settings
 from cyberredteam.storage.artifact_store import SQLiteStore
 from cyberredteam.storage.models import AttackRecord, FindingRecord, LLMCallRecord, RunRecord
@@ -43,12 +55,84 @@ def require_auth(authorization: Optional[str] = Header(None)) -> None:
             detail="API authentication is not configured (set API_SECRET_KEY).",
         )
     scheme, _, token = (authorization or "").partition(" ")
-    if scheme != "Bearer" or token != settings.api_secret_key:
+    valid = hmac.compare_digest(token.encode("utf-8"), settings.api_secret_key.encode("utf-8"))
+    if scheme != "Bearer" or not valid:
         raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
 
 
 def _authorized_targets() -> list[str]:
     return [t.strip() for t in settings.allowed_targets.split(",") if t.strip()]
+
+
+# ── Registered targets (WP1) ─────────────────────────────────────────────────
+# Module-level store behind a dependency so WP6 can swap in the SQL store (or a
+# test can override it) without touching the routes.
+_target_store: TargetStore = InMemoryTargetStore()
+
+
+def get_target_store() -> TargetStore:
+    return _target_store
+
+
+def get_ownership_options() -> Dict[str, Any]:
+    """Keyword options for ``verify_ownership``.
+
+    Private/loopback targets stay refused here; tests override this dependency
+    to inject fake transports and resolvers.
+    """
+    return {"allow_private_targets": False}
+
+
+_URL_ADAPTER = TypeAdapter(HttpUrl)
+
+_NOT_VERIFIED_DETAIL = (
+    "Target is not a registered, ownership-verified target. Register it with "
+    "POST /api/v2/targets and verify it with POST /api/v2/targets/{id}/verify first."
+)
+
+
+def _normalize_endpoint(raw: str) -> Optional[str]:
+    try:
+        return str(_URL_ADAPTER.validate_python(raw.strip()))
+    except ValidationError:
+        return None
+
+
+def _require_verified_target(
+    store: TargetStore,
+    target_ref: Optional[str] = None,
+    endpoint: Optional[str] = None,
+) -> TargetConfig:
+    """Resolve a campaign's target to a registered, verified target or raise 403.
+
+    ``target_ref`` is a registered target_id; ``endpoint`` (legacy UI field) must
+    equal the endpoint of a verified target. There is no fail-open path: an
+    unknown, unverified or empty reference is always refused. When
+    ``ALLOWED_TARGETS`` is set it narrows further (by target_id or endpoint).
+    """
+    try:
+        target: Optional[TargetConfig] = None
+        if target_ref and target_ref.strip():
+            target = store.get(target_ref.strip())
+        if target is None and endpoint and endpoint.strip():
+            wanted = _normalize_endpoint(endpoint)
+            if wanted is not None:
+                target = next(
+                    (t for t in store.list() if t.verified and str(t.endpoint) == wanted),
+                    None,
+                )
+    except RuntimeError:
+        # Secret decryption failed (e.g. CANARY_ENCRYPTION_KEY missing): fail closed.
+        raise HTTPException(status_code=503, detail="Target store is unavailable.") from None
+    if target is None or not target.verified:
+        raise HTTPException(status_code=403, detail=_NOT_VERIFIED_DETAIL)
+    allowed = _authorized_targets()
+    if allowed and target.target_id not in allowed and str(target.endpoint) not in allowed:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Target '{target.target_id}' is not in the authorized allowlist.",
+        )
+    return target
 
 
 # Auth is enforced on every route via the app-level dependency.
@@ -358,27 +442,16 @@ def list_targets():
 
 
 @app.post("/api/runs")
-def create_run(req: RunRequest, background_tasks: BackgroundTasks):
-    """Trigger a new red team run against a target."""
-    # Authorization scope: only attack targets we're allowed to.
-    target_id = req.target_id
-    allowed = _authorized_targets()
-    if allowed:
-        if target_id not in allowed:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Target '{target_id}' is not in the authorized allowlist.",
-            )
-    else:
-        if settings.require_target_allowlist:
-            raise HTTPException(
-                status_code=503,
-                detail="Target allowlist is required but ALLOWED_TARGETS is empty.",
-            )
-        logger.warning(
-            "ALLOWED_TARGETS is empty — no target allowlist enforced. "
-            "Set it before exposing this API."
-        )
+def create_run(
+    req: RunRequest,
+    background_tasks: BackgroundTasks,
+    store: TargetStore = Depends(get_target_store),
+):
+    """Trigger a new red team run against a registered, verified target."""
+    # Authorization scope: only ownership-verified targets (checked before a
+    # concurrency slot is taken, so a refusal never leaks one).
+    target = _require_verified_target(store, target_ref=req.target_id)
+    target_id = str(target.endpoint)
 
     with _active_runs_lock:
         if _running_count() >= settings.max_concurrent_runs:
@@ -432,7 +505,8 @@ def create_run(req: RunRequest, background_tasks: BackgroundTasks):
     return {
         "run_id": run_id,
         "status": "running",
-        "target_id": target_id,
+        "target_id": target.target_id,
+        "endpoint": target_id,
     }
 
 
@@ -862,6 +936,8 @@ _VERDICT_PATH_NORM: Dict[str, str] = {
 
 class CampaignRunRequest(BaseModel):
     campaign_id: str
+    # A registered, verified target: by id (preferred) or by its exact endpoint.
+    target_id: Optional[str] = None
     target_url: str = ""
     techniques: List[str]
     # Generic HTTP target config — see HttpTargetAdapter for the contract.
@@ -902,7 +978,10 @@ def _build_finding(atk: AttackRecord, run_id: str) -> dict:
 
 
 @app.post("/api/campaigns/run")
-async def campaign_run_sse(req: CampaignRunRequest):
+async def campaign_run_sse(
+    req: CampaignRunRequest,
+    store: TargetStore = Depends(get_target_store),
+):
     """Start a red-team campaign and stream SSE events back to the browser.
 
     Event types: agent_state | log | finding | campaign_complete
@@ -919,28 +998,10 @@ async def campaign_run_sse(req: CampaignRunRequest):
     if not strategies:
         strategies = [StrategyType.PROMPT_INJECTION]
 
-    # Route to the correct target_id so node_attacker_branch picks up HttpTargetAdapter.
-    # Empty URL or localhost/127.0.0.1 → target agent runs on the host, outside
-    # Docker, so reach it via host.docker.internal (see docker-compose extra_hosts).
-    # Any other non-empty URL → external endpoint, use directly.
-    raw_url = req.target_url.strip()
-    if not raw_url or "localhost" in raw_url or "127.0.0.1" in raw_url:
-        target_id = "http://host.docker.internal:9000/chat"
-    else:
-        target_id = raw_url
-
-    # Authorisation check (reuses the same allowlist logic as /api/runs)
-    allowed = _authorized_targets()
-    if allowed and target_id not in allowed:
-        raise HTTPException(
-            status_code=403,
-            detail=f"Target '{target_id}' is not in the authorised allowlist.",
-        )
-    if not allowed and settings.require_target_allowlist:
-        raise HTTPException(
-            status_code=503,
-            detail="Target allowlist is required but ALLOWED_TARGETS is empty.",
-        )
+    # Only a registered, ownership-verified target may be attacked. The stored
+    # endpoint is used verbatim: no rewriting, no default target.
+    target = _require_verified_target(store, target_ref=req.target_id, endpoint=req.target_url)
+    target_id = str(target.endpoint)
 
     with _active_runs_lock:
         if _running_count() >= settings.max_concurrent_runs:
@@ -1201,3 +1262,167 @@ async def campaign_run_sse(req: CampaignRunRequest):
             "X-Accel-Buffering": "no",
         },
     )
+
+
+# ── API v2: target registration and ownership verification (WP1) ─────────────
+
+_V2_IGNORED_FIELDS = ("verified", "target_id", "allowed_auth_hosts")
+_URL_CHECK_OPTIONS = ("allow_private_targets", "resolve_host")
+
+
+def _target_view(target: TargetConfig, store: TargetStore) -> Dict[str, Any]:
+    """Public view of a target: secrets masked, never the token or its hash."""
+    view = target.model_dump(mode="json")  # SecretStr dumps as "**********"
+    view["allowed_auth_hosts"] = store.get_allowed_auth_hosts(target.target_id)
+    return view
+
+
+def _parse_allowed_auth_hosts(raw: Any) -> List[str]:
+    if raw is None:
+        return []
+    if not isinstance(raw, list) or not all(isinstance(h, str) and h.strip() for h in raw):
+        raise HTTPException(status_code=422, detail="allowed_auth_hosts must be a list of hostnames")
+    hosts = [h.strip().rstrip(".").lower() for h in raw]
+    if any(c in h for h in hosts for c in "/:@ "):
+        raise HTTPException(status_code=422, detail="allowed_auth_hosts entries must be bare hostnames")
+    return hosts
+
+
+def _verification_instructions(target: TargetConfig, token: str) -> Dict[str, Any]:
+    host = target.endpoint.host or ""
+    origin = f"{target.endpoint.scheme}://{host}"
+    default_port = {"http": 80, "https": 443}.get(target.endpoint.scheme)
+    if target.endpoint.port and target.endpoint.port != default_port:
+        origin += f":{target.endpoint.port}"
+    return {
+        "http_wellknown": {"url": origin + WELL_KNOWN_PATH, "content": token},
+        "dns_txt": {"name": DNS_TXT_PREFIX + host, "type": "TXT", "value": token},
+        "response_header": {"header": VERIFY_HEADER, "value": token},
+    }
+
+
+@app.post("/api/v2/targets", status_code=201)
+async def create_target_v2(
+    request: Request,
+    store: TargetStore = Depends(get_target_store),
+    ownership_options: Dict[str, Any] = Depends(get_ownership_options),
+):
+    """Register an (unverified) target.
+
+    The body is a ``TargetConfig`` without ``target_id``; any client-supplied
+    ``verified`` or ``target_id`` is ignored. ``allowed_auth_hosts`` optionally
+    lists extra hosts a ``token_url``/``login_url`` may live on. The plaintext
+    verification token is returned in this response only; just its hash is kept.
+    Validation errors never echo the submitted values (they may be secrets).
+    """
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=422, detail="body must be a JSON object") from None
+    if not isinstance(body, dict):
+        raise HTTPException(status_code=422, detail="body must be a JSON object")
+
+    allowed_auth_hosts = _parse_allowed_auth_hosts(body.get("allowed_auth_hosts"))
+    data = {k: v for k, v in body.items() if k not in _V2_IGNORED_FIELDS}
+    data["target_id"] = str(uuid.uuid4())
+    try:
+        config = TargetConfig.model_validate(data)
+    except ValidationError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail=exc.errors(include_input=False, include_url=False, include_context=False),
+        ) from None
+
+    # Endpoint, token_url and login_url must be safe, public and host-bound.
+    url_opts = {k: v for k, v in ownership_options.items() if k in _URL_CHECK_OPTIONS}
+    try:
+        # DNS resolution is blocking; keep it off the event loop.
+        await run_in_threadpool(
+            check_target_urls, str(config.endpoint), config.auth, allowed_auth_hosts, **url_opts
+        )
+    except TargetRefused as exc:
+        raise HTTPException(status_code=422, detail=f"target refused: {exc}") from None
+
+    token = issue_verification_token()
+    try:
+        target_id = store.create(config)
+    except RuntimeError:
+        raise HTTPException(
+            status_code=503,
+            detail="Target secret storage is unavailable (CANARY_ENCRYPTION_KEY not configured).",
+        ) from None
+    store.set_verification_token_hash(target_id, hash_verification_token(token))
+    store.set_allowed_auth_hosts(target_id, allowed_auth_hosts)
+    logger.info("[API] registered target %s (unverified)", target_id)
+    return {
+        "target": _target_view(config, store),
+        "verification_token": token,
+        "verification": _verification_instructions(config, token),
+    }
+
+
+def _get_target_or_404(store: TargetStore, target_id: str) -> TargetConfig:
+    try:
+        target = store.get(target_id)
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Target store is unavailable.") from None
+    if target is None:
+        raise HTTPException(status_code=404, detail="Target not found")
+    return target
+
+
+@app.get("/api/v2/targets")
+def list_targets_v2(store: TargetStore = Depends(get_target_store)):
+    try:
+        targets = store.list()
+    except RuntimeError:
+        raise HTTPException(status_code=503, detail="Target store is unavailable.") from None
+    return {"items": [_target_view(t, store) for t in targets]}
+
+
+@app.get("/api/v2/targets/{target_id}")
+def get_target_v2(target_id: str, store: TargetStore = Depends(get_target_store)):
+    return _target_view(_get_target_or_404(store, target_id), store)
+
+
+class VerifyTargetRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    method: Literal["http_wellknown", "dns_txt", "response_header"]
+
+
+@app.post("/api/v2/targets/{target_id}/verify")
+def verify_target_v2(
+    target_id: str,
+    body: VerifyTargetRequest,
+    store: TargetStore = Depends(get_target_store),
+    ownership_options: Dict[str, Any] = Depends(get_ownership_options),
+):
+    """Run one ownership check. 200 either way; ``verified`` carries the outcome."""
+    target = _get_target_or_404(store, target_id)
+    token_hash = store.get_verification_token_hash(target_id)
+    if not token_hash:
+        raise HTTPException(status_code=409, detail="No verification token issued for this target")
+
+    url_opts = {k: v for k, v in ownership_options.items() if k in _URL_CHECK_OPTIONS}
+    try:
+        # Re-checked at verify time: DNS may have changed since registration.
+        check_target_urls(
+            str(target.endpoint), target.auth, store.get_allowed_auth_hosts(target_id), **url_opts
+        )
+        result = verify_ownership(str(target.endpoint), token_hash, body.method, **ownership_options)
+        verified, reason = result.verified, result.reason
+    except TargetRefused as exc:
+        verified, reason = False, f"refused: {exc}"
+
+    if verified:
+        store.set_verified(target_id, body.method)
+        target = _get_target_or_404(store, target_id)
+    logger.info(
+        "[API] ownership check target=%s method=%s verified=%s", target_id, body.method, verified
+    )
+    return {
+        "target": _target_view(target, store),
+        "verified": verified,
+        "method": body.method,
+        "reason": reason,
+    }
