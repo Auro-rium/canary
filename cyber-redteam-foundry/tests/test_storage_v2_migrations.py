@@ -52,10 +52,13 @@ def test_migrated_schema_matches_orm(url):
     migrate_up(url)
     engine = make_engine(url)
     with engine.connect() as conn:
-        diff = compare_metadata(MigrationContext.configure(conn), orm.Base.metadata)
+        def include(obj, name, type_, reflected, compare_to):
+            # alembic ignores Index.ddl_if; the HNSW index is Postgres-only by design.
+            return not (name == "ix_findings_embedding_hnsw" and conn.dialect.name != "postgresql")
+
+        ctx = MigrationContext.configure(conn, opts={"include_object": include})
+        diff = compare_metadata(ctx, orm.Base.metadata)
     engine.dispose()
-    if engine.dialect.name != "postgresql":  # HNSW index exists only on Postgres
-        diff = [d for d in diff if "ix_findings_embedding_hnsw" not in str(d)]
     assert diff == [], diff
 
 

@@ -535,3 +535,18 @@ def test_concurrent_upsert_and_transition_pg(factory, seeded):
     [t.join() for t in threads]
     assert sorted(results) == ["invalid"] * (n - 1) + ["ok"]
     assert len(repo.events("race")) == 2
+
+
+def test_redact_obj_masks_any_value_under_secret_key():
+    from cyberredteam.storage.v2.repositories import _redact_obj
+
+    out = _redact_obj({
+        "password": ["hunter2hunter2"], "auth": {"pass": "x9x9x9x9"}, "passphrase": {"a": 1},
+        "accessToken": "t0k3n", "api_key": 12345678, "pwd": "p", "note": "mail a@b.io",
+        "max_tokens": 1000, "token_count": 5, "tokens_used": 9, "prompt_tokens": 3,
+    })
+    assert out["password"] == "[REDACTED:secret]" and out["auth"] == {"pass": "[REDACTED:secret]"}
+    assert out["passphrase"] == out["accessToken"] == out["api_key"] == out["pwd"] == "[REDACTED:secret]"
+    assert out["note"] == "mail [REDACTED:email]"
+    assert (out["max_tokens"], out["token_count"], out["tokens_used"], out["prompt_tokens"]) == (
+        1000, 5, 9, 3)

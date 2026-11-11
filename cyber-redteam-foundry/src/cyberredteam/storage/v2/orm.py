@@ -222,7 +222,7 @@ class FindingRow(Base):
         Index(
             "ix_findings_embedding_hnsw", "embedding",
             postgresql_using="hnsw", postgresql_ops={"embedding": "vector_cosine_ops"},
-        ),
+        ).ddl_if(dialect="postgresql"),
         CheckConstraint(
             "status IN ('open','wont_fix','false_positive','inconclusive','needs_review')",
             name="ck_findings_status",

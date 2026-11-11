@@ -51,21 +51,45 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-_SENSITIVE_KEY = re.compile(
-    r"(?i)(password|passwd|secret|token|api[_-]?key|authorization|credential|private[_-]?key|cookie)"
+_SECRET_SEGMENTS = frozenset(
+    {"password", "passwd", "pwd", "pass", "passphrase", "secret", "secrets", "credential",
+     "credentials", "authorization", "cookie", "cookies", "apikey", "token", "bearer"}
+)
+_SECRET_PAIRS = frozenset({("api", "key"), ("private", "key"), ("access", "key"), ("secret", "key")})
+_COUNT_NEIGHBOURS = frozenset(
+    {"max", "min", "total", "num", "prompt", "completion", "input", "output", "count", "limit",
+     "usage", "used", "budget", "remaining", "estimate", "est"}
 )
 
 
+def _is_sensitive_key(key: str) -> bool:
+    """True for secret-looking keys (password, api_key, accessToken, ...). Token-count
+    style keys (max_tokens, token_count, tokens_used) are not secrets."""
+    spaced = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", key).lower()
+    parts = [p for p in re.split(r"[^a-z0-9]+", spaced) if p]
+    for i, seg in enumerate(parts):
+        if seg in _SECRET_SEGMENTS:
+            if seg == "token" and (
+                (i > 0 and parts[i - 1] in _COUNT_NEIGHBOURS)
+                or (i + 1 < len(parts) and parts[i + 1] in _COUNT_NEIGHBOURS)
+            ):
+                continue
+            return True
+        if i + 1 < len(parts) and (seg, parts[i + 1]) in _SECRET_PAIRS:
+            return True
+    return False
+
+
 def _redact_obj(value: Any, canary_values: tuple[str, ...] = ()) -> Any:
-    """Redact every string inside a JSON-like structure. Values under
-    secret-looking keys (password, token, ...) are masked whatever they contain."""
+    """Redact every string inside a JSON-like structure. Whatever sits under a
+    secret-looking key (string, number, list or dict) is masked outright."""
     if isinstance(value, str):
         return redact(value, canary_values).text
     if isinstance(value, dict):
         return {
             str(k): (
                 "[REDACTED:secret]"
-                if _SENSITIVE_KEY.search(str(k)) and isinstance(v, (str, int, float))
+                if v is not None and _is_sensitive_key(str(k))
                 else _redact_obj(v, canary_values)
             )
             for k, v in value.items()

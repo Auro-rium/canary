@@ -102,3 +102,36 @@ def test_url_credentials():
     assert "s3cretpw" not in r.text and "admin" not in r.text and r.hits == ["url_credentials"]
     assert "db.internal" in r.text
     assert redact("https://example.com/path").text == "https://example.com/path"
+
+
+def test_escaped_json_secrets():
+    r = redact('{\\"password\\": \\"hunter2hunter2\\", \\"api_key\\":\\"abcd1234efgh\\"}')
+    assert "hunter2hunter2" not in r.text and "abcd1234efgh" not in r.text
+
+
+def test_quoted_value_with_spaces():
+    r = redact('{"password": "correct horse battery staple", "x": 1}')
+    assert "horse" not in r.text and "staple" not in r.text and '"x": 1' in r.text
+    r = redact("password: 'two words here' trailing")
+    assert "words" not in r.text and r.text.endswith("trailing")
+
+
+def test_pwd_passphrase_cookie_curl_redis_pgp():
+    assert "hunter2x" not in redact("pwd=hunter2x").text
+    assert "tr0ub4dor" not in redact("passphrase: tr0ub4dor").text
+    c = redact("Set-Cookie: session=abc123def; HttpOnly\nnext line")
+    assert "abc123def" not in c.text and "next line" in c.text and c.hits == ["cookie"]
+    assert "pa55word" not in redact("Cookie: sid=pa55word").text
+    u = redact("curl -u admin:pa55word https://x.example/api")
+    assert "pa55word" not in u.text and "https://x.example/api" in u.text
+    assert "pa55word" not in redact("curl --user admin:pa55word https://x").text
+    assert "pw12345" not in redact("redis://:pw12345@cache.internal:6379/0").text
+    pgp = "-----BEGIN PGP PRIVATE KEY BLOCK-----\nlQOYBF\n-----END PGP PRIVATE KEY BLOCK-----"
+    assert "lQOYBF" not in redact(pgp).text
+
+
+def test_url_password_with_at_sign():
+    r = redact("see https://user:pa@ss@host.example.com/path ok")
+    assert "pa@ss" not in r.text and "ss@host" not in r.text
+    assert "host.example.com/path" in r.text
+    assert "url_credentials" not in redact("https://user@host.example.com/x").hits  # no password

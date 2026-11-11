@@ -29,10 +29,19 @@ def _luhn_ok(digits: str) -> bool:
 
 
 _PEM = re.compile(
-    r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|\Z)"
+    r"-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?"
+    r"(?:-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----|\Z)"
 )
-_URL_CREDS = re.compile(r"\b([A-Za-z][A-Za-z0-9+.-]*://)[^\s/:@]+:[^\s/@]+@")
-_BASIC = re.compile(r"(?i)(authorization[\"']?\s*[:=]\s*[\"']?basic\s+)[A-Za-z0-9+/=]{6,}")
+# scheme://userinfo@host where userinfo has a colon; the password may contain '@'
+# (match up to the last '@' of the authority).
+_URL_CREDS = re.compile(r"\b([A-Za-z][A-Za-z0-9+.-]*://)[^\s/?#:@]*:[^\s/?#]*@")
+_BASIC = re.compile(
+    r"(?i)(authorization[\\\"']{0,2}\s*[:=]\s*[\\\"']{0,2}basic\s+)[A-Za-z0-9+/=]{6,}"
+)
+_COOKIE = re.compile(r"(?i)\b((?:set-)?cookie[\\\"']{0,2}\s*:\s*)[^\r\n\"]+")
+_CURL_USER = re.compile(
+    r"(?i)(\bcurl\b[^\n]*?\s(?:-u|--user)[ =]+)(?:\"[^\"]*\"|'[^']*'|\S+)"
+)
 _JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}")
 _BEARER = re.compile(r"(?i)\b(bearer)(\s+)[A-Za-z0-9._~+/=-]{8,}")
 _KEY_PATTERNS = re.compile(
@@ -44,8 +53,9 @@ _KEY_PATTERNS = re.compile(
 )
 _KV_SECRET = re.compile(
     r"(?i)((?:[\w-]*?)(?:api[_-]?key|secret[_-]?access[_-]?key|secret(?:[_-]?key)?|access[_-]?token"
-    r"|auth[_-]?token|token|password|passwd|client[_-]?secret)[\"']?\s*[:=]\s*[\"']?)"
-    r"(?:([^\"'\s,;}\]]{4,}))"
+    r"|auth[_-]?token|token|password|passwd|passphrase|pwd|client[_-]?secret)"
+    r"(?:\\?[\"'])?\s*[:=]\s*)"
+    r"(?:\\?([\"'])(?:(?!\\?\2)[^\n])+?\\?\2|[^\"'\s,;}\]\\]{4,})"
 )
 _EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b")
 _SSN = re.compile(r"(?<![\d-])\d{3}-\d{2}-\d{4}(?![\d-])")
@@ -71,6 +81,8 @@ def redact(text: str | None, canary_values: Iterable[str] = ()) -> RedactionResu
         if value in out:
             out = out.replace(value, note("canary"))
     out = _PEM.sub(lambda m: note("private_key"), out)
+    out = _COOKIE.sub(lambda m: f"{m.group(1)}{note('cookie')}", out)
+    out = _CURL_USER.sub(lambda m: f"{m.group(1)}{note('curl_credentials')}", out)
     out = _URL_CREDS.sub(lambda m: f"{m.group(1)}{note('url_credentials')}@", out)
     out = _BASIC.sub(lambda m: f"{m.group(1)}{note('basic_auth')}", out)
     out = _JWT.sub(lambda m: note("jwt"), out)
