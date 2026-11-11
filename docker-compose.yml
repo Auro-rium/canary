@@ -11,6 +11,24 @@ networks:
 
 services:
 
+  # ── Postgres + pgvector for the v2 data layer (no host port by default) ──
+  postgres:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: canary
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
+      POSTGRES_DB: canary
+    volumes:
+      - canary-pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U canary -d canary"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - canary-net
+    restart: unless-stopped
+
   # ── Internal: FastAPI red-team backend (port 8001) ───────────────────────
   redteam-backend:
     build:
@@ -25,6 +43,7 @@ services:
       - ./cyber-redteam-foundry/.env
     environment:
       - RUNNING_IN_DOCKER=true
+      - DATABASE_URL=postgresql+psycopg://canary:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/canary
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
@@ -41,6 +60,9 @@ services:
     networks:
       - canary-net
     restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   # ── Public: nginx + React SPA (host port 8000 → container port 80) ───────
   canary-frontend:
@@ -59,3 +81,6 @@ services:
     restart: unless-stopped
     depends_on:
       - redteam-backend
+
+volumes:
+  canary-pgdata:

@@ -294,6 +294,13 @@ There are no scripted or cosmetic events (fixes D8).
   - Retention: configurable per target (default 30 days), with a purge job.
 - **Embeddings:** pgvector for finding dedup.
 - **Done when:** migrations run up and down, the retention purge is tested, and raw evidence is never logged.
+- **WP6 status / deviations:**
+  - Implemented in `storage/v2/` with Alembic revision `0001` (SQLite and Postgres/pgvector).
+  - The Dockerfile does not ship `alembic.ini` or `migrations/`; WP7 adds `alembic upgrade head` to startup.
+  - The `evidence:read_raw` permission is enforced in WP8. The repos only require an `actor` for `raw=True` reads and write an `evidence.read_raw` audit row.
+  - `CampaignRepo.create` does not validate the policy against the target environment; it must only be reached through `CampaignRequest` validation.
+  - Fernet crypto in `storage/v2/encrypted.py` duplicates WP1's `security/crypto.py` (same key semantics); the purge agent dedupes later.
+  - `SqlTargetStore.create` always stores `verified=False`; the retention purge keeps encrypted verdict rationales and wipes raw turn text, raw tool calls and session refs.
 
 ### WP7: Jobs, workers, control plane (Sonnet) — C1, D1
 - A queue (Postgres-backed with `procrastinate`, or Redis + `arq`). API process and worker processes are separate.
