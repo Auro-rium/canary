@@ -16,7 +16,7 @@ services:
     image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: canary
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-canary}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}
       POSTGRES_DB: canary
     volumes:
       - canary-pgdata:/var/lib/postgresql/data
@@ -43,7 +43,7 @@ services:
       - ./cyber-redteam-foundry/.env
     environment:
       - RUNNING_IN_DOCKER=true
-      - DATABASE_URL=postgresql+psycopg://canary:${POSTGRES_PASSWORD:-canary}@postgres:5432/canary
+      - DATABASE_URL=postgresql+psycopg://canary:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/canary
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:
