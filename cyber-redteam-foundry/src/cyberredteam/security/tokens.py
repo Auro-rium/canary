@@ -1,6 +1,10 @@
 """Per-target ownership verification tokens.
 
 The plaintext token is shown to the operator once; only its digest is stored.
+The digest is HMAC-SHA256 with an empty key by default, which in effect is a plain
+SHA-256 fingerprint. That is enough here: the token carries 256 bits of
+randomness, so the digest cannot be brute-forced. ``pepper`` exists for a
+future keyed rollout.
 Ported from ``security/tokens.py`` on ``feature/cutc-2026-differential-gate``.
 """
 

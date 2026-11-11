@@ -149,6 +149,21 @@ def test_create_without_encryption_key_fails_closed(owned, monkeypatch):
     assert BEARER_SECRET not in resp.text
 
 
+@pytest.mark.parametrize(
+    "endpoint, wellknown",
+    [
+        ("https://agent.example.com/c", "https://agent.example.com/.well-known/canary-verify.txt"),
+        ("https://agent.example.com:443/c", "https://agent.example.com/.well-known/canary-verify.txt"),
+        ("http://agent.example.com:443/c", "http://agent.example.com:443/.well-known/canary-verify.txt"),
+        ("https://agent.example.com:80/c", "https://agent.example.com:80/.well-known/canary-verify.txt"),
+        ("https://agent.example.com:8443/c", "https://agent.example.com:8443/.well-known/canary-verify.txt"),
+    ],
+)
+def test_wellknown_instructions_keep_non_default_port(owned, endpoint, wellknown):
+    data = register(endpoint=endpoint)
+    assert data["verification"]["http_wellknown"]["url"] == wellknown
+
+
 def test_private_endpoint_refused_at_registration(owned):
     resp = client.post("/api/v2/targets", json=target_body(endpoint="http://127.0.0.1:9000/chat"))
     assert resp.status_code == 422

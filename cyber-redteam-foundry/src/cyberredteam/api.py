@@ -1,5 +1,6 @@
 """FastAPI web server for integrating the red team backend with the React frontend."""
 
+import hmac
 import json
 import logging
 import threading
@@ -54,7 +55,8 @@ def require_auth(authorization: Optional[str] = Header(None)) -> None:
             detail="API authentication is not configured (set API_SECRET_KEY).",
         )
     scheme, _, token = (authorization or "").partition(" ")
-    if scheme != "Bearer" or token != settings.api_secret_key:
+    valid = hmac.compare_digest(token.encode("utf-8"), settings.api_secret_key.encode("utf-8"))
+    if scheme != "Bearer" or not valid:
         raise HTTPException(status_code=401, detail="Invalid or missing bearer token")
 
 
@@ -1289,7 +1291,8 @@ def _parse_allowed_auth_hosts(raw: Any) -> List[str]:
 def _verification_instructions(target: TargetConfig, token: str) -> Dict[str, Any]:
     host = target.endpoint.host or ""
     origin = f"{target.endpoint.scheme}://{host}"
-    if target.endpoint.port and target.endpoint.port not in (80, 443):
+    default_port = {"http": 80, "https": 443}.get(target.endpoint.scheme)
+    if target.endpoint.port and target.endpoint.port != default_port:
         origin += f":{target.endpoint.port}"
     return {
         "http_wellknown": {"url": origin + WELL_KNOWN_PATH, "content": token},

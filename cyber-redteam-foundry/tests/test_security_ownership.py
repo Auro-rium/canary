@@ -71,7 +71,39 @@ def test_wellknown_wrong_token(token_hash):
 
 def test_wellknown_404(token_hash):
     result = run(HTTP_WELLKNOWN, lambda r: httpx.Response(404), token_hash=token_hash)
-    assert not result.verified and "404" in result.reason
+    assert not result.verified and result.reason == "well-known file not available"
+
+
+@pytest.mark.parametrize("method", [HTTP_WELLKNOWN, RESPONSE_HEADER])
+def test_malformed_redirect_location_fails_closed(method, token_hash):
+    def handler(request):
+        return httpx.Response(302, headers={"location": "https:\\\\127.0.0.1\\x"})
+
+    result = run(method, handler, token_hash=token_hash)
+    assert not result.verified
+    assert result.reason.startswith(("request failed", "refused"))
+
+
+def test_unexpected_error_fails_closed(token_hash):
+    def handler(request):
+        raise RuntimeError("unexpected")
+
+    result = run(HTTP_WELLKNOWN, handler, token_hash=token_hash)
+    assert not result.verified and result.reason == "request failed"
+
+
+def test_same_host_redirect_to_other_port_refused(token, token_hash):
+    calls = []
+
+    def handler(request):
+        calls.append(str(request.url))
+        if request.url.port in (None, 443):
+            return httpx.Response(302, headers={"location": "https://agent.example.com:8443/v"})
+        return httpx.Response(200, text=token)
+
+    result = run(HTTP_WELLKNOWN, handler, token_hash=token_hash)
+    assert not result.verified and "another port" in result.reason
+    assert len(calls) == 1
 
 
 def test_wellknown_timeout(token_hash):

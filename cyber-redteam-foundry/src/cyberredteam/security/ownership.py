@@ -234,6 +234,11 @@ class _Fetched:
     body: bytes
 
 
+def _effective_port(url: str) -> int | None:
+    parts = urlsplit(url)
+    return parts.port or {"http": 80, "https": 443}.get(parts.scheme.lower())
+
+
 def _fetch(
     client: httpx.Client,
     method: str,
@@ -273,6 +278,8 @@ def _fetch(
             raise TargetRefused("redirect to another host refused")
         if scheme == "https" and next_scheme != "https":
             raise TargetRefused("redirect from https to http refused")
+        if _effective_port(next_url) != _effective_port(url):
+            raise TargetRefused("redirect to another port refused")
         if fetched.status not in (307, 308):
             method, json_body = "GET", None
         url, scheme = next_url, next_scheme
@@ -379,7 +386,7 @@ def verify_ownership(
                     client, "GET", _origin(endpoint) + WELL_KNOWN_PATH, json_body=None, **common
                 )
                 if fetched.status != 200:
-                    return fail(f"well-known file returned HTTP {fetched.status}")
+                    return fail("well-known file not available")
                 lines = fetched.body.decode("utf-8", "replace").splitlines()
                 if _matches(lines, token_hash):
                     return VerificationResult(True, method, "token found in well-known file")
@@ -400,5 +407,7 @@ def verify_ownership(
         return fail(f"refused: {exc}")
     except httpx.TimeoutException:
         return fail("timeout")
-    except httpx.HTTPError as exc:
+    except (httpx.HTTPError, httpx.InvalidURL) as exc:
         return fail(f"request failed ({type(exc).__name__})")
+    except Exception:  # noqa: BLE001 - verification must fail closed, never 500
+        return fail("request failed")
