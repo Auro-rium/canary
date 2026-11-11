@@ -22,6 +22,7 @@ from storage_v2_support import (
 
 from cyberredteam.contracts import TechniqueResult
 from cyberredteam.storage.v2.db import make_engine, make_session_factory, session_scope
+from cyberredteam.storage.v2.encrypted import reset_key_cache
 from cyberredteam.storage.v2.repositories import (
     AuditRepo,
     BudgetLedgerRepo,
@@ -42,6 +43,9 @@ BACKENDS = ["sqlite", pytest.param("postgres", marks=pytest.mark.skipif(
 @pytest.fixture(autouse=True)
 def _key(monkeypatch):
     monkeypatch.setenv("CANARY_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    reset_key_cache()
+    yield
+    reset_key_cache()
 
 
 @pytest.fixture(params=BACKENDS)
@@ -367,7 +371,7 @@ def test_retention_purge_counts_and_per_target_override(factory):
     _age_turns(factory, ids["a"], 10)   # default 30 days: kept
     _age_turns(factory, ids["b"], 10)   # override 5 days: purged
     counts = purge_expired_evidence(factory, default_days=30)
-    assert counts == {"targets_scanned": 2, "turns_purged": 2}
+    assert counts == {"targets_scanned": 2, "turns_purged": 2, "sessions_cleared": 0}
     a = convs.get(ids["a"], raw=True, actor="t")
     b = convs.get(ids["b"], raw=True, actor="t")
     assert a.turns[0].message == "hello 0"
@@ -377,3 +381,157 @@ def test_retention_purge_counts_and_per_target_override(factory):
     _age_turns(factory, ids["a"], 40)
     assert purge_expired_evidence(factory, default_days=30)["turns_purged"] == 2
     assert len(AuditRepo(factory).list(action="retention.purge")) == 3
+
+
+# ── review fixes ─────────────────────────────────────────────────────────────
+
+
+def test_tool_calls_encrypted_and_redacted(factory, seeded):
+    _, conv = seeded
+    repo = ConversationRepo(factory)
+    args = {"password": "hunter2hunter2", "to": "bob@corp.com", "note": "hi"}
+    repo.append_turn(make_turn(conv.conversation_id, 0,
+                               tool_calls=[{"name": "send_email", "arguments": args}]))
+    with session_scope(factory) as s:
+        row = s.execute(text("SELECT tool_calls, tool_calls_raw FROM turns")).one()
+    assert "hunter2" not in str(row[0]) and "bob@corp.com" not in str(row[0])
+    assert "hunter2" not in row[1] and "bob@corp.com" not in row[1]  # ciphertext
+    default = repo.get(conv.conversation_id).turns[0].tool_calls[0]
+    assert default.name == "send_email" and "hunter2" not in str(default.arguments)
+    assert "bob@corp.com" not in str(default.arguments) and default.arguments["note"] == "hi"
+    raw = repo.get(conv.conversation_id, raw=True, actor="r").turns[0].tool_calls[0]
+    assert raw.arguments == args
+
+
+def test_retention_clears_raw_tool_calls_and_session_refs(factory, seeded):
+    _, conv = seeded
+    repo = ConversationRepo(factory)
+    repo.set_status(conv.conversation_id, "completed", target_session_ref="sess-abc")
+    repo.append_turn(make_turn(conv.conversation_id, 0,
+                               tool_calls=[{"name": "x", "arguments": {"to": "bob@corp.com"}}]))
+    _age_turns(factory, conv.conversation_id, 40)
+    with session_scope(factory) as s:
+        s.execute(text("UPDATE conversations SET created_at = :d"),
+                  {"d": datetime.now(timezone.utc) - timedelta(days=40)})
+    counts = purge_expired_evidence(factory, default_days=30)
+    assert counts["turns_purged"] == 1 and counts["sessions_cleared"] == 1
+    with session_scope(factory) as s:
+        assert s.execute(text("SELECT tool_calls_raw FROM turns")).scalar() is None
+        assert s.execute(text("SELECT target_session_ref FROM conversations")).scalar() is None
+    got = repo.get(conv.conversation_id, raw=True, actor="r").turns[0]
+    assert "bob@corp.com" not in str(got.tool_calls[0].arguments)
+
+
+def test_verdict_rationale_redacted_by_default_raw_audited(factory, seeded):
+    _, conv = seeded
+    repo = VerdictRepo(factory)
+    base = make_verdict(conv.conversation_id)
+    v = base.model_copy(update={
+        "rationale": "leaked a@b.io",
+        "judge_votes": [base.judge_votes[0].model_copy(
+            update={"rationale": "key sk-abcdefghijklmnopqrstuvwx"})],
+    })
+    repo.save(v)
+    red = repo.get(conv.conversation_id)
+    assert "a@b.io" not in red.rationale and "sk-abcdef" not in red.judge_votes[0].rationale
+    assert "a@b.io" not in repo.list_for_campaign("camp-1")[0].rationale
+    with pytest.raises(ValueError):
+        repo.get(conv.conversation_id, raw=True)
+    with pytest.raises(ValueError):
+        repo.list_for_campaign("camp-1", raw=True)
+    assert AuditRepo(factory).list(action="evidence.read_raw") == []
+    assert repo.get(conv.conversation_id, raw=True, actor="rev").rationale == "leaked a@b.io"
+    got = repo.list_for_campaign("camp-1", raw=True, actor="rev")
+    assert got[0].judge_votes[0].rationale.startswith("key sk-")
+    assert len(AuditRepo(factory).list(action="evidence.read_raw")) == 2
+
+
+def test_allowed_auth_hosts(factory):
+    store = SqlTargetStore(factory)
+    t = make_target()
+    store.create(t)
+    assert store.get_allowed_auth_hosts(t.target_id) == []
+    store.set_allowed_auth_hosts(t.target_id, ["Auth.Example.com", "auth.example.com", " api.example.com "])
+    assert store.get_allowed_auth_hosts(t.target_id) == ["auth.example.com", "api.example.com"]
+    store.set_verification_token_hash(t.target_id, "h")
+    store.set_verified(t.target_id, "dns_txt")
+    assert store.get_allowed_auth_hosts(t.target_id) == ["auth.example.com", "api.example.com"]
+    store.set_allowed_auth_hosts(t.target_id, [])
+    assert store.get_allowed_auth_hosts(t.target_id) == []
+    missing = "00000000-0000-4000-8000-000000000000"
+    with pytest.raises(KeyError):
+        store.set_allowed_auth_hosts(missing, ["x"])
+    assert store.get_allowed_auth_hosts(missing) == []
+
+
+def test_finding_event_rationale_redacted_reviewer_plain(factory, seeded):
+    target, _ = seeded
+    repo = FindingRepo(factory)
+    repo.upsert(_finding(target), campaign_id="camp-1")
+    repo.transition("f1", "wont_fix", reviewer_id="alice@corp.com", rationale="reported by bob@x.io")
+    ev = repo.events("f1")[-1]
+    assert ev.reviewer_id == "alice@corp.com" and "bob@x.io" not in ev.rationale
+
+
+def test_enum_validation():
+    with pytest.raises(ValueError):
+        FindingRecord(finding_id="f", target_id="t", asi_class="ASI99", severity="high")
+    with pytest.raises(ValueError):
+        FindingRecord(finding_id="f", target_id="t", asi_class="ASI01", severity="bad")
+    with pytest.raises(ValueError):
+        FindingRecord(finding_id="f", target_id="t", asi_class="ASI01", severity="low", status="x")
+
+
+def test_set_status_validated(factory, seeded):
+    _, conv = seeded
+    with pytest.raises(ValueError):
+        CampaignRepo(factory).set_status("camp-1", "bogus")
+    with pytest.raises(ValueError):
+        ConversationRepo(factory).set_status(conv.conversation_id, "bogus")
+
+
+@pytest.mark.skipif(not pg_url(), reason="CANARY_TEST_DATABASE_URL not set")
+def test_concurrent_upsert_and_transition_pg(factory, seeded):
+    import threading
+
+    if factory.kw["bind"].dialect.name != "postgresql":
+        pytest.skip("row locking is a Postgres feature")
+    target, _ = seeded
+    camps = CampaignRepo(factory)
+    n = 6
+    for i in range(n):
+        camps.create(f"cc-{i}", target.target_id, make_policy())
+    repo = FindingRepo(factory)
+    barrier = threading.Barrier(n)
+    errors = []
+
+    def work(i):
+        try:
+            barrier.wait()
+            repo.upsert(_finding(target, "race"), campaign_id=f"cc-{i}")
+        except Exception as exc:  # pragma: no cover
+            errors.append(exc)
+
+    threads = [threading.Thread(target=work, args=(i,)) for i in range(n)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert errors == []
+    rec = repo.get("race")
+    assert sorted(rec.seen_in_campaigns) == sorted(f"cc-{i}" for i in range(n))
+    assert len(repo.events("race")) == 1
+
+    results = []
+
+    def flip():
+        barrier.wait()
+        try:
+            repo.transition("race", "wont_fix", reviewer_id="a", rationale="r")
+            results.append("ok")
+        except InvalidTransition:
+            results.append("invalid")
+
+    threads = [threading.Thread(target=flip) for _ in range(n)]
+    [t.start() for t in threads]
+    [t.join() for t in threads]
+    assert sorted(results) == ["invalid"] * (n - 1) + ["ok"]
+    assert len(repo.events("race")) == 2

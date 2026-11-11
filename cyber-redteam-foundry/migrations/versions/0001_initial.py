@@ -63,6 +63,7 @@ def upgrade() -> None:
         sa.Column("token_hash", sa.String(128)),
         sa.Column("method", sa.String(32)),
         _ts("verified_at", nullable=True),
+        sa.Column("allowed_auth_hosts", sa.JSON, nullable=False),
         _ts(),
     )
     op.create_table(
@@ -105,6 +106,7 @@ def upgrade() -> None:
         sa.Column("redacted_preview", sa.Text, nullable=False),
         sa.Column("redaction_hits", sa.JSON, nullable=False),
         sa.Column("tool_calls", sa.JSON, nullable=False),
+        sa.Column("tool_calls_raw", sa.Text),
         sa.Column("http_status", sa.Integer),
         sa.Column("latency_ms", sa.Float, nullable=False),
         sa.Column("monitor_hits", sa.JSON, nullable=False),
@@ -191,6 +193,14 @@ def upgrade() -> None:
         ),
     )
     op.create_index("ix_findings_target_status", "findings", ["target_id", "status"])
+    op.create_index("ix_findings_conversation_id", "findings", ["conversation_id"])
+    op.create_index("ix_findings_first_seen_campaign", "findings", ["first_seen_campaign"])
+    op.create_index("ix_findings_last_seen_campaign", "findings", ["last_seen_campaign"])
+    if bind.dialect.name == "postgresql":
+        op.create_index(
+            "ix_findings_embedding_hnsw", "findings", ["embedding"],
+            postgresql_using="hnsw", postgresql_ops={"embedding": "vector_cosine_ops"},
+        )
     op.create_table(
         "finding_events",
         sa.Column("id", sa.Integer, primary_key=True, autoincrement=True),

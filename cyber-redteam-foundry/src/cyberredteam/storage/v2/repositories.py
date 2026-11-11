@@ -13,9 +13,10 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from collections.abc import Iterable
 from datetime import datetime, timezone
-from typing import Any
+from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, SecretStr, TypeAdapter
 from sqlalchemy import func, select, text
@@ -23,10 +24,13 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
 from cyberredteam.contracts import (
+    AsiCode,
     CampaignPolicy,
     Conversation,
+    ConversationStatus,
     ConversationVerdict,
     JudgeVote,
+    Severity,
     TargetAuth,
     TargetConfig,
     TechniqueResult,
@@ -47,14 +51,27 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
-def _redact_obj(value: Any) -> Any:
-    """Redact every string inside a JSON-like structure (audit details)."""
+_SENSITIVE_KEY = re.compile(
+    r"(?i)(password|passwd|secret|token|api[_-]?key|authorization|credential|private[_-]?key|cookie)"
+)
+
+
+def _redact_obj(value: Any, canary_values: tuple[str, ...] = ()) -> Any:
+    """Redact every string inside a JSON-like structure. Values under
+    secret-looking keys (password, token, ...) are masked whatever they contain."""
     if isinstance(value, str):
-        return redact(value).text
+        return redact(value, canary_values).text
     if isinstance(value, dict):
-        return {str(k): _redact_obj(v) for k, v in value.items()}
+        return {
+            str(k): (
+                "[REDACTED:secret]"
+                if _SENSITIVE_KEY.search(str(k)) and isinstance(v, (str, int, float))
+                else _redact_obj(v, canary_values)
+            )
+            for k, v in value.items()
+        }
     if isinstance(value, (list, tuple)):
-        return [_redact_obj(v) for v in value]
+        return [_redact_obj(v, canary_values) for v in value]
     return value
 
 
@@ -176,6 +193,23 @@ class SqlTargetStore:
             ver = s.get(orm.TargetVerificationRow, target_id)
             return ver.token_hash if ver else None
 
+    def set_allowed_auth_hosts(self, target_id: str, hosts: list[str]) -> None:
+        """Hosts credentials may be sent to (lower-cased, de-duplicated, order kept)."""
+        clean = list(dict.fromkeys(h.strip().lower() for h in hosts if h and h.strip()))
+        with session_scope(self._factory) as s:
+            if s.get(orm.TargetRow, target_id) is None:
+                raise KeyError(target_id)
+            ver = s.get(orm.TargetVerificationRow, target_id)
+            if ver is None:
+                s.add(orm.TargetVerificationRow(target_id=target_id, allowed_auth_hosts=clean))
+            else:
+                ver.allowed_auth_hosts = clean
+
+    def get_allowed_auth_hosts(self, target_id: str) -> list[str]:
+        with session_scope(self._factory) as s:
+            ver = s.get(orm.TargetVerificationRow, target_id)
+            return list(ver.allowed_auth_hosts or []) if ver else []
+
     def set_retention_days(self, target_id: str, days: int | None) -> None:
         """Per-target evidence retention override (None → global default)."""
         if days is not None and days < 0:
@@ -196,12 +230,14 @@ class CampaignRecord(BaseModel):
     campaign_id: str
     target_id: str
     policy: CampaignPolicy
-    status: str = "queued"
+    status: CampaignStatus = "queued"
     created_by: str | None = None
     created_at: datetime | None = None
     finished_at: datetime | None = None
 
 
+CampaignStatus = Literal["queued", "running", "completed", "failed", "cancelled"]
+CAMPAIGN_STATUSES = frozenset(get_args(CampaignStatus))
 TERMINAL_CAMPAIGN_STATUSES = frozenset({"completed", "failed", "cancelled"})
 
 
@@ -240,8 +276,10 @@ class CampaignRepo:
             row = s.get(orm.CampaignRow, campaign_id)
             return self._rec(row) if row else None
 
-    def set_status(self, campaign_id: str, status: str) -> None:
+    def set_status(self, campaign_id: str, status: CampaignStatus) -> None:
         with session_scope(self._factory) as s:
+            if status not in CAMPAIGN_STATUSES:
+                raise ValueError(f"unknown campaign status {status!r}")
             row = s.get(orm.CampaignRow, campaign_id)
             if row is None:
                 raise KeyError(campaign_id)
@@ -339,7 +377,8 @@ class ConversationRepo:
             redacted_message_preview=truncate_preview(msg.text) or "",
             redacted_preview=truncate_preview(resp.text) or "",
             redaction_hits=hits,
-            tool_calls=[t.model_dump(mode="json") for t in turn.tool_calls],
+            tool_calls=_redact_obj([t.model_dump(mode="json") for t in turn.tool_calls], canaries),
+            tool_calls_raw=json.dumps([t.model_dump(mode="json") for t in turn.tool_calls]),
             http_status=turn.http_status,
             latency_ms=turn.latency_ms,
             monitor_hits=list(turn.monitor_hits),
@@ -353,8 +392,10 @@ class ConversationRepo:
             s.add(self._turn_row(turn, canary_values))
 
     def set_status(
-        self, conversation_id: str, status: str, target_session_ref: str | None = None
+        self, conversation_id: str, status: ConversationStatus, target_session_ref: str | None = None
     ) -> None:
+        if status not in get_args(ConversationStatus):
+            raise ValueError(f"unknown conversation status {status!r}")
         with session_scope(self._factory) as s:
             row = s.get(orm.ConversationRow, conversation_id)
             if row is None:
@@ -400,8 +441,11 @@ class ConversationRepo:
 
     @staticmethod
     def _turn(t: orm.TurnRow, raw: bool) -> Turn:
+        calls = t.tool_calls
         if raw:
             message, response = t.message or "", t.response_text or ""
+            if t.tool_calls_raw is not None:
+                calls = json.loads(t.tool_calls_raw)
         else:
             message, response = t.redacted_message_preview, t.redacted_preview
         return Turn(
@@ -410,7 +454,7 @@ class ConversationRepo:
             role_sent=t.role_sent,
             message=message,
             response_text=response,
-            tool_calls=[ToolCallObservation.model_validate(tc) for tc in t.tool_calls],
+            tool_calls=[ToolCallObservation.model_validate(tc) for tc in calls],
             http_status=t.http_status,
             latency_ms=t.latency_ms,
             monitor_hits=list(t.monitor_hits),
@@ -471,42 +515,63 @@ class VerdictRepo:
                     )
                 )
 
-    def get(self, conversation_id: str) -> ConversationVerdict | None:
-        with session_scope(self._factory) as s:
-            row = s.get(orm.VerdictRow, conversation_id)
-            if row is None:
-                return None
-            votes = s.scalars(
-                select(orm.JudgeVoteRow)
-                .where(orm.JudgeVoteRow.conversation_id == conversation_id)
-                .order_by(orm.JudgeVoteRow.vote_index)
-            ).all()
-            return ConversationVerdict(
-                conversation_id=conversation_id,
-                verdict=row.verdict,
-                first_failing_turn=row.first_failing_turn,
-                deterministic_hits=list(row.deterministic_hits),
-                judge_agreement=row.judge_agreement,
-                severity=row.severity,
-                asi_class=row.asi_class,
-                rationale=row.rationale,
-                judge_votes=[
-                    JudgeVote(
-                        vote_index=v.vote_index,
-                        judgement=v.judgement,
-                        first_failing_turn=v.first_failing_turn,
-                        asi_class=v.asi_class,
-                        severity=v.severity,
-                        confidence=v.confidence,
-                        rationale=v.rationale,
-                        model_name=v.model_name,
-                        temperature=v.temperature,
-                    )
-                    for v in votes
-                ],
-            )
+    @staticmethod
+    def _load(s: Session, conversation_id: str, raw: bool) -> ConversationVerdict | None:
+        row = s.get(orm.VerdictRow, conversation_id)
+        if row is None:
+            return None
+        votes = s.scalars(
+            select(orm.JudgeVoteRow)
+            .where(orm.JudgeVoteRow.conversation_id == conversation_id)
+            .order_by(orm.JudgeVoteRow.vote_index)
+        ).all()
 
-    def list_for_campaign(self, campaign_id: str) -> list[ConversationVerdict]:
+        def txt(value: str) -> str:
+            return value if raw else redact(value).text
+
+        return ConversationVerdict(
+            conversation_id=conversation_id,
+            verdict=row.verdict,
+            first_failing_turn=row.first_failing_turn,
+            deterministic_hits=list(row.deterministic_hits),
+            judge_agreement=row.judge_agreement,
+            severity=row.severity,
+            asi_class=row.asi_class,
+            rationale=txt(row.rationale),
+            judge_votes=[
+                JudgeVote(
+                    vote_index=v.vote_index,
+                    judgement=v.judgement,
+                    first_failing_turn=v.first_failing_turn,
+                    asi_class=v.asi_class,
+                    severity=v.severity,
+                    confidence=v.confidence,
+                    rationale=txt(v.rationale),
+                    model_name=v.model_name,
+                    temperature=v.temperature,
+                )
+                for v in votes
+            ],
+        )
+
+    def get(
+        self, conversation_id: str, *, raw: bool = False, actor: str | None = None
+    ) -> ConversationVerdict | None:
+        """Load a verdict. Rationales are redacted by default; ``raw=True`` needs
+        ``actor`` and writes an ``evidence.read_raw`` audit row."""
+        if raw and not actor:
+            raise ValueError("raw evidence access requires an actor")
+        with session_scope(self._factory) as s:
+            verdict = self._load(s, conversation_id, raw)
+            if raw and verdict is not None:
+                s.add(_audit_row(actor or "", "evidence.read_raw", f"verdict:{conversation_id}"))
+            return verdict
+
+    def list_for_campaign(
+        self, campaign_id: str, *, raw: bool = False, actor: str | None = None
+    ) -> list[ConversationVerdict]:
+        if raw and not actor:
+            raise ValueError("raw evidence access requires an actor")
         with session_scope(self._factory) as s:
             ids = list(
                 s.scalars(
@@ -519,11 +584,20 @@ class VerdictRepo:
                     .order_by(orm.ConversationRow.technique, orm.ConversationRow.trial_index)
                 )
             )
-        return [v for v in (self.get(i) for i in ids) if v is not None]
+            out = [v for v in (self._load(s, i, raw) for i in ids) if v is not None]
+            if raw and out:
+                s.add(
+                    _audit_row(
+                        actor or "", "evidence.read_raw", f"campaign:{campaign_id}",
+                        {"verdicts": len(out)},
+                    )
+                )
+            return out
 
 
 # ── Findings ─────────────────────────────────────────────────────────────────
 
+FindingStatus = Literal["open", "wont_fix", "false_positive", "inconclusive", "needs_review"]
 FINDING_TRANSITIONS: dict[str, frozenset[str]] = {
     "open": frozenset({"wont_fix", "false_positive", "inconclusive", "needs_review"}),
     "inconclusive": frozenset({"open", "wont_fix", "false_positive"}),
@@ -547,9 +621,9 @@ class FindingRecord(BaseModel):
     target_id: str
     component: str = ""
     technique: str = ""
-    asi_class: str
-    severity: str
-    status: str = "open"
+    asi_class: AsiCode
+    severity: Severity
+    status: FindingStatus = "open"
     title: str = ""
     first_seen_campaign: str | None = None
     last_seen_campaign: str | None = None
@@ -561,8 +635,8 @@ class FindingEvent(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     finding_id: str
-    from_status: str | None
-    to_status: str
+    from_status: FindingStatus | None
+    to_status: FindingStatus
     reviewer_id: str | None
     rationale: str | None
     at: datetime
@@ -606,9 +680,22 @@ class FindingRepo:
         """Insert a finding, or merge a repeat sighting into the existing one.
 
         A repeat appends the campaign to ``seen_in_campaigns`` and can only raise
-        severity; status is never changed here (use ``transition``)."""
+        severity; status is never changed here (use ``transition``). Existing rows
+        are locked (``FOR UPDATE`` on Postgres); a concurrent first insert that loses
+        the race is retried as an update."""
+        for attempt in (0, 1):
+            try:
+                return self._upsert_once(record, campaign_id, embedding)
+            except IntegrityError:
+                if attempt:
+                    raise
+        raise AssertionError("unreachable")  # pragma: no cover
+
+    def _upsert_once(
+        self, record: FindingRecord, campaign_id: str | None, embedding: list[float] | None
+    ) -> FindingRecord:
         with session_scope(self._factory) as s:
-            row = s.get(orm.FindingRow, record.finding_id)
+            row = s.get(orm.FindingRow, record.finding_id, with_for_update=True)
             if row is None:
                 row = orm.FindingRow(
                     finding_id=record.finding_id,
@@ -652,7 +739,7 @@ class FindingRepo:
             row = s.get(orm.FindingRow, finding_id)
             return self._rec(row) if row else None
 
-    def list(self, target_id: str | None = None, status: str | None = None) -> list[FindingRecord]:
+    def list(self, target_id: str | None = None, status: FindingStatus | None = None) -> list[FindingRecord]:
         with session_scope(self._factory) as s:
             q = select(orm.FindingRow).order_by(orm.FindingRow.created_at)
             if target_id:
@@ -664,7 +751,7 @@ class FindingRepo:
     def transition(
         self,
         finding_id: str,
-        new_status: str,
+        new_status: FindingStatus,
         *,
         reviewer_id: str | None = None,
         rationale: str | None = None,
@@ -675,11 +762,11 @@ class FindingRepo:
         if new_status not in FINDING_TRANSITIONS:
             raise InvalidTransition(f"unknown status {new_status!r}")
         reviewer = (reviewer_id or "").strip() or None
-        why = (rationale or "").strip() or None
+        why = redact((rationale or "").strip()).text or None
         if new_status in TERMINAL_FINDING_STATUSES and not (reviewer and why):
             raise InvalidTransition(f"{new_status} requires reviewer_id and rationale")
         with session_scope(self._factory) as s:
-            row = s.get(orm.FindingRow, finding_id)
+            row = s.get(orm.FindingRow, finding_id, with_for_update=True)
             if row is None:
                 raise KeyError(finding_id)
             old = row.status

@@ -26,14 +26,19 @@ def purge_expired_evidence(
     now: datetime | None = None,
     default_days: int | None = None,
 ) -> dict[str, int]:
-    """Wipe raw evidence past retention. Returns ``{"targets_scanned", "turns_purged"}``.
+    """Wipe raw evidence past retention.
+
+    Clears turn ``message``, ``response_text`` and raw tool calls, and the target
+    session ref of old conversations. Verdict rationales are kept (encrypted).
+    ``purged_at`` is stored on the turn row but not exposed: ``contracts.Turn`` has
+    no such field. Returns ``{"targets_scanned", "turns_purged", "sessions_cleared"}``.
 
     Each target uses its own ``retention_days`` if set, else ``default_days``
     (default: ``Settings.evidence_retention_days``). Idempotent."""
     now = now or datetime.now(timezone.utc)
     if default_days is None:
         default_days = get_settings().evidence_retention_days
-    scanned = purged = 0
+    scanned = purged = cleared = 0
     with session_scope(factory) as s:
         for target_id, override in s.execute(
             select(orm.TargetRow.target_id, orm.TargetRow.retention_days)
@@ -53,16 +58,28 @@ def purge_expired_evidence(
                     orm.TurnRow.created_at < cutoff,
                     orm.TurnRow.purged_at.is_(None),
                 )
-                .values(message=None, response_text=None, purged_at=now)
+                .values(message=None, response_text=None, tool_calls_raw=None, purged_at=now)
             )
             purged += result.rowcount or 0
+            cleared += (
+                s.execute(
+                    update(orm.ConversationRow)
+                    .where(
+                        orm.ConversationRow.conversation_id.in_(conv_ids),
+                        orm.ConversationRow.created_at < cutoff,
+                        orm.ConversationRow.target_session_ref.is_not(None),
+                    )
+                    .values(target_session_ref=None)
+                ).rowcount
+                or 0
+            )
         s.add(
             orm.AuditLogRow(
                 actor="system",
                 action="retention.purge",
                 object="turns",
-                details={"turns_purged": purged, "targets_scanned": scanned},
+                details={"turns_purged": purged, "targets_scanned": scanned, "sessions_cleared": cleared},
             )
         )
     logger.info("retention purge turns_purged=%d targets_scanned=%d", purged, scanned)
-    return {"targets_scanned": scanned, "turns_purged": purged}
+    return {"targets_scanned": scanned, "turns_purged": purged, "sessions_cleared": cleared}

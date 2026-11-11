@@ -90,6 +90,7 @@ class TargetVerificationRow(Base):
     token_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
     method: Mapped[str | None] = mapped_column(String(32), nullable=True)
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    allowed_auth_hosts: Mapped[list] = mapped_column(JSON, default=list)
     created_at: Mapped[datetime] = _ts()
 
 
@@ -142,7 +143,9 @@ class TurnRow(Base):
     redacted_message_preview: Mapped[str] = mapped_column(Text, default="")
     redacted_preview: Mapped[str] = mapped_column(Text, default="")  # response preview
     redaction_hits: Mapped[list] = mapped_column(JSON, default=list)
-    tool_calls: Mapped[list] = mapped_column(JSON, default=list)
+    tool_calls: Mapped[list] = mapped_column(JSON, default=list)  # redacted copy
+    # Raw tool calls as encrypted JSON; NULL after the retention purge.
+    tool_calls_raw: Mapped[str | None] = mapped_column(EncryptedText, nullable=True)
     http_status: Mapped[int | None] = mapped_column(Integer, nullable=True)
     latency_ms: Mapped[float] = mapped_column(Float, default=0.0)
     monitor_hits: Mapped[list] = mapped_column(JSON, default=list)
@@ -211,6 +214,15 @@ class FindingRow(Base):
     __tablename__ = "findings"
     __table_args__ = (
         Index("ix_findings_target_status", "target_id", "status"),
+        Index("ix_findings_conversation_id", "conversation_id"),
+        Index("ix_findings_first_seen_campaign", "first_seen_campaign"),
+        Index("ix_findings_last_seen_campaign", "last_seen_campaign"),
+        # pgvector HNSW (Postgres only; the kwargs are ignored on SQLite, where the
+        # migration does not create it).
+        Index(
+            "ix_findings_embedding_hnsw", "embedding",
+            postgresql_using="hnsw", postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
         CheckConstraint(
             "status IN ('open','wont_fix','false_positive','inconclusive','needs_review')",
             name="ck_findings_status",

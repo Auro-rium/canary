@@ -54,6 +54,8 @@ def test_migrated_schema_matches_orm(url):
     with engine.connect() as conn:
         diff = compare_metadata(MigrationContext.configure(conn), orm.Base.metadata)
     engine.dispose()
+    if engine.dialect.name != "postgresql":  # HNSW index exists only on Postgres
+        diff = [d for d in diff if "ix_findings_embedding_hnsw" not in str(d)]
     assert diff == [], diff
 
 

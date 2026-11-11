@@ -11,6 +11,13 @@ from cyberredteam.storage.v2 import encrypted, orm
 from cyberredteam.storage.v2.db import make_engine, make_session_factory, session_scope
 
 
+@pytest.fixture(autouse=True)
+def _fresh_key_cache():
+    encrypted.reset_key_cache()
+    yield
+    encrypted.reset_key_cache()
+
+
 @pytest.fixture
 def key(monkeypatch):
     k = Fernet.generate_key().decode()
@@ -63,6 +70,7 @@ def test_missing_key_fails_closed(monkeypatch, factory, key):
     with session_scope(factory) as s:
         _seed_conversation(s)
         s.add(orm.TurnRow(conversation_id="v1", idx=0, message="m", response_text="r"))
+    encrypted.reset_key_cache()
     monkeypatch.setattr(encrypted, "get_settings", lambda: SimpleNamespace(canary_encryption_key=None))
     with pytest.raises((RuntimeError, StatementError), match="CANARY_ENCRYPTION_KEY") as ei:
         with session_scope(factory) as s:
@@ -86,6 +94,24 @@ def test_wrong_key_cannot_decrypt(monkeypatch, factory, key):
         _seed_conversation(s)
         s.add(orm.TurnRow(conversation_id="v1", idx=0, message="m", response_text="r"))
     monkeypatch.setenv("CANARY_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    encrypted.reset_key_cache()
     with pytest.raises(RuntimeError, match="could not be decrypted"):
         with session_scope(factory) as s:
             s.query(orm.TurnRow).all()
+
+
+def test_settings_read_once_until_reset(monkeypatch):
+    calls = []
+    k = Fernet.generate_key().decode()
+
+    def fake():
+        calls.append(1)
+        return SimpleNamespace(canary_encryption_key=k)
+
+    monkeypatch.setattr(encrypted, "get_settings", fake)
+    encrypted.get_fernet()
+    encrypted.get_fernet()
+    assert len(calls) == 1
+    encrypted.reset_key_cache()
+    encrypted.get_fernet()
+    assert len(calls) == 2

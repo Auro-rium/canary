@@ -24,13 +24,27 @@ def _fernet_for(key: str) -> Fernet:
         raise RuntimeError("CANARY_ENCRYPTION_KEY is not a valid Fernet key") from exc
 
 
+_cached_key: str | None = None
+
+
+def reset_key_cache() -> None:
+    """Forget the cached key (tests, or after rotating CANARY_ENCRYPTION_KEY)."""
+    global _cached_key
+    _cached_key = None
+
+
 def get_fernet() -> Fernet:
-    key = get_settings().canary_encryption_key
-    if not key:
-        raise RuntimeError(
-            "CANARY_ENCRYPTION_KEY is not set; refusing to store or read encrypted data"
-        )
-    return _fernet_for(key)
+    """Fernet for the configured key. Settings are read once per process (until
+    ``reset_key_cache``); a missing key is never cached, so it fails closed."""
+    global _cached_key
+    if _cached_key is None:
+        key = get_settings().canary_encryption_key
+        if not key:
+            raise RuntimeError(
+                "CANARY_ENCRYPTION_KEY is not set; refusing to store or read encrypted data"
+            )
+        _cached_key = key
+    return _fernet_for(_cached_key)
 
 
 class EncryptedText(TypeDecorator):
