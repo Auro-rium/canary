@@ -245,6 +245,10 @@ There are no scripted or cosmetic events (fixes D8).
 - **Strategist:** produces `techniques × trials_per_technique` branches. Parallelism is capped by `max_parallel_conversations` through a semaphore, not by truncating the list.
 - **Budget accounting:** a central `BudgetLedger` (requests, LLM tokens converted to estimated USD) is checked before every turn. When exhausted, conversations end with `stopped_budget`.
 - **Done when:** fake runs produce full transcripts, budgets and cancel stop runs mid-conversation, and every turn is in the DB as it happens.
+- **Phase 3 seams (frozen by the lead before Phase 3 starts, so WP3, WP7 and WP11 can build in parallel):**
+  - `engine/control.py`: the `RunControl.check(campaign_id) -> "cancelled" | "killed" | None` protocol, plus `InMemoryRunControl`. WP3 calls it before every turn. WP7 supplies the durable Postgres implementation and the kill switch. On a read error it fails closed (`"killed"`).
+  - `observability/hooks.py`: `trace_op(name)` decorator and `get_metrics()` → `CampaignMetrics` (`campaign_started`, `log`, `campaign_finished`, `alert`). The defaults are no-ops. WP3 and WP7 call them; WP11 installs the Weave and wandb implementations via `set_tracer` and `set_metrics`. These hooks never raise into the caller.
+  - Planner and monitor are injected into WP3 as protocols. Tests use a fake scripted planner with benign messages. Real planners are WP4; real detectors and the judge are WP5.
 
 ### WP4: TurnPlanner interface (Opus, interface only)
 - Define a `TurnPlanner` protocol with `next_turn(conversation_state) -> PlannedTurn | None`. Inputs are the technique spec, the transcript so far, the monitor hits, and the remaining turns.
