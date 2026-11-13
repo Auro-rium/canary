@@ -14,7 +14,6 @@ from sqlalchemy.types import TypeDecorator
 from cyberredteam.security import crypto
 from cyberredteam.settings import get_settings
 
-
 _cached_key: str | None = None
 
 
