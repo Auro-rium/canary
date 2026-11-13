@@ -24,6 +24,11 @@ def _fernet(key: str | None = None) -> Fernet:
         raise RuntimeError("CANARY_ENCRYPTION_KEY is not a valid Fernet key") from None
 
 
+def fernet_for_key(key: str) -> Fernet:
+    """Validated Fernet for an explicit key (fail-closed, errors never echo the key)."""
+    return _fernet(key)
+
+
 def encrypt_str(plaintext: str, key: str | None = None) -> str:
     """Encrypt ``plaintext`` and return the Fernet token as text."""
     if not isinstance(plaintext, str):
