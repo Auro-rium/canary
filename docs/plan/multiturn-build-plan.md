@@ -128,6 +128,7 @@ class Conversation(BaseModel):
     technique: str
     trial_index: int
     status: Literal["running", "stopped_budget", "stopped_monitor", "stopped_target_refusal_streak",
+                    "stopped_target_error_streak", "stopped_killed",   # added in WP3
                     "completed", "cancelled", "error"]
     turns: list[Turn]
     target_session_ref: str | None
@@ -249,6 +250,39 @@ There are no scripted or cosmetic events (fixes D8).
   - `engine/control.py`: the `RunControl.check(campaign_id) -> "cancelled" | "killed" | None` protocol, plus `InMemoryRunControl`. WP3 calls it before every turn. WP7 supplies the durable Postgres implementation and the kill switch. On a read error it fails closed (`"killed"`).
   - `observability/hooks.py`: `trace_op(name)` decorator and `get_metrics()` → `CampaignMetrics` (`campaign_started`, `log`, `campaign_finished`, `alert`). The defaults are no-ops. WP3 and WP7 call them; WP11 installs the Weave and wandb implementations via `set_tracer` and `set_metrics`. These hooks never raise into the caller.
   - Planner and monitor are injected into WP3 as protocols. Tests use a fake scripted planner with benign messages. Real planners are WP4; real detectors and the judge are WP5.
+- **WP3 status / deviations (branch `multiturn-wp3`):**
+  - **Code layout.** `engine/types.py` holds the protocols and models, `engine/monitors.py` the `BuiltinSafetyMonitor`, `engine/budget.py` the `BudgetLedger`, and `engine/runner.py` `run_conversation`, `run_campaign` and `EngineDeps`. `langgraph/campaign_graph.py` holds the v2 graph.
+  - **New statuses (contract change).** `ConversationStatus` gains `stopped_killed` (kill switch) and `stopped_target_error_streak` (3+ target errors in a row), plus a `TERMINAL_CONVERSATION_STATUSES` set. Cancel maps to the existing `cancelled`. `max_turns`, or the planner returning `None`, gives `completed`. Any monitor stop gives `stopped_monitor`. A planner or engine exception gives `error`.
+  - **Safety inputs not in `TargetConfig`.** The canary values, the forbidden/destructive tool names and the on-call notifier are `EngineDeps` fields (`canary_values`, `forbidden_tools`, `on_call`), supplied by WP7/WP8. Open question: should the target record carry them?
+  - **`PlannedTurn` additions.**
+    - Optional `llm_tokens` and `llm_cost_usd` fields let a planner report its spend to the `BudgetLedger`.
+    - `end_conversation=true` ends the conversation **without sending** that message, so `message` may then be empty; otherwise it must be non-empty.
+    - WP4 must fill the usage fields from the provider's usage data and never let the model fill them: do not expose `PlannedTurn` as-is as the LLM output schema.
+  - **`MonitorResult.hits`** is a list of `MonitorHit {name, severity}`, not plain strings; the names go into `Turn.monitor_hits`. `TurnPlanner.next_turn` and `TurnMonitor.check` are async.
+  - **Heuristic tool calls** (`source="heuristic"`) on the forbidden list produce a non-critical `forbidden_tool_heuristic` hit and never stop the conversation. Only structured calls are critical.
+  - **Fail-closed behaviour.**
+    - A monitor exception records `monitor_error:<Class>`, keeps the turn, and stops with `stopped_monitor`.
+    - A `RunControl.check` exception is treated as `"killed"`.
+    - Event-sink, metrics and on-call failures are swallowed and logged.
+  - **Budget.**
+    - Requests count actual HTTP attempts, so SessionAdapter retries are charged. One slot is reserved before each turn, so parallel conversations cannot all pass the last-request check. Retries of in-flight turns can still overshoot the cap by at most 2 requests each.
+    - A cost-free planner is never stopped by `max_llm_cost_usd` (even 0). The USD limit is checked before the turn and charged after the planner call, so a single expensive planner call can overshoot it.
+    - Totals reload from `budget_ledger` on a re-run.
+  - **Resume.**
+    - Conversation ids are `uuid5(campaign_id, technique, trial_index)`. Re-running skips terminal conversations.
+    - A `running` conversation resumes from its persisted turns. This reads the raw transcript (audited `evidence.read_raw` with actor `system:engine-resume`), because the redacted preview is truncated.
+    - New `SessionAdapter.restore(history, session_id)` reseeds `{{HISTORY}}` and the server session id, which is persisted to `target_session_ref` as soon as it is captured.
+    - Cookie jars cannot be restored: a resumed cookie-mode conversation starts a new target session.
+    - A turn sent but not yet persisted when the worker died is re-planned.
+    - Task cancellation leaves the conversation `running`. Campaign status is `running`, then `completed`, or `cancelled` (cancel or kill), or `failed`.
+  - **`X-Canary-Campaign`** was already set by `SessionAdapter` on every request, including auth sub-requests. WP3 adds an engine-level test.
+  - **LangGraph.** `run_campaign` is the primary entry point. `build_campaign_graph()` / `run_campaign_graph()` (strategist → `Send(conversation_branch)`×N → collect) is a thin adapter that shares `run_conversation` and the semaphore through `config["configurable"]`. It runs without a LangGraph checkpointer, because resume comes from the DB. The legacy v1 `build_redteam_graph` is unchanged.
+  - **Not done.**
+    - `stop_on_first_confirmed` needs WP5 verdicts.
+    - `campaign_complete.confirmed` is always 0 until WP5.
+    - Repository calls are synchronous on the event loop (short single transactions).
+    - `trace_op` resolves at decoration (import) time, so WP11 must call `set_tracer` before `cyberredteam.engine` is imported.
+    - `cyberredteam.engine/__init__` eagerly imports the runner, `storage.v2` and `transport`, so even `from cyberredteam.engine.control import RunControl` loads them. WP7 should watch for import cycles if storage or the API ever import `jobs/`.
 
 ### WP4: TurnPlanner interface (Opus, interface only)
 - Define a `TurnPlanner` protocol with `next_turn(conversation_state) -> PlannedTurn | None`. Inputs are the technique spec, the transcript so far, the monitor hits, and the remaining turns.

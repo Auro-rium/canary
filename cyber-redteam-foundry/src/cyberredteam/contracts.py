@@ -397,10 +397,24 @@ ConversationStatus = Literal[
     "stopped_budget",
     "stopped_monitor",
     "stopped_target_refusal_streak",
+    "stopped_target_error_streak",
+    "stopped_killed",
     "completed",
     "cancelled",
     "error",
 ]
+TERMINAL_CONVERSATION_STATUSES = frozenset(
+    {
+        "stopped_budget",
+        "stopped_monitor",
+        "stopped_target_refusal_streak",
+        "stopped_target_error_streak",
+        "stopped_killed",
+        "completed",
+        "cancelled",
+        "error",
+    }
+)
 
 
 class Conversation(_Contract):
@@ -772,6 +786,7 @@ __all__ = [
     "SseEvent",
     "SseEventType",
     "TEMPLATE_PLACEHOLDERS",
+    "TERMINAL_CONVERSATION_STATUSES",
     "TEXT_MAX_CHARS",
     "TargetAuth",
     "TargetConfig",

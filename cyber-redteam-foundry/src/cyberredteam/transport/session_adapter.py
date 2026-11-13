@@ -235,6 +235,22 @@ class SessionAdapter:
     def history(self) -> list[dict[str, str]]:
         return list(self._history)
 
+    def restore(self, history: list[dict[str, str]], session_id: str | None = None) -> None:
+        """Seed a fresh adapter with a persisted conversation (engine resume).
+
+        ``history`` is the OpenAI-style transcript of earlier successful turns
+        (used for ``{{HISTORY}}``); ``session_id`` is the captured server
+        session id. Cookie jars cannot be restored. Only valid before the
+        first send.
+        """
+        if self._history or self._session_id is not None:
+            raise RuntimeError("restore() is only valid on a fresh adapter")
+        for item in history:
+            if item.get("role") not in ("user", "assistant") or not isinstance(item.get("content"), str):
+                raise ValueError("history items must be {role: user|assistant, content: str}")
+        self._history = [{"role": h["role"], "content": h["content"]} for h in history]
+        self._session_id = session_id or None
+
     # ── Request building ─────────────────────────────────────────────────────
 
     def _build_body(self, message: str) -> Any:

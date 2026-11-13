@@ -184,6 +184,8 @@ export type ConversationStatus =
   | 'stopped_budget'
   | 'stopped_monitor'
   | 'stopped_target_refusal_streak'
+  | 'stopped_target_error_streak'
+  | 'stopped_killed'
   | 'completed'
   | 'cancelled'
   | 'error'
