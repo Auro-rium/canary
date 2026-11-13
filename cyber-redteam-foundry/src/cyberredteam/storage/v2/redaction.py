@@ -38,7 +38,9 @@ _URL_CREDS = re.compile(r"\b([A-Za-z][A-Za-z0-9+.-]*://)[^\s/?#:@]*:[^\s/?#]*@")
 _BASIC = re.compile(
     r"(?i)(authorization[\\\"']{0,2}\s*[:=]\s*[\\\"']{0,2}basic\s+)[A-Za-z0-9+/=]{6,}"
 )
-_COOKIE = re.compile(r"(?i)\b((?:set-)?cookie[\\\"']{0,2}\s*:\s*)[^\r\n\"]+")
+_COOKIE = re.compile(
+    r"(?i)\b((?:set-)?cookie[\\\"']{0,2}\s*:\s*)(?:\\?\"[^\"\\]*\\?\"|'[^']*'|[^\r\n\"]+)"
+)
 _CURL_USER = re.compile(
     r"(?i)(\bcurl\b[^\n]*?\s(?:-u|--user)[ =]+)(?:\"[^\"]*\"|'[^']*'|\S+)"
 )
