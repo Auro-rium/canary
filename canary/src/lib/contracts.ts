@@ -184,6 +184,8 @@ export type ConversationStatus =
   | 'stopped_budget'
   | 'stopped_monitor'
   | 'stopped_target_refusal_streak'
+  | 'stopped_target_error_streak' // WP3: 3+ consecutive target errors
+  | 'stopped_killed' // WP7: global kill switch
   | 'completed'
   | 'cancelled'
   | 'error'
