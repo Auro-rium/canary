@@ -101,13 +101,6 @@ class HttpTargetAdapter(TargetAdapter):
                 into the JSON response. Falls back to key-guessing when omitted
                 or unresolvable.
         """
-        import os
-        is_docker = os.path.exists("/.dockerenv") or os.environ.get("RUNNING_IN_DOCKER") == "true"
-        if is_docker:
-            for host in ["localhost:9000", "127.0.0.1:9000"]:
-                if host in endpoint:
-                    endpoint = endpoint.replace(host, "host.docker.internal:9000")
-
         self.endpoint = endpoint.rstrip("/")
         self.api_key = api_key
         self.timeout = timeout
