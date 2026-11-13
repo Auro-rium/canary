@@ -12,7 +12,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Protocol, runtime_checkable
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from cyberredteam.contracts import Severity, SseEventType, TargetConfig, Turn
 
@@ -47,15 +47,24 @@ class ConversationSpec(_Model):
 class PlannedTurn(_Model):
     """The planner's next message.
 
-    ``llm_tokens`` / ``llm_cost_usd`` report what producing this turn cost so
-    the engine can charge the campaign budget (0 for scripted planners).
+    ``end_conversation=True`` ends the conversation without sending
+    ``message`` (which may then be empty). ``llm_tokens`` / ``llm_cost_usd``
+    report what producing this turn cost so the engine can charge the
+    campaign budget (0 for scripted planners). Planners must fill them from
+    the provider's usage data, never from model output.
     """
 
-    message: str = Field(min_length=1)
+    message: str = ""
     intent_note: str = ""
     end_conversation: bool = False
     llm_tokens: int = Field(default=0, ge=0)
     llm_cost_usd: float = Field(default=0.0, ge=0)
+
+    @model_validator(mode="after")
+    def _message_required_unless_ending(self) -> "PlannedTurn":
+        if not self.end_conversation and not self.message.strip():
+            raise ValueError("message must be non-empty unless end_conversation is true")
+        return self
 
 
 class ConversationState(_Model):

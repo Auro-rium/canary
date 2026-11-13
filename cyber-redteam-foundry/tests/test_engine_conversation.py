@@ -5,10 +5,11 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
 from engine_support import _key, build, factory, metrics, new_campaign_id  # noqa: F401
 from fixtures.fake_target import FakeTarget
 
-from cyberredteam.engine import run_campaign
+from cyberredteam.engine import PlannedTurn, run_campaign
 from cyberredteam.storage.v2.repositories import BudgetLedgerRepo, CampaignRepo
 
 
@@ -239,3 +240,20 @@ def test_event_sink_failure_never_breaks_run(factory):
     h.events.hook = boom
     conv = _only_conversation(h, _run(h, new_campaign_id()))
     assert conv.status == "completed" and len(conv.turns) == 2
+
+
+def test_end_conversation_flag_ends_without_sending(factory):
+    with pytest.raises(ValueError):
+        PlannedTurn(message="  ")
+    h = build(factory, max_turns=8)
+
+    class EndsAfterOne:
+        async def next_turn(self, state):
+            if state.turns:
+                return PlannedTurn(end_conversation=True)  # empty message is fine here
+            return PlannedTurn(message="hello turn 0")
+
+    h.deps.planner_factory = lambda spec: EndsAfterOne()
+    conv = _only_conversation(h, _run(h, new_campaign_id()))
+    assert conv.status == "completed" and len(conv.turns) == 1
+    assert len(h.fake.requests) == 1

@@ -256,7 +256,8 @@ There are no scripted or cosmetic events (fixes D8).
   - **Safety inputs not in `TargetConfig`.** The canary values, the forbidden/destructive tool names and the on-call notifier are `EngineDeps` fields (`canary_values`, `forbidden_tools`, `on_call`), supplied by WP7/WP8. Open question: should the target record carry them?
   - **`PlannedTurn` additions.**
     - Optional `llm_tokens` and `llm_cost_usd` fields let a planner report its spend to the `BudgetLedger`.
-    - `end_conversation=true` ends the conversation **without sending** that message.
+    - `end_conversation=true` ends the conversation **without sending** that message, so `message` may then be empty; otherwise it must be non-empty.
+    - WP4 must fill the usage fields from the provider's usage data and never let the model fill them: do not expose `PlannedTurn` as-is as the LLM output schema.
   - **`MonitorResult.hits`** is a list of `MonitorHit {name, severity}`, not plain strings; the names go into `Turn.monitor_hits`. `TurnPlanner.next_turn` and `TurnMonitor.check` are async.
   - **Heuristic tool calls** (`source="heuristic"`) on the forbidden list produce a non-critical `forbidden_tool_heuristic` hit and never stop the conversation. Only structured calls are critical.
   - **Fail-closed behaviour.**
@@ -265,7 +266,7 @@ There are no scripted or cosmetic events (fixes D8).
     - Event-sink, metrics and on-call failures are swallowed and logged.
   - **Budget.**
     - Requests count actual HTTP attempts, so SessionAdapter retries are charged. One slot is reserved before each turn, so parallel conversations cannot all pass the last-request check. Retries of in-flight turns can still overshoot the cap by at most 2 requests each.
-    - A cost-free planner is never stopped by `max_llm_cost_usd` (even 0).
+    - A cost-free planner is never stopped by `max_llm_cost_usd` (even 0). The USD limit is checked before the turn and charged after the planner call, so a single expensive planner call can overshoot it.
     - Totals reload from `budget_ledger` on a re-run.
   - **Resume.**
     - Conversation ids are `uuid5(campaign_id, technique, trial_index)`. Re-running skips terminal conversations.
@@ -281,6 +282,7 @@ There are no scripted or cosmetic events (fixes D8).
     - `campaign_complete.confirmed` is always 0 until WP5.
     - Repository calls are synchronous on the event loop (short single transactions).
     - `trace_op` resolves at decoration (import) time, so WP11 must call `set_tracer` before `cyberredteam.engine` is imported.
+    - `cyberredteam.engine/__init__` eagerly imports the runner, `storage.v2` and `transport`, so even `from cyberredteam.engine.control import RunControl` loads them. WP7 should watch for import cycles if storage or the API ever import `jobs/`.
 
 ### WP4: TurnPlanner interface (Opus, interface only)
 - Define a `TurnPlanner` protocol with `next_turn(conversation_state) -> PlannedTurn | None`. Inputs are the technique spec, the transcript so far, the monitor hits, and the remaining turns.
