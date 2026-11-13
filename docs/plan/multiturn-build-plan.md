@@ -308,6 +308,16 @@ There are no scripted or cosmetic events (fixes D8).
 - **Cancel:** `POST /api/v2/campaigns/{id}/cancel` sets a flag checked before every turn. A **global kill switch** (env var or admin endpoint) halts all campaigns within one turn.
 - An SSE disconnect never affects the run; the client can reconnect with `Last-Event-ID` (`seq`).
 - **Done when:** a kill-switch test stops 10 parallel fake conversations within one turn each, and a resume test passes.
+- **WP7 status / deviations (branch `multiturn-wp7`):**
+  - `src/cyberredteam/jobs/`: `queue.py` (procrastinate on Postgres; `JobQueue` seam, `ProcrastinateQueue`, `InProcessQueue`, `enqueue_campaign(campaign_id)`), `execution.py` (`execute_campaign`, `JobRuntime`, `CampaignRunner` protocol), `control.py` (`DbRunControl`, `ControlStore`), `events.py` (`EventLog`), `resume.py` (`HeartbeatRepo`, `reap_stale`), `api_v2.py` (routes), `worker.py` / `migrate.py` (entrypoints; `cyber-rt worker`), `runner_wiring.py`, `tables.py`.
+  - Migration `0002` adds `run_control` (global `kill_switch` and `cancel:<id>` flags), `campaign_heartbeats` and `campaign_events` (per-campaign `seq`). `tables.py` registers them on the shared ORM `Base` and `migrations/env.py` imports it; the WP6 migration test's table list was extended.
+  - `DbRunControl`: env `CANARY_KILL_SWITCH` (uncached) > DB kill flag > DB cancel flag; any DB read error returns `"killed"`; reads are cached up to `run_control_cache_s` (1s).
+  - Statuses: `CampaignStatus` has no "cancelling"/"killed", so cancel is a flag. Cancel sets status `cancelled` when the run stops; a killed campaign ends `failed` with a `campaign_killed` event and an audit row, so it is never auto-resumed.
+  - Resume = re-enqueue, not the LangGraph PostgresSaver: `run_campaign` is idempotent from persisted turns. Workers heartbeat each running campaign; the periodic reaper (every minute, plus `reap_stale()`) re-enqueues campaigns in `running` with a missing or stale heartbeat (`worker_stale_after_s`), is a no-op while the kill switch is on, and uses `lock` / `queueing_lock` per campaign so there is never a duplicate. On worker SIGTERM the status stays `running` and the heartbeat is dropped.
+  - SSE: `GET /api/v2/campaigns/{id}/events` replays `seq > Last-Event-ID` from `campaign_events`, then polls for new ones (API and worker are separate processes). Disconnect only ends the generator.
+  - API: `POST /api/v2/campaigns/{id}/cancel`, `GET|POST /api/v2/admin/kill-switch`; auth via the app-wide `require_auth`, audit rows written, `get_metrics().alert` on activation. TODO WP8: roles and a real actor (currently `api-token`).
+  - Docker: the API container runs `python -m cyberredteam.jobs.migrate` (alembic head + procrastinate schema) before uvicorn; new `redteam-worker` service; `POSTGRES_PASSWORD` is still fail-closed.
+  - Real runner: wire `engine.runner.run_campaign` in `jobs/runner_wiring.py:make_runner` (the default fails closed with `RunnerNotWired`). Its `RunControl` must be `runtime.control`; it may emit SSE events with `runtime.events.append`.
 
 ### WP8: API v2 and auth (Sonnet) — C5, C6
 - **Users:** OIDC login (GitHub/Google), or API keys for CI. Roles are `viewer`, `operator` and `admin`.

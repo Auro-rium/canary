@@ -1,13 +1,12 @@
+# ruff: noqa: F811
 """DbRunControl, kill switch and cancel, with fake conversations (no network)."""
 
 from __future__ import annotations
 
 import asyncio
 
-import pytest
 from jobs_support import FakeRunner, db_factory, seed_campaign  # noqa: F401
 
-from cyberredteam.contracts import CampaignRequest
 from cyberredteam.engine.control import RunControl
 from cyberredteam.jobs.control import DbRunControl
 
