@@ -279,6 +279,68 @@ def server(
 
 
 # -------------------------------------------------------------------
+# gate (WP10)
+# -------------------------------------------------------------------
+
+@app.command()
+def gate(
+    target: str = typer.Option("", "--target", help="Target id."),
+    suite: str = typer.Option("default", "--suite", help="Regression suite (ScriptedPlanner pack)."),
+    baseline: str = typer.Option("", "--baseline", help="Baseline campaign id."),
+    candidate: str = typer.Option("", "--candidate", help="Compare this stored campaign."),
+    db_url: str = typer.Option("", "--db-url", help="Database URL (default: configured)."),
+    policy_file: str = typer.Option("", "--policy", help="GatePolicy JSON file."),
+    json_out: str = typer.Option("", "--json-out", help="Write the JSON result here."),
+    demo: bool = typer.Option(False, "--demo", help="Seed synthetic campaigns and compare."),
+    demo_inject_regression: bool = typer.Option(
+        False, "--demo-inject-regression", help="With --demo: candidate regresses."
+    ),
+) -> None:
+    """CI gate: exit 0 pass, 1 regression, 2 inconclusive or error."""
+    from cyberredteam.gate.runner import (
+        GateError,
+        demo_db_url,
+        load_policy,
+        run_gate,
+        seed_demo,
+        write_step_summary,
+    )
+    from cyberredteam.storage.v2.db import make_engine, make_session_factory
+    from cyberredteam.storage.v2.repositories import CampaignRepo
+
+    try:
+        policy = load_policy(policy_file or None)
+        if demo:
+            repo, target, baseline, candidate = seed_demo(
+                demo_db_url(), inject_regression=demo_inject_regression
+            )
+        else:
+            if not (target and baseline):
+                raise GateError("--target and --baseline are required")
+            repo = CampaignRepo(make_session_factory(make_engine(db_url or None)))
+        result, md, js = run_gate(
+            repo,
+            target_id=target or None,
+            suite=suite,
+            baseline_id=baseline,
+            candidate_id=candidate or None,
+            policy=policy,
+        )
+    except GateError as exc:
+        console.print(f"[red]gate error:[/red] {exc}")
+        raise typer.Exit(2) from exc
+    except Exception as exc:  # noqa: BLE001 - any failure is exit 2, never a silent pass
+        console.print(f"[red]gate error:[/red] {type(exc).__name__}: {exc}")
+        raise typer.Exit(2) from exc
+
+    typer.echo(md)
+    write_step_summary(md)
+    if json_out:
+        Path(json_out).write_text(js)
+    raise typer.Exit(result.exit_code)
+
+
+# -------------------------------------------------------------------
 # App setup callback
 # -------------------------------------------------------------------
 
