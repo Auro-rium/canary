@@ -191,6 +191,13 @@ def _running_count() -> int:
 
 
 @app.on_event("startup")
+def start_observability() -> None:
+    from cyberredteam.observability.setup import init_observability
+
+    init_observability(settings, service_name="api")
+
+
+@app.on_event("startup")
 def recover_interrupted_runs() -> None:
     """Mark runs interrupted by an API restart instead of leaving them hanging."""
     store = SQLiteStore(Path(settings.db_path))
