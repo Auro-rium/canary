@@ -122,6 +122,22 @@ def test_pwd_passphrase_cookie_curl_redis_pgp():
     c = redact("Set-Cookie: session=abc123def; HttpOnly\nnext line")
     assert "abc123def" not in c.text and "next line" in c.text and c.hits == ["cookie"]
     assert "pa55word" not in redact("Cookie: sid=pa55word").text
+
+
+def test_cookie_as_json_pair_redacted():
+    for text in (
+        '{"Cookie": "session=abcdef0123456789"}',
+        '{"Set-Cookie": "sid=abcdef0123456789; HttpOnly", "next": "ok"}',
+        '{\\"Cookie\\": \\"session=abcdef0123456789\\"}',
+        "{'cookie': 'session=abcdef0123456789'}",
+    ):
+        r = redact(text)
+        assert "abcdef0123456789" not in r.text, text
+        assert "cookie" in r.hits
+    assert '"next": "ok"' in redact('{"Set-Cookie": "sid=x1x1x1x1", "next": "ok"}').text
+
+
+def test_curl_redis_pgp():
     u = redact("curl -u admin:pa55word https://x.example/api")
     assert "pa55word" not in u.text and "https://x.example/api" in u.text
     assert "pa55word" not in redact("curl --user admin:pa55word https://x").text
