@@ -128,6 +128,7 @@ class Conversation(BaseModel):
     technique: str
     trial_index: int
     status: Literal["running", "stopped_budget", "stopped_monitor", "stopped_target_refusal_streak",
+                    "stopped_target_error_streak", "stopped_killed",   # added in WP3
                     "completed", "cancelled", "error"]
     turns: list[Turn]
     target_session_ref: str | None
