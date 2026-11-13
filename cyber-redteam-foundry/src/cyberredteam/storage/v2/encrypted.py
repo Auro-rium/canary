@@ -7,21 +7,12 @@ is a urlsafe-base64 Fernet key. A missing or malformed key raises
 
 from __future__ import annotations
 
-from functools import lru_cache
-
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import Fernet
 from sqlalchemy import Text
 from sqlalchemy.types import TypeDecorator
 
+from cyberredteam.security import crypto
 from cyberredteam.settings import get_settings
-
-
-@lru_cache(maxsize=8)
-def _fernet_for(key: str) -> Fernet:
-    try:
-        return Fernet(key.encode())
-    except (ValueError, TypeError) as exc:
-        raise RuntimeError("CANARY_ENCRYPTION_KEY is not a valid Fernet key") from exc
 
 
 _cached_key: str | None = None
@@ -33,8 +24,8 @@ def reset_key_cache() -> None:
     _cached_key = None
 
 
-def get_fernet() -> Fernet:
-    """Fernet for the configured key. Settings are read once per process (until
+def _configured_key() -> str:
+    """The configured key, read from settings once per process (until
     ``reset_key_cache``); a missing key is never cached, so it fails closed."""
     global _cached_key
     if _cached_key is None:
@@ -44,7 +35,12 @@ def get_fernet() -> Fernet:
                 "CANARY_ENCRYPTION_KEY is not set; refusing to store or read encrypted data"
             )
         _cached_key = key
-    return _fernet_for(_cached_key)
+    return _cached_key
+
+
+def get_fernet() -> Fernet:
+    """Fernet for the configured key (validated by ``security.crypto``)."""
+    return crypto.fernet_for_key(_configured_key())
 
 
 class EncryptedText(TypeDecorator):
@@ -56,12 +52,9 @@ class EncryptedText(TypeDecorator):
     def process_bind_param(self, value, dialect):
         if value is None:
             return None
-        return get_fernet().encrypt(str(value).encode("utf-8")).decode("ascii")
+        return crypto.encrypt_str(str(value), key=_configured_key())
 
     def process_result_value(self, value, dialect):
         if value is None:
             return None
-        try:
-            return get_fernet().decrypt(value.encode("ascii")).decode("utf-8")
-        except InvalidToken as exc:
-            raise RuntimeError("stored value could not be decrypted (wrong key?)") from exc
+        return crypto.decrypt_str(value, key=_configured_key())
