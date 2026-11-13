@@ -47,7 +47,7 @@ describe('followEvents', () => {
 
   it('resumes from a snapshot seq and stops on 401', async () => {
     const fetchImpl = (async (_u: string, init?: RequestInit) => {
-      expect((init?.headers as Record<string, string>)['Last-Event-ID']).toBe('10')
+      expect((init?.headers as Record<string, string> | undefined)?.['Last-Event-ID']).toBe('10')
       return new Response('{}', { status: 401 })
     }) as unknown as typeof fetch
     await expect(followEvents({ url: '/e', onEvent: () => {}, lastSeq: 10, fetchImpl, sleep: async () => {} }))

@@ -1,8 +1,42 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { EmptyState, ErrorNotice, Metric, PageHeader, StatusBadge } from '../components/Console'
-import { getRuns, getTargetCoverage, getTargetTrends } from '../lib/api'
-import { pageClass, strategyLabel } from '../lib/presentation'
-import type { PaginatedRuns, TargetCoverage, TargetTrend } from '../lib/types'
+import { ErrorNotice, PageHeader, primaryButtonClass, StatusBadge } from '../components/Console'
+import { hasRole, useMe } from '../lib/useMe'
+import { TestConnection, VerificationPanel } from '../components/TargetParts'
+import { getTarget } from '../lib/api'
+import { gutter, pageClass } from '../lib/presentation'
+import type { TargetView } from '../lib/v2'
 
-export default function TargetDetailPage() { const { targetId = '' } = useParams(); const target = decodeURIComponent(targetId); const [coverage, setCoverage] = useState<TargetCoverage | null>(null); const [trends, setTrends] = useState<TargetTrend[]>([]); const [runs, setRuns] = useState<PaginatedRuns | null>(null); const [error, setError] = useState<string | null>(null); useEffect(() => { const query = new URLSearchParams({ target_id: target, page: '1', page_size: '25' }); Promise.all([getTargetCoverage(target), getTargetTrends(target), getRuns(query)]).then(([coverage, trends, runs]) => { setCoverage(coverage); setTrends(trends); setRuns(runs) }).catch(error => setError(error.message)) }, [target]); return <main className={pageClass}><PageHeader eyebrow="Target evidence" title={target}><Link to="/targets" className="text-xs text-white/50">← All targets</Link></PageHeader>{error && <section className="px-6 sm:px-10 md:px-16 lg:px-20 py-8"><ErrorNotice message={error} /></section>}{coverage && <><section className="px-6 sm:px-10 md:px-16 lg:px-20 py-6 border-b border-white/10 flex flex-wrap gap-3"><Metric label="Tested ASI classes" value={coverage.tested_classes.length} /><Metric label="Untested ASI classes" value={coverage.untested_classes.length} tone="warning" /><Metric label="Open findings" value={coverage.open_findings} tone="danger" /></section><section className="px-6 sm:px-10 md:px-16 lg:px-20 py-8 grid lg:grid-cols-2 gap-7"><div><h2 className="text-xs uppercase tracking-[0.2em] text-white/50">Coverage</h2><div className="mt-4 flex flex-wrap gap-2">{coverage.tested_classes.map(item => <span key={item} className="border border-red-600/30 bg-red-950/20 px-2 py-1 text-[10px] text-red-300">{item}</span>)}{coverage.untested_classes.map(item => <span key={item} className="border border-white/10 px-2 py-1 text-[10px] text-white/35">{item}</span>)}</div></div><div><h2 className="text-xs uppercase tracking-[0.2em] text-white/50">Open findings by class</h2><div className="mt-4 space-y-2">{Object.entries(coverage.open_findings_by_class).map(([asi, count]) => <div key={asi} className="flex justify-between border-b border-white/[0.06] pb-2 text-xs"><span>{asi}</span><span className="text-red-400">{count}</span></div>)}{Object.keys(coverage.open_findings_by_class).length === 0 && <span className="text-xs text-white/35">No open findings.</span>}</div></div></section></>}{trends.length > 0 && <section className="px-6 sm:px-10 md:px-16 lg:px-20 py-8 border-t border-white/10"><h2 className="text-xs uppercase tracking-[0.2em] text-white/50">Last 30 days · strategy trends</h2><div className="mt-4 overflow-x-auto border border-white/10"><table className="w-full min-w-[600px] text-left"><thead className="text-white/35 text-[9px] uppercase"><tr>{['Date', 'Strategy', 'Attempts', 'Confirmed', 'Success rate'].map(item => <th className="px-3 py-2" key={item}>{item}</th>)}</tr></thead><tbody>{trends.map(item => <tr key={`${item.date}-${item.strategy}`} className="border-t border-white/[0.06] text-xs text-white/65"><td className="px-3 py-2">{item.date}</td><td className="px-3 py-2">{strategyLabel(item.strategy)}</td><td className="px-3 py-2">{item.attempts}</td><td className="px-3 py-2 text-red-400">{item.successes}</td><td className="px-3 py-2">{(item.success_rate * 100).toFixed(1)}%</td></tr>)}</tbody></table></div></section>}<section className="px-6 sm:px-10 md:px-16 lg:px-20 py-8 border-t border-white/10"><h2 className="text-xs uppercase tracking-[0.2em] text-white/50">Recent campaigns</h2>{runs?.items.length ? <div className="mt-4 space-y-2">{runs.items.map(run => <Link key={run.run_id} to={`/campaigns/${run.run_id}`} className="block border border-white/10 p-3 hover:border-white/35"><div className="flex justify-between gap-4"><span className="text-xs">{run.run_id}</span><StatusBadge status={run.status} /></div><div className="mt-2 text-[10px] text-white/45">{run.total_attacks} attacks · {run.successful_attacks} confirmed · {run.llm_stats.total_tokens.toLocaleString()} tokens</div></Link>)}</div> : <EmptyState>No campaigns for this target</EmptyState>}</section></main> }
+export default function TargetDetailPage() {
+  const { targetId = '' } = useParams()
+  const { me } = useMe()
+  const [target, setTarget] = useState<TargetView | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => { getTarget(targetId).then(setTarget).catch(e => setError((e as Error).message)) }, [targetId])
+  const canRun = hasRole(me?.role, 'operator', 'admin')
+
+  return (
+    <main className={pageClass}>
+      <PageHeader eyebrow="Target" title={target?.name ?? 'Target'}>
+        {target && <StatusBadge status={target.verified ? 'verified' : 'unverified'} />}
+        {target?.environment === 'production' && <StatusBadge status="production" />}
+        {target?.verified && canRun && <Link to={`/campaigns/new?target=${target.target_id}`} className={primaryButtonClass}>Run a campaign</Link>}
+      </PageHeader>
+      <section className={`${gutter} py-8 max-w-3xl space-y-8`}>
+        {error && <ErrorNotice message={error} />}
+        {target && (
+          <>
+            <dl className="grid grid-cols-[10rem_1fr] gap-y-1 text-xs">
+              <dt className="text-white/40">Endpoint</dt><dd className="break-all">{target.endpoint}</dd>
+              <dt className="text-white/40">Auth</dt><dd>{target.auth.type} (secrets are never shown)</dd>
+              <dt className="text-white/40">Session mode</dt><dd>{target.session_mode}</dd>
+              <dt className="text-white/40">Response path</dt><dd>{target.response_path ?? '(whole body)'}</dd>
+            </dl>
+            {canRun && !target.verified && <VerificationPanel targetId={target.target_id} instructions={null} onVerified={setTarget} />}
+            {canRun && <TestConnection targetId={target.target_id} />}
+          </>
+        )}
+      </section>
+    </main>
+  )
+}

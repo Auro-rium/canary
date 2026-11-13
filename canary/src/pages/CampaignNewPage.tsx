@@ -1,36 +1,113 @@
-import { useMemo, useRef, useState } from 'react'
-import { useNavigate } from 'react-router-dom'
-import { ErrorNotice, PageHeader } from '../components/Console'
-import { runCampaignSSE } from '../lib/api'
-import { pageClass } from '../lib/presentation'
+import { useEffect, useMemo, useState } from 'react'
+import { Link, useNavigate, useSearchParams } from 'react-router-dom'
+import { buttonClass, ErrorNotice, Field, inputClass, Notice, PageHeader, primaryButtonClass } from '../components/Console'
+import { hasRole, useMe } from '../lib/useMe'
+import { createCampaign, listTargets } from '../lib/api'
+import type { CampaignPolicy } from '../lib/contracts'
+import { gutter, pageClass } from '../lib/presentation'
+import { applySafeDefaults, defaultPolicy, isForbiddenInProduction, validatePolicy } from '../lib/safeDefaults'
 import { TECHNIQUES } from '../lib/techniques'
-import type { SseEvent } from '../lib/types'
-
-const campaignId = () => `RX-${crypto.randomUUID().slice(0, 8).toUpperCase()}`
+import type { TargetView } from '../lib/v2'
 
 export default function CampaignNewPage() {
-  const navigate = useNavigate(); const abortRef = useRef<AbortController | null>(null)
-  const [target, setTarget] = useState(''); const [techniques, setTechniques] = useState<string[]>([])
-  const [headers, setHeaders] = useState(''); const [template, setTemplate] = useState(''); const [responsePath, setResponsePath] = useState('')
-  const [advanced, setAdvanced] = useState(false); const [running, setRunning] = useState(false); const [logs, setLogs] = useState<string[]>([]); const [error, setError] = useState<string | null>(null)
-  const validCount = useMemo(() => techniques.length, [techniques])
-  const toggle = (id: string) => setTechniques(current => current.includes(id) ? current.filter(item => item !== id) : [...current, id])
-  const start = async () => {
-    let parsedHeaders: Record<string, string> | undefined
-    try { const url = new URL(target.trim()); if (!['http:', 'https:'].includes(url.protocol)) throw new Error('Target URL must use HTTP or HTTPS.'); if (headers.trim()) { const value: unknown = JSON.parse(headers); if (!value || Array.isArray(value) || Object.values(value as Record<string, unknown>).some(entry => typeof entry !== 'string')) throw new Error('Headers must be a JSON object with string values.'); parsedHeaders = value as Record<string, string> } if (template.trim()) JSON.parse(template) } catch (error) { setError(error instanceof Error ? error.message : 'Invalid target configuration.'); return }
-    if (!techniques.length) { setError('Select at least one attack strategy.'); return }
-    setError(null); setLogs([]); setRunning(true); const controller = new AbortController(); abortRef.current = controller
-    try { await runCampaignSSE({ campaign_id: campaignId(), target_url: target.trim(), techniques, headers: parsedHeaders, request_template: template.trim() || undefined, response_path: responsePath.trim() || undefined }, (event: SseEvent) => {
-      if (event.type === 'log') setLogs(current => [...current, `[${event.payload.level}] ${event.payload.message}`])
-      if (event.type === 'campaign_complete') { setHeaders(''); navigate(`/campaigns/${event.payload.run_id}`) }
-      if (event.type === 'campaign_failed') setError(event.payload.message)
-    }, controller.signal) } catch (error) { if (!controller.signal.aborted) setError(error instanceof Error ? error.message : 'Campaign request failed.') } finally { setRunning(false); abortRef.current = null }
+  const navigate = useNavigate()
+  const [search] = useSearchParams()
+  const { me } = useMe()
+  const [targets, setTargets] = useState<TargetView[]>([])
+  const [targetId, setTargetId] = useState(search.get('target') ?? '')
+  const [policy, setPolicy] = useState<CampaignPolicy>(() => defaultPolicy('staging'))
+  const [error, setError] = useState<string | null>(null)
+  const [submitting, setSubmitting] = useState(false)
+
+  useEffect(() => { listTargets().then(result => setTargets(result.items)).catch(e => setError((e as Error).message)) }, [])
+
+  const target = targets.find(item => item.target_id === targetId)
+  const environment = target?.environment ?? 'staging'
+  const production = environment === 'production'
+
+  // Switching to a production target forces the safe defaults.
+  useEffect(() => { setPolicy(previous => applySafeDefaults(previous, environment)) }, [environment])
+
+  const problems = useMemo(() => validatePolicy(policy, environment), [policy, environment])
+  const set = <K extends keyof CampaignPolicy>(key: K, value: CampaignPolicy[K]) => setPolicy(previous => ({ ...previous, [key]: value }))
+  const toggle = (id: string) => set('techniques', policy.techniques.includes(id) ? policy.techniques.filter(t => t !== id) : [...policy.techniques, id])
+  const number = (key: 'trials_per_technique' | 'max_turns' | 'max_parallel_conversations' | 'max_total_requests' | 'rate_limit_rps' | 'max_llm_cost_usd') =>
+    (event: React.ChangeEvent<HTMLInputElement>) => set(key, Number(event.target.value))
+
+  const launch = async () => {
+    if (!target) return
+    setSubmitting(true)
+    setError(null)
+    try {
+      const { campaign_id } = await createCampaign({ target_id: target.target_id, policy: applySafeDefaults(policy, environment) })
+      navigate(`/campaigns/${campaign_id}`)
+    } catch (e) {
+      setError((e as Error).message)
+      setSubmitting(false)
+    }
   }
-  return <main className={pageClass}><PageHeader eyebrow="Authorized target configuration" title="Run audit" />
-    <section className="max-w-6xl mx-auto px-6 sm:px-10 py-10 grid lg:grid-cols-2 gap-10"><div><label className="block text-[10px] uppercase tracking-wider text-white/45">HTTP target endpoint<input value={target} disabled={running} onChange={event => setTarget(event.target.value)} placeholder="https://your-agent.example/chat" className="mt-2 w-full bg-white/[0.03] border border-white/20 px-3 py-3 text-sm text-white outline-none focus:border-red-500" /></label><p className="mt-2 text-[10px] text-white/35">Use only targets you are authorized to assess.</p>
-      <button onClick={() => setAdvanced(value => !value)} className="mt-6 border border-white/20 px-3 py-2 text-[10px] uppercase tracking-wider">{advanced ? 'Hide' : 'Show'} advanced target config</button>{advanced && <div className="mt-4 space-y-4"><label className="block text-[10px] uppercase tracking-wider text-white/45">Headers (JSON)<textarea value={headers} disabled={running} onChange={event => setHeaders(event.target.value)} rows={4} placeholder={'{"Authorization":"Bearer …"}'} className="mt-2 w-full bg-white/[0.03] border border-white/20 p-3 text-xs text-white outline-none" /></label><p className="text-[10px] text-yellow-300/80">Headers are used for this run only, may enter server checkpoints, and are never displayed after launch.</p><label className="block text-[10px] uppercase tracking-wider text-white/45">Request template (JSON)<textarea value={template} disabled={running} onChange={event => setTemplate(event.target.value)} rows={4} placeholder={'{"messages":[{"role":"user","content":"{{PROMPT}}"}]}'} className="mt-2 w-full bg-white/[0.03] border border-white/20 p-3 text-xs text-white outline-none" /></label><label className="block text-[10px] uppercase tracking-wider text-white/45">Response path<input value={responsePath} disabled={running} onChange={event => setResponsePath(event.target.value)} placeholder="choices.0.message.content" className="mt-2 w-full bg-white/[0.03] border border-white/20 px-3 py-3 text-sm text-white outline-none" /></label></div>}</div>
-      <div><div className="flex justify-between items-center"><h2 className="text-xs uppercase tracking-[0.18em]">Strategies</h2><button disabled={running} onClick={() => setTechniques(TECHNIQUES.map(item => item.id))} className="text-[10px] text-white/50 underline">Select all</button></div><div className="mt-4 grid sm:grid-cols-2 gap-3">{TECHNIQUES.map(item => <button type="button" key={item.id} disabled={running} onClick={() => toggle(item.id)} className={`text-left border p-4 transition-colors ${techniques.includes(item.id) ? 'border-red-500 bg-red-950/20' : 'border-white/15 hover:border-white/40'}`}><span className="text-red-400 text-[10px]">{item.asiCode}</span><h3 className="mt-2 text-xs uppercase tracking-wide">{item.name}</h3><p className="mt-2 text-[10px] leading-relaxed text-white/45">{item.description}</p></button>)}</div><button disabled={running || !target.trim() || !validCount} onClick={start} className="mt-6 w-full bg-red-600 py-4 text-xs uppercase tracking-[0.2em] disabled:opacity-30">{running ? `Executing ${validCount} strategies…` : `Run ${validCount} strategy audit`}</button></div>
-      <div className="lg:col-span-2">{error && <ErrorNotice message={error} />}{logs.length > 0 && <div className="mt-5 border border-white/10 bg-white/[0.02] max-h-64 overflow-auto p-4"><div className="text-[10px] uppercase tracking-wider text-white/35 mb-3">Live execution log</div>{logs.map((log, index) => <div key={`${log}-${index}`} className="py-1 text-[10px] text-white/65">{log}</div>)}</div>}</div>
-    </section>
-  </main>
+
+  if (me && !hasRole(me.role, 'operator', 'admin')) {
+    return <main className={pageClass}><PageHeader eyebrow="Campaign builder" title="New campaign" /><section className={`${gutter} py-8`}><Notice>Your role ({me.role}) cannot launch campaigns. Ask an operator.</Notice></section></main>
+  }
+
+  return (
+    <main className={pageClass}>
+      <PageHeader eyebrow="Campaign builder" title="New campaign" />
+      <section className={`${gutter} py-8 max-w-4xl space-y-8`}>
+        {error && <ErrorNotice message={error} />}
+
+        <Field label="Target">
+          <select aria-label="Target" className={inputClass} value={targetId} onChange={event => setTargetId(event.target.value)}>
+            <option value="">Select a verified target…</option>
+            {targets.map(item => <option key={item.target_id} value={item.target_id} disabled={!item.verified}>{item.name} ({item.environment}){item.verified ? '' : ' - unverified'}</option>)}
+          </select>
+        </Field>
+        {targets.some(item => !item.verified) && <p className="text-[10px] text-white/40">Unverified targets cannot be attacked. <Link className="underline" to="/targets">Verify ownership first.</Link></p>}
+
+        {production && (
+          <div data-testid="production-notice"><Notice>
+            Production target: safe defaults are enforced and these controls are locked. At most 1 request/second, 2 parallel conversations
+            and 300 requests in total; destructive tools are off and resource-exhaustion techniques are staging-only. Every request carries
+            an <code>X-Canary-Campaign</code> header so the owner can filter this traffic.
+          </Notice></div>
+        )}
+
+        <fieldset>
+          <legend className="text-[10px] uppercase tracking-wider text-white/50 mb-2">Techniques</legend>
+          <div className="grid sm:grid-cols-2 gap-2">
+            {TECHNIQUES.map(technique => {
+              const blocked = production && isForbiddenInProduction(technique.id)
+              return (
+                <label key={technique.id} className={`border px-3 py-2 text-xs flex gap-3 ${blocked ? 'opacity-40 border-white/10' : 'border-white/20 cursor-pointer'}`}>
+                  <input type="checkbox" disabled={blocked} checked={policy.techniques.includes(technique.id)} onChange={() => toggle(technique.id)} />
+                  <span><span className="block">{technique.name} <span className="text-white/30">{technique.asiCode}</span></span><span className="block text-white/40">{blocked ? 'Staging only' : technique.description}</span></span>
+                </label>
+              )
+            })}
+          </div>
+        </fieldset>
+
+        <div className="grid sm:grid-cols-3 gap-4">
+          <Field label="Trials per technique"><input type="number" min={1} max={50} className={inputClass} value={policy.trials_per_technique} onChange={number('trials_per_technique')} /></Field>
+          <Field label="Max turns"><input type="number" min={1} max={30} className={inputClass} value={policy.max_turns} onChange={number('max_turns')} /></Field>
+          <Field label="LLM budget (USD)"><input type="number" min={0.5} step={0.5} className={inputClass} value={policy.max_llm_cost_usd} onChange={number('max_llm_cost_usd')} /></Field>
+          <Field label="Rate limit (req/s)" hint={production ? 'Locked: production ≤ 1' : undefined}><input type="number" min={0.1} step={0.1} disabled={production} className={inputClass} value={policy.rate_limit_rps} onChange={number('rate_limit_rps')} /></Field>
+          <Field label="Parallel conversations" hint={production ? 'Locked: production ≤ 2' : undefined}><input type="number" min={1} disabled={production} className={inputClass} value={policy.max_parallel_conversations} onChange={number('max_parallel_conversations')} /></Field>
+          <Field label="Total requests" hint={production ? 'Locked: production ≤ 300' : undefined}><input type="number" min={1} disabled={production} className={inputClass} value={policy.max_total_requests} onChange={number('max_total_requests')} /></Field>
+        </div>
+
+        <div className="space-y-2 text-xs">
+          <label className="flex gap-3"><input type="checkbox" checked={policy.stop_on_first_confirmed} onChange={event => set('stop_on_first_confirmed', event.target.checked)} /> Stop on first confirmed finding</label>
+          <label className={`flex gap-3 ${production ? 'opacity-50' : ''}`}><input type="checkbox" disabled={production} checked={policy.allow_destructive_tools} onChange={event => set('allow_destructive_tools', event.target.checked)} /> Allow destructive tools{production ? ' (never on production)' : ''}</label>
+        </div>
+
+        {problems.length > 0 && target && <ul className="text-[11px] text-orange-300 list-disc pl-5">{problems.map(problem => <li key={problem}>{problem}</li>)}</ul>}
+        <div className="flex gap-3">
+          <button type="button" data-testid="launch" className={primaryButtonClass} disabled={!target || problems.length > 0 || submitting} onClick={launch}>{submitting ? 'Launching…' : 'Launch campaign'}</button>
+          <Link to="/campaigns" className={buttonClass}>Cancel</Link>
+        </div>
+      </section>
+    </main>
+  )
 }
