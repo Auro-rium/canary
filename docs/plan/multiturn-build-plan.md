@@ -417,3 +417,10 @@ Each phase ends with a review by the lead (Opus): read the diffs, run the full t
 
 - The content of `prompts/planner.md` and the attacker's turn strategies (owned by the security owner).
 - Non-HTTP targets (WebSocket, MCP). Add them later as new `SessionAdapter` transports.
+
+#### WP11 status
+- Done: observability/{redact,weave_tracing,wandb_metrics,service,setup}.py; optional extra `observability` (weave, wandb); WANDB_* settings; trace_op on ChatBackboard._generate/_post_message and SessionAdapter.send; init_observability(settings, service_name, providers) wired into API startup.
+- Redaction uses storage.v2.redaction.redact and fails closed to a sha256+length marker if unavailable. Raw text only with WANDB_EXPORT_RAW_EVIDENCE=true AND environment staging (set via trace_attributes(environment=...), default production).
+- Worker wiring left to WP7/lead: init_observability(get_settings(), service_name="worker", providers={"queue_depth": ..., "active_campaigns": ..., "kill_switch": ...}) at worker start.
+- Helpers for later WPs: weave_tracing.trace_attributes(**attrs), log_judge_vote(call, ...) (WP5), log_human_triage(call, ...) (WP8); campaign_finished summary keys documented in wandb_metrics.py.
+- Not done: weave.Evaluation/Dataset calibration and weave.StringPrompt publishing (WP5-dependent); TurnPlanner/TurnMonitor/judge/reporter get @trace_op when those exist.
