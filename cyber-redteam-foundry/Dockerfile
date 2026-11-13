@@ -12,6 +12,8 @@ COPY pyproject.toml ./
 COPY src ./src
 COPY configs ./configs
 COPY prompts ./prompts
+COPY alembic.ini ./alembic.ini
+COPY migrations ./migrations
 
 # Pre-install CPU torch to avoid downloading the 4 GB CUDA wheel
 RUN pip install --no-cache-dir \
@@ -25,4 +27,4 @@ ENV PYTHONPATH=/app:/app/src
 
 EXPOSE 8001
 
-CMD ["uvicorn", "cyberredteam.api:app", "--host", "0.0.0.0", "--port", "8001"]
+CMD ["sh", "-c", "python -m cyberredteam.jobs.migrate && exec uvicorn cyberredteam.api:app --host 0.0.0.0 --port 8001"]
