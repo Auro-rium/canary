@@ -71,6 +71,19 @@ class Settings(BaseSettings):
     timeout_seconds: int = 30
     deterministic_seed: int = 42
 
+    # WP7 control plane / jobs. Appended; do not reorder fields above.
+    # Global kill switch (env CANARY_KILL_SWITCH=1). Any running or queued
+    # campaign stops before its next turn. A DB flag (admin endpoint) does the same.
+    canary_kill_switch: bool = False
+    # Worker heartbeat cadence and the age after which a "running" campaign
+    # without a fresh heartbeat is considered orphaned and re-enqueued.
+    worker_heartbeat_interval_s: float = 10.0
+    worker_stale_after_s: float = 45.0
+    # DbRunControl cache TTL (it is called once per turn per conversation).
+    run_control_cache_s: float = 1.0
+    # SSE event-log poll interval for GET /api/v2/campaigns/{id}/events.
+    sse_poll_interval_s: float = 0.5
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

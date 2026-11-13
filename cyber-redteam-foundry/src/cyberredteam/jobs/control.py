@@ -1,0 +1,132 @@
+"""Durable run control: per-campaign cancel flag plus a global kill switch.
+
+``DbRunControl`` implements the frozen ``engine.control.RunControl`` protocol.
+Flags live in the ``run_control`` table so the API process (which sets them) and
+worker processes (which read them before every turn) share state.
+
+Rules, in order:
+
+1. ``CANARY_KILL_SWITCH`` in the environment (read uncached on every call): ``"killed"``.
+2. DB kill-switch flag: ``"killed"``.
+3. DB cancel flag for the campaign: ``"cancelled"``.
+4. Any error reading the DB: ``"killed"`` (fail closed).
+
+DB reads are cached for ``cache_ttl`` seconds (default 1s), so a DB flag is seen
+within ~1s; pass ``cache_ttl=0`` for immediate effect.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import time
+from collections.abc import Callable
+from datetime import datetime
+
+from sqlalchemy import select
+from sqlalchemy.orm import Session, sessionmaker
+
+from cyberredteam.engine.control import StopSignal
+from cyberredteam.jobs.tables import CANCEL_PREFIX, KILL_SWITCH_KEY, RunControlRow
+from cyberredteam.storage.v2.db import session_scope
+from cyberredteam.storage.v2.orm import utcnow
+
+logger = logging.getLogger(__name__)
+
+_TRUTHY = {"1", "true", "yes", "on"}
+
+
+def env_kill_switch_active() -> bool:
+    return os.environ.get("CANARY_KILL_SWITCH", "").strip().lower() in _TRUTHY
+
+
+class ControlStore:
+    """Sync reads/writes of the control flags."""
+
+    def __init__(self, factory: sessionmaker[Session]) -> None:
+        self._factory = factory
+
+    def _set(self, key: str, enabled: bool, actor: str | None) -> None:
+        with session_scope(self._factory) as s:
+            row = s.get(RunControlRow, key)
+            if row is None:
+                s.add(RunControlRow(key=key, enabled=enabled, updated_by=actor, updated_at=utcnow()))
+            else:
+                row.enabled = enabled
+                row.updated_by = actor
+                row.updated_at = utcnow()
+
+    def set_kill_switch(self, enabled: bool, actor: str | None = None) -> None:
+        self._set(KILL_SWITCH_KEY, enabled, actor)
+
+    def kill_switch_state(self) -> tuple[bool, str | None, datetime | None]:
+        with session_scope(self._factory) as s:
+            row = s.get(RunControlRow, KILL_SWITCH_KEY)
+            if row is None:
+                return False, None, None
+            return bool(row.enabled), row.updated_by, row.updated_at
+
+    def request_cancel(self, campaign_id: str, actor: str | None = None) -> None:
+        self._set(CANCEL_PREFIX + campaign_id, True, actor)
+
+    def cancel_requested(self, campaign_id: str) -> bool:
+        with session_scope(self._factory) as s:
+            row = s.get(RunControlRow, CANCEL_PREFIX + campaign_id)
+            return bool(row and row.enabled)
+
+    def read_signal(self, campaign_id: str) -> StopSignal | None:
+        """One query for both flags; ``killed`` wins over ``cancelled``."""
+        keys = (KILL_SWITCH_KEY, CANCEL_PREFIX + campaign_id)
+        with session_scope(self._factory) as s:
+            rows = {
+                r.key: bool(r.enabled)
+                for r in s.scalars(select(RunControlRow).where(RunControlRow.key.in_(keys)))
+            }
+        if rows.get(KILL_SWITCH_KEY):
+            return "killed"
+        if rows.get(CANCEL_PREFIX + campaign_id):
+            return "cancelled"
+        return None
+
+
+class DbRunControl:
+    """``RunControl`` backed by the ``run_control`` table. See module docstring."""
+
+    def __init__(
+        self,
+        factory: sessionmaker[Session],
+        *,
+        cache_ttl: float = 1.0,
+        clock: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._store = ControlStore(factory)
+        self._ttl = max(0.0, cache_ttl)
+        self._clock = clock
+        self._cache: dict[str, tuple[float, StopSignal | None]] = {}
+
+    @property
+    def store(self) -> ControlStore:
+        return self._store
+
+    def invalidate(self) -> None:
+        """Drop cached reads (the API calls this in-process after setting a flag)."""
+        self._cache.clear()
+
+    async def check(self, campaign_id: str) -> StopSignal | None:
+        if env_kill_switch_active():
+            return "killed"
+        now = self._clock()
+        hit = self._cache.get(campaign_id)
+        if hit is not None and hit[0] > now:
+            return hit[1]
+        try:
+            signal = await asyncio.to_thread(self._store.read_signal, campaign_id)
+        except Exception as exc:  # fail closed on ANY read error
+            logger.error("run control read failed (%s); failing closed", type(exc).__name__)
+            signal = "killed"
+        if len(self._cache) > 4096:
+            self._cache = {k: v for k, v in self._cache.items() if v[0] > now}
+        if self._ttl > 0:
+            self._cache[campaign_id] = (now + self._ttl, signal)
+        return signal

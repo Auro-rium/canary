@@ -10,13 +10,14 @@ from sqlalchemy import inspect, text
 from sqlalchemy.exc import IntegrityError
 from storage_v2_support import migrate_down, migrate_up, pg_url
 
+from cyberredteam.jobs import tables as _jobs_tables  # noqa: F401  (WP7 revision 0002)
 from cyberredteam.storage.v2 import orm
 from cyberredteam.storage.v2.db import make_engine
 
 TABLES = {
     "targets", "target_secrets", "target_verification", "campaigns", "conversations", "turns",
     "judge_votes", "verdicts", "technique_results", "findings", "finding_events", "audit_log",
-    "budget_ledger",
+    "budget_ledger", "run_control", "campaign_heartbeats", "campaign_events",
 }
 
 pg_only = pytest.mark.skipif(not pg_url(), reason="CANARY_TEST_DATABASE_URL not set")
