@@ -122,13 +122,13 @@ No external UI component library. All UI is hand-built with Tailwind utility cla
 | Variable | Description | Default |
 |---|---|---|
 | `VITE_API_URL` | Backend base URL | `""` (relative — nginx proxies) |
-| `VITE_API_TOKEN` | Optional direct-development bearer token; never set in Vercel production | — |
 
 When `VITE_API_URL` is empty (the default), all `/api/*` requests are relative and nginx routes them to `redteam-backend:8001`. In dev, Vite's proxy handles the same routing to `http://localhost:8001`.
 
-Vercel production requests stay relative to `/api/*`. The Vercel server-side proxy adds
-`CANARY_API_TOKEN` when forwarding to `CANARY_API_URL`, so browser bundles never contain the
-backend token. `VITE_API_TOKEN` is only for direct local development against an authenticated API.
+Vercel production requests stay relative to `/api/*`. The Vercel serverless proxy (`api/[...path].js`)
+only forwards the user's session cookie and headers to `CANARY_API_URL`; it holds no token and injects
+none. The backend authenticates the session and enforces roles. No credential may ever appear in a
+`VITE_*` variable (they are inlined into the public bundle).
 
 ---
 
@@ -154,7 +154,7 @@ npm install
 npm run dev        # http://localhost:5173
 ```
 
-Create `.env.local` with `VITE_API_TOKEN` only when connecting directly to a development backend. Production uses the server-side Vercel proxy.
+Sign in through the backend (session cookie); the dev server proxies `/api` to the backend. Never put a token in a `VITE_*` variable.
 
 ---
 
@@ -175,7 +175,6 @@ Multi-stage build: Node 20 builds the static assets, nginx 1.25-alpine serves th
 ```bash
 docker build -t canary-frontend \
   --build-arg VITE_API_URL="" \
-  --build-arg VITE_API_TOKEN="your-token" \
   .
 ```
 
@@ -202,7 +201,7 @@ The container serves the SPA on port **8000** and proxies `/api/*` to `redteam-b
 
 ## API Surface
 
-All requests are authenticated with `Authorization: Bearer <VITE_API_TOKEN>`. Every route below is wrapped in `src/lib/api.ts`.
+All requests are authenticated by the session cookie (`credentials: 'include'`). Every route below is wrapped in `src/lib/api.ts`.
 
 | Method | Endpoint | Used by |
 |---|---|---|

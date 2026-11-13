@@ -9,9 +9,7 @@ RUN npm ci
 
 # Build args baked into the JS bundle at build time
 ARG VITE_API_URL=""
-ARG VITE_API_TOKEN=""
 ENV VITE_API_URL=$VITE_API_URL
-ENV VITE_API_TOKEN=$VITE_API_TOKEN
 
 COPY . .
 RUN npm run build
