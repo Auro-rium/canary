@@ -1,0 +1,90 @@
+name: canary-gate
+
+on:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: canary-gate-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cyber-redteam-foundry
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --all-extras
+      - run: uv run ruff check .
+      - run: uv run pytest -q
+
+  gate:
+    # Self-contained demo: no secrets, no network. Seeds two synthetic campaigns,
+    # proves a healthy candidate passes and an injected regression fails the gate.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cyber-redteam-foundry
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --all-extras
+      - name: Gate passes on a healthy candidate
+        run: uv run cyber-rt gate --demo --json-out gate-demo.json
+      - name: Gate fails on an injected regression
+        run: |
+          set +e
+          uv run cyber-rt gate --demo --demo-inject-regression
+          code=$?
+          if [ "$code" -ne 1 ]; then
+            echo "expected exit code 1 (regression), got $code"
+            exit 1
+          fi
+
+  calibration:
+    # WP5 judge calibration regression check; runs only once eval/calibrate.py exists.
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: cyber-redteam-foundry
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync --all-extras
+      - name: Calibration regression check
+        run: |
+          if [ -f eval/calibrate.py ]; then
+            uv run python eval/calibrate.py
+          elif [ -f src/cyberredteam/eval/calibrate.py ]; then
+            uv run python -m cyberredteam.eval.calibrate
+          else
+            echo "eval/calibrate.py not present yet; skipping"
+          fi
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: canary
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: canary/package-lock.json
+      - run: npm ci
+      - run: npm run build
+      - run: npm run lint
+      - name: Bundle secret scan
+        run: |
+          if grep -rEn 'sk-[A-Za-z0-9_-]{20,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{30,}|AKIA[0-9A-Z]{16}|xox[baprs]-[A-Za-z0-9-]{10,}|-----BEGIN [A-Z ]*PRIVATE KEY-----|Bearer [A-Za-z0-9._-]{20,}' dist/; then
+            echo "token-like string found in dist/"
+            exit 1
+          fi
