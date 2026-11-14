@@ -116,3 +116,47 @@ def test_traced_op_runs_sync_and_async_and_propagates_errors():
     with pytest.raises(ValueError):
         boom()
     assert asyncio.iscoroutinefunction(acoro)
+
+
+def test_tenant_key_header_and_mapping_keys_and_url_query():
+    out = redact.sanitize({
+        "X-Tenant-Key": "t-abc", f"user {EMAIL}": 1,
+        "url": "https://api.example.com/v1/chat?api_key=zzz999&u=1",
+    })
+    text = repr(out)
+    assert out["X-Tenant-Key"] == "[REDACTED:secret]"
+    assert EMAIL not in text and "zzz999" not in text
+
+
+def test_ids_and_hashes_pass_through_unchanged():
+    uid = "0b1c2d3e-4f50-6789-abcd-ef0123456789"
+    out = redact.sanitize({"campaign_id": uid, "h": "[sha256:0123456789abcdef len=5]"})
+    assert out["campaign_id"] == uid and out["h"].startswith("[sha256:")
+
+
+def test_redactor_sees_only_bounded_prefix_but_hash_covers_all():
+    import time
+
+    tail = "TAILMARKER-not-in-prefix"
+    big = "x " * 5000 + tail
+    out = redact.redact_text(big)
+    assert tail not in out and "truncated" in out and len(out) < 5000
+    assert redact.hash_marker(big) in out
+    t0 = time.perf_counter()
+    redact.preview("a" * 1_000_000)
+    assert time.perf_counter() - t0 < 1.0
+
+
+def test_register_target_secrets_masks_credentials():
+    from pydantic import BaseModel
+
+    class Auth(BaseModel):
+        token: SecretStr
+        username: str
+
+    class Target:
+        auth = Auth(token=SecretStr("target-token-value-123"), username="svc-account-name")
+
+    redact.register_target_secrets(Target())
+    out = redact.sanitize({"m": "echo target-token-value-123 for svc-account-name"})
+    assert "target-token-value-123" not in repr(out)

@@ -34,7 +34,7 @@ _PEM = re.compile(
 )
 # scheme://userinfo@host where userinfo has a colon; the password may contain '@'
 # (match up to the last '@' of the authority).
-_URL_CREDS = re.compile(r"\b([A-Za-z][A-Za-z0-9+.-]*://)[^\s/?#:@]*:[^\s/?#]*@")
+_URL_CREDS = re.compile(r"\b([A-Za-z][A-Za-z0-9+.-]{0,31}://)[^\s/?#:@]*:[^\s/?#]*@")
 _BASIC = re.compile(
     r"(?i)(authorization[\\\"']{0,2}\s*[:=]\s*[\\\"']{0,2}basic\s+)[A-Za-z0-9+/=]{6,}"
 )
@@ -42,7 +42,7 @@ _COOKIE = re.compile(
     r"(?i)\b((?:set-)?cookie[\\\"']{0,2}\s*:\s*)(?:\\?\"[^\"\\]*\\?\"|'[^']*'|[^\r\n\"]+)"
 )
 _CURL_USER = re.compile(
-    r"(?i)(\bcurl\b[^\n]*?\s(?:-u|--user)[ =]+)(?:\"[^\"]*\"|'[^']*'|\S+)"
+    r"(?i)(\bcurl\b[^\n]{0,500}?\s(?:-u|--user)[ =]+)(?:\"[^\"]*\"|'[^']*'|\S+)"
 )
 _JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}")
 _BEARER = re.compile(r"(?i)\b(bearer)(\s+)[A-Za-z0-9._~+/=-]{8,}")
@@ -54,12 +54,14 @@ _KEY_PATTERNS = re.compile(
     r")\b"
 )
 _KV_SECRET = re.compile(
-    r"(?i)((?:[\w-]*?)(?:api[_-]?key|secret[_-]?access[_-]?key|secret(?:[_-]?key)?|access[_-]?token"
+    r"(?i)((?:api[_-]?key|secret[_-]?access[_-]?key|secret(?:[_-]?key)?|access[_-]?token"
     r"|auth[_-]?token|token|password|passwd|passphrase|pwd|client[_-]?secret)"
     r"(?:\\?[\"'])?\s*[:=]\s*)"
-    r"(?:\\?([\"'])(?:(?!\\?\2)[^\n])+?\\?\2|[^\"'\s,;}\]\\]{4,})"
+    r"(?:\\?([\"'])(?:(?!\\?\2)[^\n]){1,2000}?\\?\2|[^\"'\s,;}\]\\]{4,})"
 )
-_EMAIL = re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b")
+# Lookbehind (not \b): a match can only start at the beginning of a local-part run,
+# so a long run without '@' is scanned once, not once per start position.
+_EMAIL = re.compile(r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}\b")
 _SSN = re.compile(r"(?<![\d-])\d{3}-\d{2}-\d{4}(?![\d-])")
 _CARD = re.compile(r"(?<![\d])(?:\d[ -]?){12,18}\d(?![\d])")
 _PHONE = re.compile(

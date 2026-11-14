@@ -28,6 +28,7 @@ from cyberredteam.observability import hooks
 from cyberredteam.observability.redact import (
     current_environment,
     reset_environment,
+    safe_exception_message,
     sanitize,
     sanitize_inputs,
     sanitize_output,
@@ -38,6 +39,8 @@ logger = logging.getLogger(__name__)
 
 _MARK = "__canary_traced__"
 _initialized = False
+_client_hooks = False  # True once weave.init installed client-level sanitizers
+_patched: list[tuple[Any, str, Any]] = []
 
 # (module, class or None, attribute, op name)
 KNOWN_OPS: tuple[tuple[str, str, str, str], ...] = (
@@ -56,8 +59,40 @@ def _weave() -> Any | None:
         return None
 
 
+class _TracedError(Exception):
+    """Redacted stand-in raised inside the weave.op so the export is safe."""
+
+    original: BaseException
+
+
+_proxy_types: dict[str, type[_TracedError]] = {}
+
+
+def _proxy(exc: BaseException) -> _TracedError:
+    name = type(exc).__name__
+    cls = _proxy_types.get(name)
+    if cls is None:
+        cls = _proxy_types[name] = type(name, (_TracedError,), {})
+    err = cls(safe_exception_message(exc))
+    err.original = exc
+    return err
+
+
+def _client_sanitizes_inputs(inputs: dict[str, Any]) -> dict[str, Any]:
+    return inputs if _client_hooks else sanitize_inputs(inputs)
+
+
+def _client_sanitizes_output(output: Any) -> Any:
+    return output if _client_hooks else sanitize_output(output)
+
+
 def build_tracer() -> Callable[[str], Callable[[Any], Any]]:
-    """Return a ``trace_op``-compatible tracer backed by ``weave.op``."""
+    """Return a ``trace_op``-compatible tracer backed by ``weave.op``.
+
+    The function handed to ``weave.op`` converts any exception into a redacted
+    proxy (weave stores the message and traceback of what it sees); the outer
+    wrapper unwraps it again, so callers still receive the original exception.
+    """
 
     def tracer(name: str) -> Callable[[Any], Any]:
         def deco(fn: Any) -> Any:
@@ -66,13 +101,31 @@ def build_tracer() -> Callable[[str], Callable[[Any], Any]]:
             weave = _weave()
             if weave is None:
                 return fn
+
+            if inspect.iscoroutinefunction(fn):
+
+                @functools.wraps(fn)
+                async def inner(*args: Any, **kwargs: Any) -> Any:
+                    try:
+                        return await fn(*args, **kwargs)
+                    except Exception as exc:
+                        raise _proxy(exc) from None
+            else:
+
+                @functools.wraps(fn)
+                def inner(*args: Any, **kwargs: Any) -> Any:
+                    try:
+                        return fn(*args, **kwargs)
+                    except Exception as exc:
+                        raise _proxy(exc) from None
+
             try:
                 op = weave.op(
                     name=name,
-                    postprocess_inputs=sanitize_inputs,
-                    postprocess_output=sanitize_output,
+                    postprocess_inputs=_client_sanitizes_inputs,
+                    postprocess_output=_client_sanitizes_output,
                     enable_code_capture=False,
-                )(fn)
+                )(inner)
             except Exception as exc:  # never break import / decoration
                 logger.warning("weave.op failed for %s: %s", name, exc)
                 return fn
@@ -81,17 +134,24 @@ def build_tracer() -> Callable[[str], Callable[[Any], Any]]:
 
                 @functools.wraps(fn)
                 async def awrapper(*args: Any, **kwargs: Any) -> Any:
-                    return await op(*args, **kwargs)
+                    try:
+                        return await op(*args, **kwargs)
+                    except _TracedError as p:
+                        raise p.original from p.original.__cause__
 
                 wrapper: Any = awrapper
             else:
 
                 @functools.wraps(fn)
                 def swrapper(*args: Any, **kwargs: Any) -> Any:
-                    return op(*args, **kwargs)
+                    try:
+                        return op(*args, **kwargs)
+                    except _TracedError as p:
+                        raise p.original from p.original.__cause__
 
                 wrapper = swrapper
             setattr(wrapper, _MARK, True)
+            setattr(wrapper, "__canary_orig__", fn)
             return wrapper
 
         return deco
@@ -113,6 +173,7 @@ def instrument_known_ops() -> list[str]:
             wrapped = tracer(op_name)(fn)
             if wrapped is not fn:
                 setattr(owner, attr, wrapped)
+                _patched.append((owner, attr, fn))
                 done.append(op_name)
         except Exception as exc:
             logger.warning("could not instrument %s.%s: %s", cls_name, attr, exc)
@@ -120,22 +181,48 @@ def instrument_known_ops() -> list[str]:
 
 
 def init_tracing(entity: str | None, project: str) -> bool:
-    """``weave.init`` + install the tracer. False (no-op) when unavailable."""
-    global _initialized
+    """``weave.init`` + install the tracer. False (no-op) when unavailable.
+
+    May block on the network: callers on a request/startup path must run it in
+    a background thread (``setup.init_observability`` does).
+    Integrations are NOT auto-patched (LangChain/HF would export raw prompts
+    and node state), and client-level hooks sanitize every op's I/O.
+    """
+    global _initialized, _client_hooks
     if _initialized:
         return True
     weave = _weave()
     if weave is None:
         return False
     try:
-        weave.init(f"{entity}/{project}" if entity else project)
+        weave.init(
+            f"{entity}/{project}" if entity else project,
+            settings={"implicitly_patch_integrations": False, "print_call_link": False},
+            postprocess_inputs=sanitize_inputs,
+            postprocess_output=sanitize_output,
+        )
     except Exception as exc:  # W&B down or misconfigured: campaigns still run
         logger.warning("weave.init failed, tracing disabled: %s", exc)
         return False
+    _client_hooks = True
     hooks.set_tracer(build_tracer())
     instrument_known_ops()
     _initialized = True
     return True
+
+
+def reset_tracing() -> None:
+    """Undo init_tracing: identity tracer, patched methods restored (tests)."""
+    global _initialized, _client_hooks
+    for owner, attr, fn in reversed(_patched):
+        try:
+            setattr(owner, attr, fn)
+        except Exception:
+            pass
+    _patched.clear()
+    _initialized = False
+    _client_hooks = False
+    hooks.set_tracer(hooks._identity_tracer)
 
 
 # ── Attributes ──────────────────────────────────────────────────────────────

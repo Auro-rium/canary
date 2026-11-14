@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     wandb_project: str = "canary"
     wandb_mode: str = "online"  # online | offline | disabled
     wandb_export_raw_evidence: bool = False  # raw text only if also environment=staging
+    # Global PLATFORM ops webhook (kill switch, Backboard error rate, budget overrun).
+    # Per-target on-call is WP3 EngineDeps.on_call / the WP8 target webhook field.
+    canary_ops_webhook_url: Optional[str] = None
 
     class Config:
         env_file = ".env"

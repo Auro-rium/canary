@@ -115,3 +115,17 @@ def test_backboard_request_failure_feeds_tracker(monkeypatch):
     with pytest.raises(BackboardError):
         model._post_message([])
     assert seen == [False]
+
+
+def test_reset_for_tests_undoes_tracer_and_patches():
+    pytest.importorskip("weave")
+    from cyberredteam.llm.backboard import ChatBackboard
+    from cyberredteam.observability import weave_tracing
+    from cyberredteam.observability.setup import reset_for_tests
+
+    original = ChatBackboard.__dict__["_generate"]
+    weave_tracing.instrument_known_ops()
+    assert ChatBackboard.__dict__["_generate"] is not original
+    reset_for_tests()
+    assert ChatBackboard.__dict__["_generate"] is original
+    assert hooks._tracer is hooks._identity_tracer

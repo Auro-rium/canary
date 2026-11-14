@@ -30,10 +30,20 @@ _handle: ObservabilityHandle | None = None
 
 @dataclass
 class ObservabilityHandle:
-    enabled: bool = False
-    tracing: bool = False
+    active: bool = False
     metrics: Any = None
     reporter: ServiceReporter | None = None
+
+    @property
+    def enabled(self) -> bool:
+        """Configured AND the (async) service run did not fail."""
+        return self.active and not getattr(self.metrics, "service_failed", False)
+
+    @property
+    def tracing(self) -> bool:
+        from cyberredteam.observability import weave_tracing
+
+        return weave_tracing._initialized
 
     def shutdown(self) -> None:
         if self.reporter:
@@ -50,19 +60,22 @@ def _secret(value: Any) -> str | None:
 
 
 def _packages_available() -> bool:
-    try:
-        import wandb  # noqa: F401
+    import importlib.util
 
-        return True
+    try:
+        return importlib.util.find_spec("wandb") is not None
     except Exception:
         return False
+
+
+register_target_secrets = redact.register_target_secrets  # worker: call per target
 
 
 def init_observability(
     settings: Any,
     service_name: str = "api",
     providers: dict[str, Provider] | None = None,
-    oncall_webhook_url: str | None = None,
+    ops_webhook_url: str | None = None,
 ) -> ObservabilityHandle:
     global _handle
     with _lock:
@@ -70,7 +83,7 @@ def init_observability(
             return _handle
         _handle = ObservabilityHandle()
         try:
-            _handle = _init(settings, service_name, providers, oncall_webhook_url)
+            _handle = _init(settings, service_name, providers, ops_webhook_url)
         except Exception as exc:  # observability must never break startup
             logger.warning("observability init failed: %s", exc)
         return _handle
@@ -95,20 +108,22 @@ def _init(settings: Any, service_name: str, providers: Any, webhook: str | None)
     entity = getattr(settings, "wandb_entity", None)
     project = getattr(settings, "wandb_project", "canary") or "canary"
 
+    webhook = webhook or getattr(settings, "canary_ops_webhook_url", None)
     metrics = WandbCampaignMetrics(project=project, entity=entity, mode=mode,
                                    oncall_webhook_url=webhook)
     hooks.set_metrics(metrics)
     metrics.service_started(service_name, {"service": service_name})
 
-    tracing = False
+    # Everything below returns immediately: W&B work runs on background threads.
     if mode == "online" and key:
         from cyberredteam.observability.weave_tracing import init_tracing
 
-        tracing = init_tracing(entity, project)
+        threading.Thread(target=init_tracing, args=(entity, project), name="canary-weave-init",
+                         daemon=True).start()
 
     reporter = ServiceReporter(metrics.service_log, providers)
     reporter.start()
-    return ObservabilityHandle(True, tracing, metrics, reporter)
+    return ObservabilityHandle(True, metrics, reporter)
 
 
 def reset_for_tests() -> None:
@@ -119,3 +134,6 @@ def reset_for_tests() -> None:
             _handle.shutdown()
         _handle = None
     hooks.set_metrics(hooks.NoopMetrics())
+    from cyberredteam.observability.weave_tracing import reset_tracing
+
+    reset_tracing()
