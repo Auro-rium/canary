@@ -13,9 +13,11 @@ EMAIL = "alice.example@corp-example.com"
 
 @pytest.fixture(autouse=True)
 def _reset():
+    redact.configure_hash_key("test-deployment-key")
     redact.configure_raw_export(False)
     redact._known_secrets.clear()
     yield
+    redact.configure_hash_key(None)
     redact.configure_raw_export(False)
     redact._known_secrets.clear()
 
@@ -40,7 +42,7 @@ def test_inputs_export_no_raw_secret_bearer_header_or_email():
     assert out["headers"]["X-Api-Key"] == "[REDACTED:secret]"
     assert out["api_key"] == "[REDACTED:secret]"
     assert out["tokens_in"] == 12  # counters are not mistaken for secrets
-    assert "sha256:" in out["message"]  # preview carries a hash
+    assert "[hmac:" in out["message"]  # preview carries a hash
 
 
 def test_output_dataclasses_are_sanitized():
@@ -56,12 +58,12 @@ def test_fails_closed_without_redactor(monkeypatch):
 
     monkeypatch.setitem(sys.modules, "cyberredteam.storage.v2.redaction", None)
     out = redact.redact_text("totally raw text")
-    assert out.startswith("[sha256:") and "raw" not in out
+    assert out.startswith("[hmac:") and "raw" not in out
 
 
 def test_uses_real_wp6_redactor():
     out = redact.redact_text(f"mail {EMAIL}")
-    assert EMAIL not in out and not out.startswith("[sha256:")
+    assert EMAIL not in out and not out.startswith("[hmac:")
 
 
 @pytest.mark.parametrize(
@@ -129,7 +131,7 @@ def test_tenant_key_header_and_mapping_keys_and_url_query():
 
 
 def test_only_own_hash_marker_passes_through_unchanged():
-    marker = "[sha256:0123456789abcdef len=5]"
+    marker = "[hmac:0123456789abcdef len=5]"
     uid = "0b1c2d3e-4f50-6789-abcd-ef0123456789"
     out = redact.sanitize({"campaign_id": uid, "h": marker})
     assert out["h"] == marker and uid not in repr(out)

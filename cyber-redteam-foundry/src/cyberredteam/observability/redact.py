@@ -2,7 +2,8 @@
 
 Text goes through the WP6 redactor (``storage.v2.redaction.redact``) when it
 is importable. If it is not (or it raises), the adapter FAILS CLOSED: the text
-is replaced by ``[sha256:<16 hex> len=<n>]``, never exported raw.
+is replaced by ``[hmac:<16 hex> len=<n>]`` (keyed; ``[REDACTED:text len=<n>]`` when no
+key is configured), never exported raw.
 
 ``sanitize`` walks arbitrary structures, drops auth headers / secret-looking
 keys / ``SecretStr`` values and turns free text into a redacted preview plus a
@@ -15,6 +16,7 @@ from __future__ import annotations
 import contextvars
 import dataclasses
 import hashlib
+import hmac
 import logging
 import re
 import threading
@@ -39,7 +41,7 @@ _SECRET_KEY = re.compile(
 
 # Only our own hash marker passes through unredacted. Hex/digit strings are NOT exempt:
 # they may be API keys, card numbers, SSNs or phone numbers.
-_OWN_MARKER = re.compile(r"^\[sha256:[0-9a-f]{16} len=\d+\]$")
+_OWN_MARKER = re.compile(r"^\[(?:hmac:[0-9a-f]{16}|REDACTED:text) len=\d+\]$")
 # Long hex strings and long digit runs are masked even where the WP6 redactor has no rule.
 _WS = re.compile(r"\s")
 _EXTRA_TOKEN = re.compile(r"(?<![\w-])(?:[0-9a-fA-F]{20,}|\d{9,}|"
@@ -80,12 +82,42 @@ def raw_export_allowed(environment: str | None = None) -> bool:
     return _flag_raw and env == "staging"
 
 
-def _sha16(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8", "replace")).hexdigest()[:16]
+_hash_key: bytes | None = None
+_HASH_LABEL = b"canary-observability-hash-v1"
+
+
+def configure_hash_key(secret: str | None) -> None:
+    """Derive the per-deployment HMAC key from CANARY_ENCRYPTION_KEY (domain-separated).
+
+    With no key, no hash is ever emitted (unkeyed hashes of low-entropy values such
+    as SSNs or phone numbers are brute-forceable). Stable for a given deployment.
+    """
+    global _hash_key
+    _hash_key = hmac.new(secret.encode(), _HASH_LABEL, hashlib.sha256).digest() if secret else None
+
+
+def _mac16(text: str) -> str | None:
+    if _hash_key is None:
+        return None
+    return hmac.new(_hash_key, text.encode("utf-8", "replace"), hashlib.sha256).hexdigest()[:16]
 
 
 def hash_marker(text: str) -> str:
-    return f"[sha256:{_sha16(text)} len={len(text)}]"
+    """Keyed marker for ``text``; length-only ``[REDACTED:text len=N]`` without a key."""
+    mac = _mac16(text)
+    if mac is None:
+        return f"[REDACTED:text len={len(text)}]"
+    return f"[hmac:{mac} len={len(text)}]"
+
+
+def hash_suffix(text: str) -> str:
+    """`` [hmac:...]`` correlation suffix, or "" when no key is configured."""
+    mac = _mac16(text)
+    return "" if mac is None else f" [hmac:{mac} len={len(text)}]"
+
+
+def _is_marker(text: str) -> bool:
+    return bool(_OWN_MARKER.match(text))
 
 
 def _mask_known(text: str) -> str:
@@ -128,7 +160,7 @@ def redact_text(text: str | None, fail_closed: bool = True) -> str:
     if out is None:  # unavailable or failing: never export raw
         return hash_marker(full) if fail_closed else head
     if len(full) > MAX_REDACT_CHARS:
-        out += f" …[truncated {len(full) - MAX_REDACT_CHARS} chars {hash_marker(full)}]"
+        out += f" …[truncated {len(full) - MAX_REDACT_CHARS} chars{hash_suffix(full)}]"
     return out
 
 
@@ -139,11 +171,11 @@ def preview(text: str | None, hashes: bool = True) -> str:
     if _OWN_MARKER.match(masked):
         return masked
     red = redact_text(original)
-    if red.startswith("[sha256:") and red.endswith("]"):
-        return red  # fail-closed marker already carries hash and length
+    if _is_marker(red):
+        return red  # fail-closed marker already carries length (and keyed hash)
     if not hashes:
         return red[:PREVIEW_CHARS]
-    return f"{red[:PREVIEW_CHARS]} {hash_marker(original)}"
+    return f"{red[:PREVIEW_CHARS]}{hash_suffix(original)}"
 
 
 def _sanitize_str(text: str, raw: bool, hashes: bool = True) -> str:
@@ -282,7 +314,7 @@ def redact_long(text: str | None, chunk: int = MAX_REDACT_CHARS, overlap: int = 
     if n <= chunk:
         return redact_text(full)  # bounded single piece
     if n > max_total:
-        return redact_text(full[:chunk]) + f" …[truncated {n - chunk} chars {hash_marker(full)}]"
+        return redact_text(full[:chunk]) + f" …[truncated {n - chunk} chars{hash_suffix(full)}]"
 
     def red(piece: str) -> str:
         r = _redact_core(piece)
@@ -310,10 +342,10 @@ def redact_long(text: str | None, chunk: int = MAX_REDACT_CHARS, overlap: int = 
             cand = c + step
             step *= 2
         if cut is None:
-            end = min(n, cand + overlap)
-            out.append(hash_marker(full[pos:end]))
-            pos = end
-            continue
+            # Fail closed: no verified-safe cut in the search window, so everything
+            # from here to the end becomes one marker. No unredacted tail is emitted.
+            out.append(hash_marker(full[pos:]))
+            break
         out.append(red(full[pos:cut]))
         pos = cut
     return "".join(out)

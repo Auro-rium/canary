@@ -98,6 +98,7 @@ def _init(settings: Any, service_name: str, providers: Any, webhook: str | None)
     for name in ("backboard_api_key", "api_secret_key", "target_api_key", "canary_encryption_key"):
         redact.register_secret(_secret(getattr(settings, name, None)))
     redact.register_secret(key)
+    redact.configure_hash_key(_secret(getattr(settings, "canary_encryption_key", None)))
     redact.configure_raw_export(bool(getattr(settings, "wandb_export_raw_evidence", False)))
 
     if mode == "disabled" or not _packages_available() or (not key and mode != "offline"):

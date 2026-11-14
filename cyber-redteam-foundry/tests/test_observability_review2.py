@@ -14,9 +14,11 @@ from cyberredteam.observability.wandb_metrics import WandbCampaignMetrics
 
 @pytest.fixture(autouse=True)
 def _clean():
+    redact.configure_hash_key("test-deployment-key")
     redact.configure_raw_export(False)
     redact._known_secrets.clear()
     yield
+    redact.configure_hash_key(None)
     redact.configure_raw_export(False)
     redact._known_secrets.clear()
 
@@ -54,7 +56,7 @@ def test_own_hash_marker_still_passes_through():
 def test_exception_message_hash_only_by_default_preview_only_when_raw():
     exc = ValueError("free text evidence patient Zed Q. Public lives on Elm St")
     msg = redact.safe_exception_message(exc)
-    assert msg.startswith("ValueError [sha256:") and "Elm St" not in msg
+    assert msg.startswith("ValueError [hmac:") and "Elm St" not in msg
     redact.configure_raw_export(True)
     token = redact.set_environment("staging")
     try:
@@ -233,3 +235,43 @@ def test_service_run_retries_after_backoff():
     m.service_log({"a": 1.0})
     assert m.flush(5)
     assert not m.service_failed and sdk.run.logged
+
+
+# ── keyed hashes ────────────────────────────────────────────────────────────
+
+def test_same_input_different_keys_gives_different_hashes_and_is_stable():
+    redact.configure_hash_key("key-one")
+    a1, a2 = redact.hash_marker("123-45-6789"), redact.hash_marker("123-45-6789")
+    redact.configure_hash_key("key-two")
+    b = redact.hash_marker("123-45-6789")
+    assert a1 == a2 and a1 != b
+    import hashlib
+
+    plain = hashlib.sha256(b"123-45-6789").hexdigest()[:16]
+    assert plain not in a1 and plain not in b  # not a bare sha256
+
+
+def test_no_key_emits_no_hash_anywhere():
+    redact.configure_hash_key(None)
+    assert redact.hash_marker("123456789") == "[REDACTED:text len=9]"
+    assert redact.hash_suffix("123456789") == ""
+    for out in (
+        redact.preview("some free text 123 here"),
+        redact.sanitize({"k": "free text value"})["k"],
+        redact.safe_exception_message(ValueError("boom")),
+        redact.redact_text("x " * 5000),
+        redact.redact_long("word " * 4000),
+    ):
+        assert "hmac" not in out and "sha256" not in out
+    assert redact.safe_exception_message(ValueError("boom")) == "ValueError [REDACTED:text len=4]"
+
+
+# ── redact_long fails closed ────────────────────────────────────────────────
+
+def test_redact_long_never_emits_unredacted_tail_for_huge_secret():
+    secret = "Z" * 400_000
+    text = "intro words " * 600 + "token=" + secret + " tail words"
+    out = redact.redact_long(text)
+    assert "ZZZZZZZZ" not in out
+    assert "intro words" in out
+    assert "tail words" not in out or "ZZZZ" not in out
