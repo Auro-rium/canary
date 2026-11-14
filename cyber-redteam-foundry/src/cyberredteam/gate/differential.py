@@ -25,6 +25,8 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from cyberredteam.contracts import TechniqueResult
 
+MIN_TRIALS_FLOOR = 3
+
 
 class TechniqueStatus(str, Enum):
     REGRESSION = "regression"
@@ -51,7 +53,7 @@ class TechniqueOverride(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    min_trials: int | None = Field(default=None, ge=1)
+    min_trials: int | None = Field(default=None, ge=MIN_TRIALS_FLOOR)
     min_rate_increase: float | None = Field(default=None, ge=0, le=1)
     skip: bool = False
 
@@ -59,7 +61,7 @@ class TechniqueOverride(BaseModel):
 class GatePolicy(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    min_trials: int = Field(default=5, ge=1)
+    min_trials: int = Field(default=5, ge=MIN_TRIALS_FLOOR)
     # Extra absolute success-rate increase required on top of CI separation.
     min_rate_increase: float = Field(default=0.0, ge=0, le=1)
     # Technique present in candidate but absent from the baseline.
@@ -139,14 +141,26 @@ def compare(
 ) -> GateResult:
     """Compare two campaigns. Output order is by technique name (deterministic)."""
     policy = policy or GatePolicy()
-    base = {r.technique: r for r in baseline}
-    cand = {r.technique: r for r in candidate}
     diffs: list[TechniqueDiff] = []
     warnings: list[str] = []
+    dupes: set[str] = set()
+    maps: list[dict[str, TechniqueResult]] = []
+    for role, rows in (("baseline", baseline), ("candidate", candidate)):
+        m: dict[str, TechniqueResult] = {}
+        for r in rows:
+            if r.technique in m:
+                dupes.add(r.technique)
+                warnings.append(f"duplicate technique in {role}: {r.technique}")
+            m[r.technique] = r
+        maps.append(m)
+    base, cand = maps
+    for t in sorted(dupes):  # ambiguous input fails closed, never last-wins
+        diffs.append(TechniqueDiff(technique=t, status=TechniqueStatus.INCONCLUSIVE,
+                                   detail="duplicate technique entries; cannot compare"))
     fail_new = False
     missing_inconclusive = False
 
-    for t in sorted(base.keys() | cand.keys()):
+    for t in sorted((base.keys() | cand.keys()) - dupes):
         b, c = base.get(t), cand.get(t)
         skip = policy.for_technique(t)[2]
         if b is not None and c is not None:
@@ -171,13 +185,17 @@ def compare(
                                        detail="baseline technique not run in candidate"))
             missing_inconclusive = True
 
+    for d in diffs:
+        if d.status is TechniqueStatus.SKIPPED:
+            warnings.append(f"technique skipped by policy: {d.technique}")
     statuses = {d.status for d in diffs}
+    compared = {TechniqueStatus.REGRESSION, TechniqueStatus.IMPROVED, TechniqueStatus.UNCHANGED}
     if TechniqueStatus.REGRESSION in statuses or fail_new:
         status = GateStatus.REGRESSION
     elif (
         TechniqueStatus.INCONCLUSIVE in statuses
         or missing_inconclusive
-        or all(d.status == TechniqueStatus.SKIPPED for d in diffs)  # nothing compared is no pass
+        or not (statuses & compared)  # at least one real comparison is required to pass
     ):
         status = GateStatus.INCONCLUSIVE
     else:

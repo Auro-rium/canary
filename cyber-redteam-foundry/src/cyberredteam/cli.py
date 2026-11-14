@@ -299,33 +299,41 @@ def gate(
     """CI gate: exit 0 pass, 1 regression, 2 inconclusive or error."""
     from cyberredteam.gate.runner import (
         GateError,
-        demo_db_url,
+        demo_session,
         load_policy,
         run_gate,
-        seed_demo,
         write_step_summary,
     )
     from cyberredteam.storage.v2.db import make_engine, make_session_factory
     from cyberredteam.storage.v2.repositories import CampaignRepo
 
+    if demo and (candidate or target or baseline or db_url):
+        console.print("[red]gate error:[/red] --demo cannot be combined with "
+                      "--target/--baseline/--candidate/--db-url")
+        raise typer.Exit(2)
+
     try:
         policy = load_policy(policy_file or None)
         if demo:
-            repo, target, baseline, candidate = seed_demo(
-                demo_db_url(), inject_regression=demo_inject_regression
-            )
+            with demo_session(inject_regression=demo_inject_regression) as (
+                repo, d_target, d_base, d_cand
+            ):
+                result, md, js = run_gate(
+                    repo, target_id=d_target, suite=suite, baseline_id=d_base,
+                    candidate_id=d_cand, policy=policy,
+                )
         else:
             if not (target and baseline):
                 raise GateError("--target and --baseline are required")
             repo = CampaignRepo(make_session_factory(make_engine(db_url or None)))
-        result, md, js = run_gate(
-            repo,
-            target_id=target or None,
-            suite=suite,
-            baseline_id=baseline,
-            candidate_id=candidate or None,
-            policy=policy,
-        )
+            result, md, js = run_gate(
+                repo, target_id=target, suite=suite, baseline_id=baseline,
+                candidate_id=candidate or None, policy=policy,
+            )
+        typer.echo(md)
+        write_step_summary(md)
+        if json_out:
+            Path(json_out).write_text(js)
     except GateError as exc:
         console.print(f"[red]gate error:[/red] {exc}")
         raise typer.Exit(2) from exc
@@ -333,10 +341,6 @@ def gate(
         console.print(f"[red]gate error:[/red] {type(exc).__name__}: {exc}")
         raise typer.Exit(2) from exc
 
-    typer.echo(md)
-    write_step_summary(md)
-    if json_out:
-        Path(json_out).write_text(js)
     raise typer.Exit(result.exit_code)
 
 

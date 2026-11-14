@@ -6,6 +6,8 @@ import json
 import os
 import tempfile
 import uuid
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 
 from cyberredteam.contracts import CampaignPolicy, TargetConfig, TechniqueResult
@@ -100,41 +102,55 @@ _HEALTHY = [("prompt_injection", 20, 3), ("data_exfiltration", 20, 0), ("tool_ab
 _REGRESSED = [("prompt_injection", 20, 3), ("data_exfiltration", 20, 12), ("tool_abuse", 20, 4)]
 
 
-def demo_db_url() -> str:
-    return f"sqlite:///{Path(tempfile.mkdtemp(prefix='canary-gate-')) / 'demo.db'}"
+@contextmanager
+def demo_session(*, inject_regression: bool) -> Iterator[tuple[CampaignRepo, str, str, str]]:
+    """Seed two synthetic campaigns into a throwaway SQLite DB; clean up on exit.
 
-
-def seed_demo(db_url: str, *, inject_regression: bool) -> tuple[CampaignRepo, str, str, str]:
-    """Seed two synthetic campaigns into a fresh SQLite DB.
-
-    Returns (repo, target_id, baseline_id, candidate_id).
+    Yields (repo, target_id, baseline_id, candidate_id). The temp directory is
+    removed and CANARY_ENCRYPTION_KEY restored to its previous value afterwards.
     """
     from cyberredteam.storage.v2 import orm
     from cyberredteam.storage.v2.db import make_engine, make_session_factory
+    from cyberredteam.storage.v2.encrypted import reset_key_cache
     from cyberredteam.storage.v2.repositories import SqlTargetStore
 
-    if not os.environ.get("CANARY_ENCRYPTION_KEY"):
-        from cryptography.fernet import Fernet
+    prev_key = os.environ.get("CANARY_ENCRYPTION_KEY")
+    engine = None
+    try:
+        with tempfile.TemporaryDirectory(prefix="canary-gate-") as tmp:
+            if not prev_key:
+                from cryptography.fernet import Fernet
 
-        os.environ["CANARY_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
-    engine = make_engine(db_url)
-    orm.Base.metadata.create_all(engine)
-    factory = make_session_factory(engine)
-    target = TargetConfig(
-        target_id=str(uuid.uuid4()),
-        name="demo-fake-target",
-        endpoint="http://127.0.0.1:9/chat",
-        auth={"type": "none"},
-        session_mode="stateless_history",
-        environment="staging",
-    )
-    SqlTargetStore(factory).create(target)
-    repo = CampaignRepo(factory)
-    policy = CampaignPolicy(techniques=[t for t, _, _ in _BASELINE], trials_per_technique=20)
-    cand_rows = _REGRESSED if inject_regression else _HEALTHY
-    for cid, rows in (("demo-baseline", _BASELINE), ("demo-candidate", cand_rows)):
-        repo.create(cid, target.target_id, policy, created_by="gate-demo")
-        repo.save_technique_results(
-            cid, [TechniqueResult.from_counts(t, n, k) for t, n, k in rows]
-        )
-    return repo, target.target_id, "demo-baseline", "demo-candidate"
+                os.environ["CANARY_ENCRYPTION_KEY"] = Fernet.generate_key().decode()
+                reset_key_cache()
+            engine = make_engine(f"sqlite:///{Path(tmp) / 'demo.db'}")
+            orm.Base.metadata.create_all(engine)
+            factory = make_session_factory(engine)
+            target = TargetConfig(
+                target_id=str(uuid.uuid4()),
+                name="demo-fake-target",
+                endpoint="http://127.0.0.1:9/chat",
+                auth={"type": "none"},
+                session_mode="stateless_history",
+                environment="staging",
+            )
+            SqlTargetStore(factory).create(target)
+            repo = CampaignRepo(factory)
+            policy = CampaignPolicy(
+                techniques=[t for t, _, _ in _BASELINE], trials_per_technique=20
+            )
+            cand_rows = _REGRESSED if inject_regression else _HEALTHY
+            for cid, rows in (("demo-baseline", _BASELINE), ("demo-candidate", cand_rows)):
+                repo.create(cid, target.target_id, policy, created_by="gate-demo")
+                repo.save_technique_results(
+                    cid, [TechniqueResult.from_counts(t, n, k) for t, n, k in rows]
+                )
+            yield repo, target.target_id, "demo-baseline", "demo-candidate"
+    finally:
+        if engine is not None:
+            engine.dispose()
+        if prev_key is None:
+            os.environ.pop("CANARY_ENCRYPTION_KEY", None)
+        else:
+            os.environ["CANARY_ENCRYPTION_KEY"] = prev_key
+        reset_key_cache()
