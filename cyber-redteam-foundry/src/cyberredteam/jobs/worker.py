@@ -8,10 +8,11 @@ from __future__ import annotations
 
 import logging
 
+from cyberredteam.engine import PlannerFactory
 from cyberredteam.jobs.control import DbRunControl
 from cyberredteam.jobs.execution import JobRuntime
 from cyberredteam.jobs.queue import make_app, make_connector
-from cyberredteam.jobs.runner_wiring import make_runner
+from cyberredteam.jobs.runner_wiring import load_planner_factory, make_runner
 from cyberredteam.settings import get_settings
 from cyberredteam.storage.v2.db import make_session_factory
 
@@ -22,7 +23,7 @@ async def _placeholder(request, campaign_id):  # replaced by make_runner below
     return None
 
 
-def build_runtime() -> JobRuntime:
+def build_runtime(planner_factory: PlannerFactory | None = None) -> JobRuntime:
     s = get_settings()
     factory = make_session_factory()
     runtime = JobRuntime(
@@ -32,18 +33,21 @@ def build_runtime() -> JobRuntime:
         heartbeat_interval_s=s.worker_heartbeat_interval_s,
         stale_after_s=s.worker_stale_after_s,
     )
-    runtime.runner = make_runner(runtime)
+    if planner_factory is None:
+        planner_factory = load_planner_factory(s.planner_factory)
+    runtime.runner = make_runner(runtime, planner_factory)
     return runtime
 
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO)
-    connector = make_connector(get_settings().database_url)
+    s = get_settings()
+    connector = make_connector(s.database_url)
     if connector is None:
         raise SystemExit("the worker needs a Postgres DATABASE_URL (postgresql+psycopg://...)")
     app = make_app(connector, build_runtime())
     logger.info("canary worker starting")
-    app.run_worker(wait=True)
+    app.run_worker(wait=True, shutdown_graceful_timeout=s.worker_shutdown_graceful_s)
 
 
 if __name__ == "__main__":

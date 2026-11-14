@@ -7,7 +7,6 @@ Included by ``cyberredteam.api`` on the main app, so the app-wide
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 from typing import Annotated
 
@@ -17,8 +16,9 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session, sessionmaker
 
+from cyberredteam.contracts import CampaignCancelledPayload
 from cyberredteam.jobs.control import ControlStore, DbRunControl, env_kill_switch_active
-from cyberredteam.jobs.events import TERMINAL_EVENT_TYPES, EventLog
+from cyberredteam.jobs.events import MAX_SEQ, TERMINAL_EVENT_TYPES, EventLog
 from cyberredteam.observability.hooks import get_metrics
 from cyberredteam.settings import get_settings
 from cyberredteam.storage.v2.db import make_session_factory
@@ -92,7 +92,10 @@ def cancel_campaign(campaign_id: str, plane: ControlPlane = Depends(get_control_
     status = "cancelling"
     if rec.status == "queued":  # never started: nothing to wind down
         plane.campaigns.set_status(campaign_id, "cancelled")
-        plane.events.append(campaign_id, "campaign_cancelled", {"status": "cancelled"})
+        plane.events.append(
+            campaign_id, "campaign_cancelled",
+            CampaignCancelledPayload(campaign_id=campaign_id, reason="user", cancelled_by=API_ACTOR),
+        )
         status = "cancelled"
     plane.audit.record(API_ACTOR, "campaign.cancel", f"campaign:{campaign_id}", {"was": rec.status})
     logger.info("[API] cancel requested campaign=%s", campaign_id)
@@ -120,10 +123,6 @@ def set_kill_switch(body: KillSwitchBody, plane: ControlPlane = Depends(get_cont
     return _kill_view(plane)
 
 
-def _sse(seq: int, event: str, data: dict) -> str:
-    return f"id: {seq}\nevent: {event}\ndata: {json.dumps(data, default=str)}\n\n"
-
-
 @router.get("/api/v2/campaigns/{campaign_id}/events")
 async def campaign_events(
     campaign_id: str,
@@ -139,9 +138,11 @@ async def campaign_events(
     after = 0
     if last_event_id not in (None, ""):
         try:
-            after = max(0, int(str(last_event_id).strip()))
+            after = int(str(last_event_id).strip())
         except ValueError:
             raise HTTPException(status_code=400, detail="Last-Event-ID must be an integer") from None
+        if not 0 <= after <= MAX_SEQ:
+            raise HTTPException(status_code=400, detail="Last-Event-ID out of range")
     if await run_in_threadpool(plane.campaigns.get, campaign_id) is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
@@ -156,7 +157,7 @@ async def campaign_events(
             events = await run_in_threadpool(plane.events.since, campaign_id, last)
             for ev in events:
                 last = ev.seq
-                yield _sse(ev.seq, ev.type, {"seq": ev.seq, "type": ev.type, **ev.payload})
+                yield ev.to_sse()
             if events:
                 quiet = 0.0
                 if any(e.type in TERMINAL_EVENT_TYPES for e in events):

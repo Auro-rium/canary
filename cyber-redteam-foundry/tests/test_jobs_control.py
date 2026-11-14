@@ -1,14 +1,15 @@
-# ruff: noqa: F811
 """DbRunControl, kill switch and cancel, with fake conversations (no network)."""
 
 from __future__ import annotations
 
 import asyncio
 
-from jobs_support import FakeRunner, db_factory, seed_campaign  # noqa: F401
+import pytest
+from jobs_support import FakeRunner, seed_campaign
 
 from cyberredteam.engine.control import RunControl
-from cyberredteam.jobs.control import DbRunControl
+from cyberredteam.jobs.control import DbRunControl, env_kill_switch_active
+from cyberredteam.settings import get_settings
 
 
 def _control(factory, ttl=0.0):
@@ -36,6 +37,28 @@ def test_cancel_and_kill_precedence(db_factory):
         assert await c.check(other) is None
 
     asyncio.run(go())
+
+
+def test_production_default_is_uncached():
+    assert get_settings().run_control_cache_s == 0.0
+    assert DbRunControl(None)._ttl == 0.0
+
+
+@pytest.mark.parametrize("value", ["1", "true", "TRUE", "yes", "on", "anything", " 2 "])
+def test_env_kill_switch_fails_safe_truthy(monkeypatch, value):
+    monkeypatch.setenv("CANARY_KILL_SWITCH", value)
+    assert env_kill_switch_active() is True
+
+
+@pytest.mark.parametrize("value", ["", "0", "false", "False", "no", "off", "  "])
+def test_env_kill_switch_falsy(monkeypatch, value):
+    monkeypatch.setenv("CANARY_KILL_SWITCH", value)
+    assert env_kill_switch_active() is False
+
+
+def test_env_kill_switch_unset(monkeypatch):
+    monkeypatch.delenv("CANARY_KILL_SWITCH", raising=False)
+    assert env_kill_switch_active() is False
 
 
 def test_env_kill_switch(db_factory, monkeypatch):
@@ -104,11 +127,34 @@ async def _run_ten(db_factory, control, trigger):
         assert n - per_conv_before.get(conv, 0) <= 1, conv
 
 
+def _prod_control(db_factory):
+    """DbRunControl exactly as the worker builds it (production settings)."""
+    return DbRunControl(db_factory, cache_ttl=get_settings().run_control_cache_s)
+
+
 def test_env_kill_switch_stops_ten_conversations(db_factory, monkeypatch):
-    c = _control(db_factory)
+    c = _prod_control(db_factory)
     asyncio.run(_run_ten(db_factory, c, lambda: monkeypatch.setenv("CANARY_KILL_SWITCH", "1")))
 
 
 def test_db_kill_switch_stops_ten_conversations(db_factory):
-    c = _control(db_factory)
+    c = _prod_control(db_factory)
     asyncio.run(_run_ten(db_factory, c, lambda: c.store.set_kill_switch(True, "t")))
+
+
+def test_cancel_stops_ten_conversations_with_production_settings(db_factory):
+    c = _prod_control(db_factory)
+
+    async def go():
+        cid = seed_campaign(db_factory)
+        runner = FakeRunner(db_factory, c, conversations=10, turns=60, delay=0.005)
+        task = asyncio.create_task(runner(None, cid))
+        await asyncio.sleep(0.1)
+        before = len(runner.sent)
+        c.store.request_cancel(cid, "t")
+        await asyncio.wait_for(task, 5)
+        assert before > 0 and set(runner.stopped.values()) == {"cancelled"}
+        assert len(runner.stopped) == 10
+        assert len(runner.sent) - before <= 10  # at most one in-flight turn per conversation
+
+    asyncio.run(go())

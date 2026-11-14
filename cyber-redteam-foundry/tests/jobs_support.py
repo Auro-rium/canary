@@ -20,6 +20,7 @@ from storage_v2_support import (
 from cyberredteam.contracts import CampaignRequest
 from cyberredteam.engine.control import RunControl
 from cyberredteam.storage.v2.db import make_engine, make_session_factory
+from cyberredteam.storage.v2.encrypted import reset_key_cache
 from cyberredteam.storage.v2.repositories import (
     CampaignRepo,
     ConversationRepo,
@@ -39,6 +40,7 @@ from cyberredteam.storage.v2.repositories import (
 def db_factory(request, tmp_path, monkeypatch):
     """A migrated database (SQLite file, or Postgres when configured) -> sessionmaker."""
     monkeypatch.setenv("CANARY_ENCRYPTION_KEY", Fernet.generate_key().decode())
+    reset_key_cache()
     monkeypatch.delenv("CANARY_KILL_SWITCH", raising=False)
     url = pg_url() if request.param == "postgres" else f"sqlite:///{tmp_path / 'jobs.db'}"
     if request.param == "postgres":

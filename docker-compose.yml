@@ -70,6 +70,9 @@ services:
       context: ./cyber-redteam-foundry
       dockerfile: Dockerfile
     command: ["python", "-m", "cyberredteam.jobs.worker"]
+    # Must exceed the worker's graceful shutdown (WORKER_SHUTDOWN_GRACEFUL_S, default 25s)
+    # so in-flight campaigns are released for resume before SIGKILL.
+    stop_grace_period: 40s
     env_file:
       - ./cyber-redteam-foundry/.env
     environment:

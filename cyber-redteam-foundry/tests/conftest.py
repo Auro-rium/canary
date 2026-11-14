@@ -39,3 +39,7 @@ def _bypass_api_auth():
     app.dependency_overrides[require_auth] = lambda: None
     yield
     app.dependency_overrides.pop(require_auth, None)
+
+
+# WP7 jobs tests: shared DB fixture (SQLite, or Postgres when configured).
+from jobs_support import db_factory  # noqa: E402, F401

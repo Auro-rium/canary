@@ -1,4 +1,3 @@
-# ruff: noqa: F811
 """Control-plane API: cancel, kill switch, auth, audit rows, SSE Last-Event-ID replay."""
 
 from __future__ import annotations
@@ -7,11 +6,18 @@ import asyncio
 
 import pytest
 from fastapi.testclient import TestClient
-from jobs_support import FakeRunner, db_factory, seed_campaign  # noqa: F401
+from jobs_support import FakeRunner, seed_campaign
 
 from cyberredteam.api import app, require_auth, settings
+from cyberredteam.contracts import (
+    BudgetUpdatePayload,
+    CampaignCompletePayload,
+    TurnPayload,
+    parse_sse_event,
+)
 from cyberredteam.jobs.api_v2 import ControlPlane, get_control_plane
 from cyberredteam.jobs.control import DbRunControl
+from cyberredteam.jobs.events import EventLogSink
 from cyberredteam.observability import hooks
 from cyberredteam.storage.v2.repositories import AuditRepo, CampaignRepo
 
@@ -118,52 +124,102 @@ def test_control_endpoints_require_auth(db_factory, plane):
         app.dependency_overrides[require_auth] = lambda: None
 
 
-def _parse_sse(text: str) -> list[tuple[int, str]]:
+def _blocks(text: str) -> list[dict]:
+    """Parse SSE text into [{id, event: parsed contract model}] via the contract parser."""
     out = []
     for block in text.strip().split("\n\n"):
         fields = dict(line.split(": ", 1) for line in block.splitlines() if ": " in line)
         if "id" in fields:
-            out.append((int(fields["id"]), fields["event"]))
+            ev = parse_sse_event(fields["data"])  # contract round trip
+            assert str(ev.seq) == fields["id"]
+            out.append(ev)
     return out
 
 
-def test_sse_last_event_id_replay(db_factory, plane, client):
+def _budget(cid, n):
+    return BudgetUpdatePayload(
+        campaign_id=cid, requests_used=n, max_total_requests=100, llm_cost_usd=0, max_llm_cost_usd=1
+    )
+
+
+def _complete(cid):
+    return CampaignCompletePayload(
+        campaign_id=cid, conversations=1, confirmed=0, duration_seconds=1.0
+    )
+
+
+def test_sse_last_event_id_replay_and_contract_roundtrip(db_factory, plane, client):
     cid = seed_campaign(db_factory, status="running")
     for i in range(5):
-        plane.events.append(cid, "turn", {"n": i})
-    plane.events.append(cid, "campaign_completed", {"status": "completed"})
+        plane.events.append(cid, "budget_update", _budget(cid, i))
+    plane.events.append(cid, "campaign_complete", _complete(cid))
     CampaignRepo(db_factory).set_status(cid, "completed")
 
-    full = _parse_sse(client.get(f"/api/v2/campaigns/{cid}/events").text)
-    assert [s for s, _ in full] == [1, 2, 3, 4, 5, 6]
+    full = _blocks(client.get(f"/api/v2/campaigns/{cid}/events").text)
+    assert [e.seq for e in full] == [1, 2, 3, 4, 5, 6]
+    assert [e.type for e in full][-1] == "campaign_complete"
+    assert full[2].payload.requests_used == 2 and full[0].timestamp.tzinfo is not None
 
-    resumed = _parse_sse(
+    resumed = _blocks(
         client.get(f"/api/v2/campaigns/{cid}/events", headers={"Last-Event-ID": "3"}).text
     )
-    assert [s for s, _ in resumed] == [4, 5, 6]
-    assert resumed[-1][1] == "campaign_completed"
+    assert [e.seq for e in resumed] == [4, 5, 6]
 
-    assert client.get(
-        f"/api/v2/campaigns/{cid}/events", headers={"Last-Event-ID": "abc"}
-    ).status_code == 400
+    url = f"/api/v2/campaigns/{cid}/events"
+    assert client.get(url, headers={"Last-Event-ID": "abc"}).status_code == 400
+    assert client.get(url, headers={"Last-Event-ID": str(2**31)}).status_code == 400
+    assert client.get(url, headers={"Last-Event-ID": "-1"}).status_code == 400
+    assert client.get(url, headers={"Last-Event-ID": str(2**31 - 1)}).status_code == 200
     assert client.get("/api/v2/campaigns/missing/events").status_code == 404
+
+
+def test_only_contract_event_types_are_accepted(db_factory, plane):
+    cid = seed_campaign(db_factory)
+    for bad in ("campaign_completed", "campaign_killed", "campaign_resumed"):
+        with pytest.raises(ValueError):
+            plane.events.append(cid, bad, {"campaign_id": cid})
+
+
+def test_cancel_route_event_matches_contract(db_factory, plane, client):
+    cid = seed_campaign(db_factory)  # queued -> cancelled immediately
+    client.post(f"/api/v2/campaigns/{cid}/cancel")
+    (ev,) = _blocks(client.get(f"/api/v2/campaigns/{cid}/events").text)
+    assert ev.type == "campaign_cancelled"
+    assert ev.payload.campaign_id == cid and ev.payload.reason == "user"
+    assert ev.payload.cancelled_by == "api-token"
+
+
+def test_sink_enforces_preview_cap(db_factory, plane):
+    cid = seed_campaign(db_factory)
+    long = "x" * 5000
+    payload = TurnPayload.model_construct(  # bypasses the validator on purpose
+        campaign_id=cid, conversation_id="c", index=0, message_preview=long,
+        response_preview=long, tool_call_names=[], http_status=200, latency_ms=1.0,
+        monitor_hits=[], error=long,
+    )
+    asyncio.run(EventLogSink(plane.events).emit("turn", payload))
+    (ev,) = plane.events.since(cid)
+    assert len(ev.payload.message_preview) <= 280 and ev.payload.message_preview.endswith("…")
+    assert len(ev.payload.response_preview) <= 280
+    assert len(ev.payload.error) <= 500
+    assert parse_sse_event(ev.to_sse().split("data: ", 1)[1].strip()).seq == ev.seq
 
 
 def test_sse_streams_live_events_and_disconnect_is_harmless(db_factory, plane, client):
     cid = seed_campaign(db_factory, status="running")
-    plane.events.append(cid, "turn", {"n": 0})
+    plane.events.append(cid, "budget_update", _budget(cid, 0))
     import threading
     import time
 
     def later():
         time.sleep(0.1)
-        plane.events.append(cid, "turn", {"n": 1})
-        plane.events.append(cid, "campaign_completed", {})
+        plane.events.append(cid, "budget_update", _budget(cid, 1))
+        plane.events.append(cid, "campaign_complete", _complete(cid))
 
     t = threading.Thread(target=later)
     t.start()
-    seen = _parse_sse(client.get(f"/api/v2/campaigns/{cid}/events").text)
+    seen = _blocks(client.get(f"/api/v2/campaigns/{cid}/events").text)
     t.join()
-    assert [s for s, _ in seen] == [1, 2, 3]
+    assert [e.seq for e in seen] == [1, 2, 3]
     # a client that read one event and left changed nothing about the campaign
     assert CampaignRepo(db_factory).get(cid).status == "running"
