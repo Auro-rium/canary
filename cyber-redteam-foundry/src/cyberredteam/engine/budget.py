@@ -21,11 +21,16 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import math
 
 from cyberredteam.contracts import BudgetUpdatePayload, CampaignPolicy
 from cyberredteam.storage.v2.repositories import BudgetLedgerRepo
 
 logger = logging.getLogger(__name__)
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 class BudgetLedger:
@@ -58,19 +63,29 @@ class BudgetLedger:
     def write_failed(self) -> bool:
         return self._write_failed
 
+    def _caps_valid(self) -> bool:
+        """Fail closed on caps that would never trip (NaN, inf, <= 0, non-numbers)."""
+        req = self._policy.max_total_requests
+        usd = self._policy.max_llm_cost_usd
+        return (
+            _is_number(req) and math.isfinite(req) and req > 0
+            and _is_number(usd) and math.isfinite(usd) and usd >= 0
+        )
+
     def _usd_exhausted(self) -> bool:
         return self._usd > 0 and self._usd >= self._policy.max_llm_cost_usd
 
     def exhausted(self) -> bool:
         return (
             self._write_failed
+            or not self._caps_valid()
             or self._requests >= self._policy.max_total_requests
             or self._usd_exhausted()
         )
 
     def remaining_pct(self) -> float:
         """Smallest remaining share across the limits, in percent (0..100)."""
-        if self._write_failed:
+        if self._write_failed or not self._caps_valid():
             return 0.0
         shares = [1.0 - self._requests / self._policy.max_total_requests]
         if self._policy.max_llm_cost_usd > 0:

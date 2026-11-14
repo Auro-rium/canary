@@ -313,14 +313,30 @@ class CampaignPolicy(_Contract):
         return v
 
     def production_violations(self) -> list[str]:
-        """Return human-readable section-4 violations (empty if compliant)."""
+        """Return human-readable section-4 violations (empty if compliant).
+
+        Fail closed even on an unvalidated instance (``model_construct``):
+        each limit must be a finite number with ``0 < value <= limit`` (NaN,
+        infinities, zero/negative values and non-numbers are violations), and
+        ``allow_destructive_tools`` must be exactly ``False``.
+        """
         problems: list[str] = []
-        if self.allow_destructive_tools:
+        if self.allow_destructive_tools is not False:
             problems.append("allow_destructive_tools must be false in production")
         for name, limit in PRODUCTION_LIMITS.items():
-            if getattr(self, name) > limit:
-                problems.append(f"{name} must be <= {limit:g} in production")
-        banned = sorted(PRODUCTION_FORBIDDEN_TECHNIQUES.intersection(self.techniques))
+            value = getattr(self, name, None)
+            ok = (
+                isinstance(value, (int, float))
+                and not isinstance(value, bool)
+                and math.isfinite(value)
+                and 0 < value <= limit
+            )
+            if not ok:
+                problems.append(f"{name} must be > 0 and <= {limit:g} in production")
+        techniques = self.techniques if isinstance(self.techniques, (list, tuple)) else []
+        if not techniques:
+            problems.append("techniques must be a non-empty list")
+        banned = sorted(PRODUCTION_FORBIDDEN_TECHNIQUES.intersection(map(str, techniques)))
         if banned:
             problems.append(f"techniques {banned} are staging-only")
         return problems

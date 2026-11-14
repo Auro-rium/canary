@@ -48,8 +48,8 @@ and run on the event loop.
 from __future__ import annotations
 
 import asyncio
-import contextlib
 import logging
+import math
 import os
 import time
 from collections import Counter
@@ -107,6 +107,10 @@ ERROR_STREAK_LIMIT = 3
 RESUME_ACTOR = "system:engine-resume"
 HOOK_TIMEOUT_ENV = "CANARY_ENGINE_HOOK_TIMEOUT_S"
 DEFAULT_HOOK_TIMEOUT_S = 5.0
+MAX_HOOK_TIMEOUT_S = 60.0
+MIN_CONTROL_POLL_S = 0.05
+MAX_CONTROL_POLL_S = 60.0
+MAX_STEP_TIMEOUT_S = 600.0
 
 BeforeAttempt = Callable[[], Awaitable[None]]
 AdapterFactory = Callable[[TargetConfig, str, RateLimiter, BeforeAttempt], SessionAdapter]
@@ -135,11 +139,43 @@ def _default_monitors() -> list[TurnMonitor]:
 
 
 def _default_hook_timeout() -> float:
+    """From env, finite and clamped to (0, 60]; anything invalid gives the default."""
     try:
         value = float(os.environ.get(HOOK_TIMEOUT_ENV, DEFAULT_HOOK_TIMEOUT_S))
     except ValueError:
         return DEFAULT_HOOK_TIMEOUT_S
-    return value if value > 0 else DEFAULT_HOOK_TIMEOUT_S
+    if not math.isfinite(value) or value <= 0:
+        return DEFAULT_HOOK_TIMEOUT_S
+    return min(value, MAX_HOOK_TIMEOUT_S)
+
+
+def _finite_positive(name: str, value: object) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValueError(f"{name} must be a number")
+    v = float(value)
+    if not math.isfinite(v) or v <= 0:
+        raise ValueError(f"{name} must be finite and > 0")
+    return v
+
+
+def _bounded_timing(name: str, value: object) -> float:
+    """Validate an EngineDeps timing knob: finite, > 0, clamped to its range."""
+    v = _finite_positive(name, value)
+    if name == "control_poll_s":
+        return min(max(v, MIN_CONTROL_POLL_S), MAX_CONTROL_POLL_S)
+    if name == "hook_timeout_s":
+        return min(v, MAX_HOOK_TIMEOUT_S)
+    return min(v, MAX_STEP_TIMEOUT_S)
+
+
+_TIMING_FIELDS = frozenset({"hook_timeout_s", "control_poll_s", "planner_timeout_s", "monitor_timeout_s"})
+
+
+def _genuinely_cancelled() -> bool:
+    """True if this task was really cancelled (worker shutdown), as opposed to
+    a hook raising ``CancelledError`` on its own."""
+    task = asyncio.current_task()
+    return task is not None and task.cancelling() > 0
 
 
 @dataclass
@@ -176,6 +212,16 @@ class EngineDeps:
     on_call: OnCallNotifier | None = None
     hook_timeout_s: float = field(default_factory=_default_hook_timeout)
     control_poll_s: float = 1.0
+    planner_timeout_s: float = 120.0
+    monitor_timeout_s: float = 30.0
+
+    def __setattr__(self, name: str, value: object) -> None:
+        # Timing knobs are validated on construction and on later assignment:
+        # finite and > 0 (an infinite timeout lets a hanging hook block forever),
+        # hook timeout <= 60 s, poll interval floored at 0.05 s (no spin loop).
+        if name in _TIMING_FIELDS:
+            value = _bounded_timing(name, value)
+        super().__setattr__(name, value)
 
 
 class ConversationResult(BaseModel):
@@ -243,17 +289,33 @@ async def _emit(deps: EngineDeps, event_type: SseEventType, payload: BaseModel) 
     try:
         async with asyncio.timeout(deps.hook_timeout_s):
             await deps.events.emit(event_type, payload)
+    except asyncio.CancelledError:
+        if _genuinely_cancelled():
+            raise
+        logger.warning("event sink raised CancelledError for %s", event_type)
     except Exception:  # an event sink (or its timeout) must never break the run
         logger.warning("event sink failed for %s", event_type)
 
 
 async def _control(deps: EngineDeps, campaign_id: str) -> str | None:
+    """``None``, ``"cancelled"`` or ``"killed"``. Fails closed: an error, a
+    timeout, a hook-raised CancelledError or any unknown value means killed."""
     try:
         async with asyncio.timeout(deps.hook_timeout_s):
-            return await deps.run_control.check(campaign_id)
+            signal = await deps.run_control.check(campaign_id)
+    except asyncio.CancelledError:
+        if _genuinely_cancelled():
+            raise
+        logger.error("run control raised CancelledError for %s; treating as killed", campaign_id)
+        return "killed"
     except Exception:  # fail closed, timeouts included
         logger.error("run control check failed for %s; treating as killed", campaign_id)
         return "killed"
+    if signal is None or signal == "cancelled":
+        return signal
+    if signal != "killed":
+        logger.error("unknown run control signal for %s; treating as killed", campaign_id)
+    return "killed"
 
 
 def _safe_metrics(call: Callable[[], None]) -> None:
@@ -314,10 +376,15 @@ async def _run_monitors(runtime: CampaignRuntime, context: MonitorContext, turn:
     stop = critical = False
     for monitor in runtime.deps.monitors:
         try:
-            res = await _monitor(monitor, turn, context)
-        except Exception:
-            # Fail closed: a broken detector stops the conversation.
-            logger.error("monitor %s failed", type(monitor).__name__)
+            async with asyncio.timeout(runtime.deps.monitor_timeout_s):
+                res = await _monitor(monitor, turn, context)
+            if not isinstance(res, MonitorResult):
+                raise TypeError("monitor returned a non-MonitorResult")
+        except (Exception, asyncio.CancelledError) as exc:
+            if isinstance(exc, asyncio.CancelledError) and _genuinely_cancelled():
+                raise
+            # Fail closed: a broken, hanging or self-cancelling detector stops the conversation.
+            logger.error("monitor %s failed (%s)", type(monitor).__name__, type(exc).__name__)
             hits.append(MonitorHit(name=f"monitor_error:{type(monitor).__name__}", severity="high"))
             stop = True
             continue
@@ -369,8 +436,7 @@ async def _notify_on_call(runtime: CampaignRuntime, cid: str, turn_index: int, h
         async with asyncio.timeout(deps.hook_timeout_s):
             await deps.on_call(alert)
     except asyncio.CancelledError:
-        task = asyncio.current_task()
-        if task is not None and task.cancelling():
+        if _genuinely_cancelled():
             raise
         failure = "cancelled"
     except TimeoutError:
@@ -418,8 +484,11 @@ async def _send(runtime: CampaignRuntime, conv: _Conv, message: str) -> TurnResu
         return await adapter.send(message)
     finally:
         watcher.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
+        try:
             await watcher
+        except asyncio.CancelledError:
+            if _genuinely_cancelled():
+                raise
 
 
 @trace_op("engine.turn")
@@ -448,7 +517,8 @@ async def _turn_step(runtime: CampaignRuntime, conv: _Conv) -> ConversationStatu
         max_turns=policy.max_turns,
         remaining_turns=policy.max_turns - index,
     )
-    planned = await _plan(conv.planner, state)
+    async with asyncio.timeout(deps.planner_timeout_s):  # a hang ends the conversation as error
+        planned = await _plan(conv.planner, state)
     if planned is not None:
         await runtime.ledger.charge_llm(planned.llm_tokens, planned.llm_cost_usd)
     # end_conversation means "stop here": the message is not sent.
@@ -680,27 +750,71 @@ async def run_conversation(spec: ConversationSpec, runtime: CampaignRuntime) -> 
 # ── Campaign ─────────────────────────────────────────────────────────────────
 
 
+def _is_count(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
+def _is_finite(value: object, *, positive: bool) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(value) and (value > 0 if positive else value >= 0)
+
+
+def policy_sanity_violations(policy: CampaignPolicy) -> list[str]:
+    """Engine invariants for every environment, even on an unvalidated
+    (``model_construct``) policy: whole positive counts, a finite positive
+    rate, a finite non-negative USD cap, a real boolean, unique techniques."""
+    problems: list[str] = []
+    for name in ("trials_per_technique", "max_turns", "max_parallel_conversations", "max_total_requests"):
+        if not _is_count(getattr(policy, name, None)):
+            problems.append(f"{name} must be a whole number >= 1")
+    if not _is_finite(getattr(policy, "rate_limit_rps", None), positive=True):
+        problems.append("rate_limit_rps must be finite and > 0")
+    if not _is_finite(getattr(policy, "max_llm_cost_usd", None), positive=False):
+        problems.append("max_llm_cost_usd must be finite and >= 0")
+    if not isinstance(getattr(policy, "allow_destructive_tools", None), bool):
+        problems.append("allow_destructive_tools must be a boolean")
+    techniques = getattr(policy, "techniques", None)
+    if (
+        not isinstance(techniques, (list, tuple))
+        or not techniques
+        or not all(isinstance(t, str) and t.strip() for t in techniques)
+        or len(set(techniques)) != len(techniques)
+    ):
+        problems.append("techniques must be a non-empty list of unique names")
+    return problems
+
+
 def check_campaign_allowed(request: CampaignRequest) -> None:
-    """Defence in depth, before anything is written: the target must be
-    verified, and production targets must satisfy the section-4 policy rules
-    even if the request bypassed ``CampaignRequest`` validation."""
-    if not request.target.verified:
+    """Defence in depth, before anything is written. Fails closed even when
+    ``CampaignRequest`` validation was bypassed (``model_construct``):
+
+    * the target must be verified, with ``verified is True`` exactly;
+    * any environment other than exactly ``"staging"`` gets the production
+      rules (``CampaignPolicy.production_violations``);
+    * :func:`policy_sanity_violations` must be empty.
+    """
+    target, policy = request.target, request.policy
+    if getattr(target, "verified", None) is not True:
         raise CampaignRefused("target is not verified")
-    if request.target.environment == "production":
-        problems = request.policy.production_violations()
-        if problems:
-            raise CampaignRefused("production policy rejected: " + "; ".join(problems))
+    problems = policy_sanity_violations(policy)
+    if getattr(target, "environment", None) != "staging":
+        problems += policy.production_violations()
+    if problems:
+        raise CampaignRefused("campaign policy rejected: " + "; ".join(problems))
 
 
 async def begin_campaign(request: CampaignRequest, campaign_id: str, deps: EngineDeps) -> CampaignRuntime:
     """Refuse unsafe launches, create (idempotently) the campaign row, mark it
     running, emit the start."""
     check_campaign_allowed(request)
+    # Build the runtime (ledger totals, limiter) first: if that fails, no
+    # campaign row has been left "running".
+    runtime = CampaignRuntime.create(request, campaign_id, deps)
     campaigns = deps.repos.campaigns
     if campaigns.get(campaign_id) is None:
         campaigns.create(campaign_id, request.target.target_id, request.policy)
     campaigns.set_status(campaign_id, "running")
-    runtime = CampaignRuntime.create(request, campaign_id, deps)
     policy = request.policy
     total = len(policy.techniques) * policy.trials_per_technique
     _safe_metrics(
@@ -855,6 +969,7 @@ __all__ = [
     "LimiterFactory",
     "begin_campaign",
     "check_campaign_allowed",
+    "policy_sanity_violations",
     "default_adapter_factory",
     "finish_campaign",
     "fail_campaign",
