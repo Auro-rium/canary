@@ -37,7 +37,13 @@ _SECRET_KEY = re.compile(
     re.IGNORECASE,
 )
 
-_ID_LIKE = re.compile(r"^(?:[0-9a-fA-F]{8,64}|[0-9a-fA-F-]{36}|\[sha256:[0-9a-f]{16} len=\d+\])$")
+# Only our own hash marker passes through unredacted. Hex/digit strings are NOT exempt:
+# they may be API keys, card numbers, SSNs or phone numbers.
+_OWN_MARKER = re.compile(r"^\[sha256:[0-9a-f]{16} len=\d+\]$")
+# Long hex strings and long digit runs are masked even where the WP6 redactor has no rule.
+_WS = re.compile(r"\s")
+_EXTRA_TOKEN = re.compile(r"(?<![\w-])(?:[0-9a-fA-F]{20,}|\d{9,}|"
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?![\w-])")
 _URL_QUERY = re.compile(r"(https?://[^\s?#\"'<>]+)\?[^\s#\"'<>]*")
 
 _known_secrets: set[str] = set()
@@ -96,6 +102,16 @@ def mask_known(text: str) -> str:
     return _URL_QUERY.sub(r"\1?[REDACTED:query]", _mask_known(text))
 
 
+def _redact_core(piece: str) -> str | None:
+    """Run the WP6 redactor (+ token masking) on ``piece``; None if unavailable."""
+    try:
+        from cyberredteam.storage.v2.redaction import redact
+
+        return _EXTRA_TOKEN.sub("[REDACTED:token]", str(redact(piece).text))
+    except Exception:
+        return None
+
+
 def redact_text(text: str | None, fail_closed: bool = True) -> str:
     """Redact ``text`` via the WP6 redactor, or fail closed to a hash marker.
 
@@ -108,11 +124,8 @@ def redact_text(text: str | None, fail_closed: bool = True) -> str:
         return ""
     full = str(text)
     head = mask_known(full[:MAX_REDACT_CHARS])
-    try:
-        from cyberredteam.storage.v2.redaction import redact
-
-        out = str(redact(head).text)
-    except Exception:  # unavailable or failing: never export raw
+    out = _redact_core(head)
+    if out is None:  # unavailable or failing: never export raw
         return hash_marker(full) if fail_closed else head
     if len(full) > MAX_REDACT_CHARS:
         out += f" …[truncated {len(full) - MAX_REDACT_CHARS} chars {hash_marker(full)}]"
@@ -122,8 +135,9 @@ def redact_text(text: str | None, fail_closed: bool = True) -> str:
 def preview(text: str | None, hashes: bool = True) -> str:
     """Redacted preview (<= PREVIEW_CHARS) plus a hash of the original text."""
     original = "" if text is None else str(text)
-    if _ID_LIKE.match(original):
-        return original  # ids and hashes pass through untouched
+    masked = _mask_known(original)  # known secrets first, always
+    if _OWN_MARKER.match(masked):
+        return masked
     red = redact_text(original)
     if red.startswith("[sha256:") and red.endswith("]"):
         return red  # fail-closed marker already carries hash and length
@@ -243,6 +257,63 @@ def safe_exception_message(exc: BaseException) -> str:
                 )
         except Exception:
             pass
-        return f"{name}: {_sanitize_str(text, raw_export_allowed())}"
+        if raw_export_allowed():
+            return f"{name}: {_sanitize_str(text, True)}"
+        # Free-text PII is not regex-detectable: class name + hash only by default.
+        return f"{name} {hash_marker(text)}"
     except Exception:
         return name
+
+
+def redact_long(text: str | None, chunk: int = MAX_REDACT_CHARS, overlap: int = 512,
+                max_total: int = 4_000_000) -> str:
+    """Redact a long document (report) in bounded chunks, keeping all of it.
+
+    Chunk cut points are chosen at whitespace and VERIFIED over an overlap
+    window: a cut is accepted only if redacting ``left+right`` equals redacting
+    each side separately, so a secret straddling the boundary is never split.
+    If no safe cut is found, that region is replaced by a hash marker (fail
+    closed). Input beyond ``max_total`` chars is replaced by a hash marker.
+    """
+    if not text:
+        return ""
+    full = mask_known(str(text))
+    n = len(full)
+    if n <= chunk:
+        return redact_text(full)  # bounded single piece
+    if n > max_total:
+        return redact_text(full[:chunk]) + f" …[truncated {n - chunk} chars {hash_marker(full)}]"
+
+    def red(piece: str) -> str:
+        r = _redact_core(piece)
+        return hash_marker(piece) if r is None else r
+
+    out: list[str] = []
+    pos = 0
+    while pos < n:
+        if n - pos <= chunk + overlap:
+            out.append(red(full[pos:]))
+            break
+        cand, step, cut = pos + chunk, 256, None
+        for _ in range(10):  # exponentially growing search: bounded work per chunk
+            if cand >= n - overlap:  # near the end: redact the remainder as one piece
+                cut = n
+                break
+            ws = _WS.search(full, cand, cand + 256)
+            c = ws.start() if ws else cand
+            # Compare against the WHOLE chunk so far (not just a short window): a
+            # secret that began earlier in the chunk (e.g. a PEM block) is seen.
+            left, right = full[pos:c], full[c:c + overlap]
+            if red(left + right) == red(left) + red(right):
+                cut = c
+                break
+            cand = c + step
+            step *= 2
+        if cut is None:
+            end = min(n, cand + overlap)
+            out.append(hash_marker(full[pos:end]))
+            pos = end
+            continue
+        out.append(red(full[pos:cut]))
+        pos = cut
+    return "".join(out)

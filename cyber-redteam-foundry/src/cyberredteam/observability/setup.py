@@ -12,6 +12,7 @@ mode is the exception, for local runs) or ``WANDB_MODE=disabled``.
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import threading
@@ -110,6 +111,7 @@ def _init(settings: Any, service_name: str, providers: Any, webhook: str | None)
 
     webhook = webhook or getattr(settings, "canary_ops_webhook_url", None)
     metrics = WandbCampaignMetrics(project=project, entity=entity, mode=mode,
+                                   directory=getattr(settings, "wandb_dir", None),
                                    oncall_webhook_url=webhook)
     hooks.set_metrics(metrics)
     metrics.service_started(service_name, {"service": service_name})
@@ -123,7 +125,19 @@ def _init(settings: Any, service_name: str, providers: Any, webhook: str | None)
 
     reporter = ServiceReporter(metrics.service_log, providers)
     reporter.start()
-    return ObservabilityHandle(True, metrics, reporter)
+    handle = ObservabilityHandle(True, metrics, reporter)
+    atexit.register(handle.shutdown)  # flush queued campaign_finished on exit
+    return handle
+
+
+def shutdown_observability() -> None:
+    """Drain and close W&B (API shutdown hook; also registered with atexit)."""
+    handle = _handle
+    if handle is not None:
+        try:
+            handle.shutdown()
+        except Exception as exc:
+            logger.warning("observability shutdown failed: %s", type(exc).__name__)
 
 
 def reset_for_tests() -> None:

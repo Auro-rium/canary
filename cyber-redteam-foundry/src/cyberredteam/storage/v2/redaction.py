@@ -57,7 +57,11 @@ _KV_SECRET = re.compile(
     r"(?i)((?:api[_-]?key|secret[_-]?access[_-]?key|secret(?:[_-]?key)?|access[_-]?token"
     r"|auth[_-]?token|token|password|passwd|passphrase|pwd|client[_-]?secret)"
     r"(?:\\?[\"'])?\s*[:=]\s*)"
-    r"(?:\\?([\"'])(?:(?!\\?\2)[^\n]){1,2000}?\\?\2|[^\"'\s,;}\]\\]{4,})"
+    r"(?:\\?([\"'])(?:(?!\\?\2)[^\n]){1,2000}?\\?\2"
+    # Linear fallback for quoted values longer than 2000 chars or unterminated ones:
+    # redact up to the closing quote (or end of line).
+    r"|\\?([\"'])(?:(?!\\?\3)[^\n])+(?:\\?\3)?"
+    r"|[^\"'\s,;}\]\\]{4,})"
 )
 # Lookbehind (not \b): a match can only start at the beginning of a local-part run,
 # so a long run without '@' is scanned once, not once per start position.

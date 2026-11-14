@@ -19,9 +19,11 @@ from cyberredteam.llm.observable import ObservableLLM
 
 
 @pytest.fixture(autouse=True)
-def _wandb_disabled(monkeypatch):
+def _wandb_disabled(monkeypatch, tmp_path_factory):
     """Tests never talk to W&B unless they explicitly build an offline run."""
     monkeypatch.setenv("WANDB_MODE", "disabled")
+    # Never write run files into the repo/CWD.
+    monkeypatch.setenv("WANDB_DIR", str(tmp_path_factory.mktemp("wandb")))
     monkeypatch.delenv("WANDB_API_KEY", raising=False)
 
 

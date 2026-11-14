@@ -128,10 +128,11 @@ def test_tenant_key_header_and_mapping_keys_and_url_query():
     assert EMAIL not in text and "zzz999" not in text
 
 
-def test_ids_and_hashes_pass_through_unchanged():
+def test_only_own_hash_marker_passes_through_unchanged():
+    marker = "[sha256:0123456789abcdef len=5]"
     uid = "0b1c2d3e-4f50-6789-abcd-ef0123456789"
-    out = redact.sanitize({"campaign_id": uid, "h": "[sha256:0123456789abcdef len=5]"})
-    assert out["campaign_id"] == uid and out["h"].startswith("[sha256:")
+    out = redact.sanitize({"campaign_id": uid, "h": marker})
+    assert out["h"] == marker and uid not in repr(out)
 
 
 def test_redactor_sees_only_bounded_prefix_but_hash_covers_all():

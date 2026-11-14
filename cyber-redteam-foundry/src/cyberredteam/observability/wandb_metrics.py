@@ -28,10 +28,14 @@ WP3's ``EngineDeps.on_call`` / WP8's target webhook, not this module.
 
 from __future__ import annotations
 
+import copy
+import functools
 import json
 import logging
+import os
 import queue
 import re
+import tempfile
 import threading
 import time
 from collections.abc import Callable
@@ -40,6 +44,7 @@ from typing import Any
 from cyberredteam.observability.redact import (
     mask_known,
     raw_export_allowed,
+    redact_long,
     redact_text,
     sanitize,
 )
@@ -63,6 +68,27 @@ def _ssrf_guard(url: str) -> None:
     from cyberredteam.security.ownership import check_target_url
 
     check_target_url(url)
+
+
+def default_wandb_dir() -> str:
+    """Run-file directory: never the CWD (run dirs hold entity/host info)."""
+    path = os.path.join(tempfile.gettempdir(), "canary-wandb")
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _never_raises(fn: Callable[..., Any]) -> Callable[..., Any]:
+    """Hooks contract: public metrics methods never raise into the caller."""
+
+    @functools.wraps(fn)
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            logger.warning("observability %s failed: %s", fn.__name__, type(exc).__name__)
+            return None
+
+    return wrapper
 
 
 class CircuitBreaker:
@@ -98,7 +124,8 @@ class WandbCampaignMetrics:
         init_timeout_s: float = 5.0,
         backoff_s: float = 300.0,
     ) -> None:
-        self.project, self.entity, self.mode, self.directory = project, entity, mode, directory
+        self.project, self.entity, self.mode = project, entity, mode
+        self.directory = directory or default_wandb_dir()
         self.oncall_webhook_url = oncall_webhook_url  # global ops webhook
         self._http_post = http_post or _default_http_post
         self._url_check = url_check or _ssrf_guard
@@ -116,12 +143,17 @@ class WandbCampaignMetrics:
         self._worker: threading.Thread | None = None
         self._worker_lock = threading.Lock()
         self.disabled = False
+        self._closed = False
+        self._abandon = False  # set if the worker outlives close(): it must not create runs
+        self._service_name = "api"
 
     # ── worker plumbing ─────────────────────────────────────────────────────
 
     def _submit(self, job: Callable[[], None]) -> None:
         try:
             with self._worker_lock:
+                if self._closed:
+                    return
                 if self._worker is None:
                     self._worker = threading.Thread(
                         target=self._run_worker, name="canary-wandb", daemon=True
@@ -174,7 +206,7 @@ class WandbCampaignMetrics:
     def _init_run(self, **kwargs: Any) -> Any | None:
         """Worker-thread only. None when W&B is unavailable or the breaker is open."""
         sdk = self._sdk()
-        if sdk is None or not self.breaker.allow():
+        if sdk is None or self._abandon or not self.breaker.allow():
             return None
         kwargs.setdefault("project", self.project)
         if self.entity:
@@ -190,11 +222,13 @@ class WandbCampaignMetrics:
         if self.mode:
             settings_kw["mode"] = self.mode
         try:
-            settings = sdk.Settings(**settings_kw)
-        except Exception:
-            settings = None
-        if settings is not None:
-            kwargs["settings"] = settings
+            kwargs["settings"] = sdk.Settings(**settings_kw)
+        except Exception as exc:
+            # Never fall back to default settings: that would re-enable console
+            # capture, repo info and code saving. Skip W&B instead.
+            self.breaker.fail()
+            logger.warning("wandb Settings rejected (%s); W&B skipped", type(exc).__name__)
+            return None
         try:
             try:
                 run = sdk.init(reinit="create_new", **kwargs)
@@ -212,26 +246,35 @@ class WandbCampaignMetrics:
 
     # ── CampaignMetrics ─────────────────────────────────────────────────────
 
+    @_never_raises
     def campaign_started(self, campaign_id: str, config: dict[str, Any]) -> None:
-        self._submit(lambda: self._do_started(campaign_id, config))
+        # Snapshot at submit time: the caller may mutate its dict afterwards.
+        is_dict = isinstance(config, dict)
+        cfg = sanitize(config, raw=False, hashes=False) if is_dict else {}
+        env = str(config.get("environment", "production")).lower() if is_dict else "production"
+        cid = str(campaign_id)
+        self._submit(lambda: self._do_started(cid, cfg, env))
 
-    def _do_started(self, campaign_id: str, config: dict[str, Any]) -> None:
+    def _do_started(self, campaign_id: str, cfg: dict[str, Any], env: str) -> None:
         with self._lock:
             if campaign_id in self._runs:
                 return
-            self._envs[campaign_id] = str((config or {}).get("environment", "production")).lower()
+            self._envs[campaign_id] = env
         run = self._init_run(
             job_type="campaign",
             id=_SAFE_NAME.sub("_", campaign_id),
             resume="allow",
             name=f"campaign-{campaign_id}"[:128],
-            config=sanitize(config, raw=False, hashes=False) if config else {},
+            config=cfg,
         )
         if run is not None:
             with self._lock:
                 self._runs[campaign_id] = run
 
+    @_never_raises
     def log(self, campaign_id: str, metrics: dict[str, float], step: int | None = None) -> None:
+        if not isinstance(metrics, dict):
+            return
         clean = {
             str(k)[:100]: float(v)
             for k, v in (metrics or {}).items()
@@ -239,7 +282,8 @@ class WandbCampaignMetrics:
         }
         if not clean:
             return
-        self._submit(lambda: self._do_log(campaign_id, clean, step))
+        cid = str(campaign_id)
+        self._submit(lambda: self._do_log(cid, clean, step))
 
     def _do_log(self, campaign_id: str, clean: dict[str, float], step: int | None) -> None:
         with self._lock:
@@ -251,8 +295,14 @@ class WandbCampaignMetrics:
         else:
             run.log(clean)
 
+    @_never_raises
     def campaign_finished(self, campaign_id: str, summary: dict[str, Any]) -> None:
-        self._submit(lambda: self._do_finished(campaign_id, summary))
+        try:
+            snap = copy.deepcopy(summary) if isinstance(summary, dict) else {}
+        except Exception:
+            snap = {}  # fail closed: an uncopyable summary is dropped, not shared
+        cid = str(campaign_id)
+        self._submit(lambda: self._do_finished(cid, snap))
 
     def _do_finished(self, campaign_id: str, summary: dict[str, Any]) -> None:
         with self._lock:
@@ -341,11 +391,13 @@ class WandbCampaignMetrics:
     def _report_text(text: str, raw: bool) -> str:
         if raw:
             return mask_known(text)
-        return redact_text(text)  # bounded prefix; fail closed to a hash marker
+        return redact_long(text)  # whole report, in verified overlapping chunks
 
+    @_never_raises
     def alert(self, title: str, text: str, level: str = "WARN") -> None:
         """Platform ops alert: W&B alert (async) + global ops webhook."""
-        title_r, text_r = sanitize_alert(title), sanitize_alert(text)
+        title_r, text_r = sanitize_alert(str(title)), sanitize_alert(str(text))
+        level = level if isinstance(level, str) else "WARN"
         self._submit(lambda: self._do_alert(title_r, text_r, level))
         if self.oncall_webhook_url:
             payload = {"title": title_r, "text": text_r, "level": level.upper(), "ts": time.time()}
@@ -359,8 +411,13 @@ class WandbCampaignMetrics:
             with self._worker_lock:
                 if self._hook_pool is None:
                     self._hook_pool = ThreadPoolExecutor(1, thread_name_prefix="canary-ops-hook")
-                fut = self._hook_pool.submit(self._send_webhook, url, payload)
-                self._hook_futures = [f for f in self._hook_futures if not f.done()] + [fut]
+                self._hook_futures = [f for f in self._hook_futures if not f.done()]
+                if len(self._hook_futures) >= 100:
+                    logger.warning("ops webhook backlog full, dropping alert delivery")
+                    return
+                self._hook_futures.append(
+                    self._hook_pool.submit(self._send_webhook, url, payload)
+                )
         except Exception as exc:
             logger.warning("ops webhook submit failed: %s", exc)
 
@@ -386,8 +443,11 @@ class WandbCampaignMetrics:
 
     # ── Service run ─────────────────────────────────────────────────────────
 
+    @_never_raises
     def service_started(self, service_name: str, config: dict[str, Any] | None = None) -> None:
-        self._submit(lambda: self._do_service_started(service_name, config))
+        self._service_name = str(service_name)
+        cfg = sanitize(config or {}, raw=False, hashes=False)
+        self._submit(lambda: self._do_service_started(self._service_name, cfg))
 
     def _do_service_started(self, service_name: str, config: dict[str, Any] | None) -> None:
         with self._lock:
@@ -395,13 +455,16 @@ class WandbCampaignMetrics:
                 return
         run = self._init_run(
             job_type="service", name=f"service-{service_name}"[:128],
-            config=sanitize(config or {}, raw=False, hashes=False),
+            config=config or {},
         )
         with self._lock:
             self._service_run = run
         self.service_failed = run is None
 
+    @_never_raises
     def service_log(self, metrics: dict[str, float]) -> None:
+        if not isinstance(metrics, dict):
+            return
         clean = {str(k)[:100]: float(v) for k, v in metrics.items()
                  if isinstance(v, (int, float)) and not isinstance(v, bool)}
         if clean:
@@ -410,20 +473,50 @@ class WandbCampaignMetrics:
     def _do_service_log(self, clean: dict[str, float]) -> None:
         with self._lock:
             run = self._service_run
+        if run is None and self.service_failed and self.breaker.allow():
+            self._do_service_started(self._service_name, {})  # retry after the backoff
+            with self._lock:
+                run = self._service_run
         if run is not None:
             run.log(clean)
 
-    def close(self) -> None:
-        self.flush(5.0)
-        with self._lock:
-            runs = list(self._runs.values()) + ([self._service_run] if self._service_run else [])
-            self._runs.clear()
-            self._service_run = None
-        for r in runs:
-            try:
-                r.finish()
-            except Exception:
-                pass
+    def close(self, timeout: float = 10.0) -> None:
+        """Drain queued work (e.g. a pending campaign_finished), then finish runs.
+
+        The sentinel goes on the queue behind everything already submitted, the
+        worker is joined with a timeout BEFORE runs are finished, and nothing is
+        accepted or created afterwards.
+        """
+        try:
+            with self._worker_lock:
+                if self._closed:
+                    return
+                self._closed = True
+                worker = self._worker
+                if worker is not None:
+                    try:
+                        self._q.put_nowait(None)
+                    except queue.Full:
+                        pass
+            if worker is not None:
+                worker.join(timeout)
+                if worker.is_alive():
+                    self._abandon = True
+            pool = self._hook_pool
+            if pool is not None:
+                pool.shutdown(wait=False)
+            with self._lock:
+                runs = list(self._runs.values()) + (
+                    [self._service_run] if self._service_run else [])
+                self._runs.clear()
+                self._service_run = None
+            for r in runs:
+                try:
+                    r.finish()
+                except Exception:
+                    pass
+        except Exception as exc:
+            logger.warning("wandb close failed: %s", type(exc).__name__)
 
 
 def sanitize_alert(text: str) -> str:
