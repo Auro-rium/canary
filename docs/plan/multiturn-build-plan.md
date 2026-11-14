@@ -262,9 +262,13 @@ There are no scripted or cosmetic events (fixes D8).
   - **Heuristic tool calls** (`source="heuristic"`) on the forbidden list produce a non-critical `forbidden_tool_heuristic` hit and never stop the conversation. Only structured calls are critical.
   - **Fail-closed behaviour.**
     - A monitor exception records `monitor_error:<Class>`, keeps the turn, and stops with `stopped_monitor`.
-    - A `RunControl.check` exception or timeout is treated as `"killed"`.
+    - A `RunControl.check` exception or timeout is treated as `"killed"`. So is a `CancelledError` the check raises itself, and any returned value other than `None`, `"cancelled"` or `"killed"`.
     - Event-sink, metrics and on-call failures are swallowed and logged. A failed or timed-out on-call call also raises a `Canary: on-call notification failed` alert.
-    - RunControl, the event sink and on-call each run under `asyncio.timeout(EngineDeps.hook_timeout_s)`. The default comes from env `CANARY_ENGINE_HOOK_TIMEOUT_S` (5 s); it is read in the engine because `settings.py` was off-limits for WP3.
+    - **Hook-raised `CancelledError`.** One raised by a monitor, the sink, on-call or RunControl without the task being cancelled (`current_task().cancelling() == 0`) is handled as a failure. A monitor that does this gets `monitor_error` and stops the conversation. A genuine task cancellation always propagates, including from the in-flight send watcher.
+    - **Timeouts.** RunControl, the event sink and on-call each run under `asyncio.timeout(EngineDeps.hook_timeout_s)`.
+      - The default comes from env `CANARY_ENGINE_HOOK_TIMEOUT_S` (5 s). It is read in the engine because `settings.py` was off-limits for WP3. A non-finite, zero or negative value falls back to 5 s, and the value is clamped to (0, 60].
+      - `EngineDeps` validates its timing fields on construction and on assignment: they must be finite and > 0. `hook_timeout_s` is capped at 60 s; `control_poll_s` is floored at 0.05 s and capped at 60 s.
+      - The planner and monitor calls have their own bounded timeouts: `planner_timeout_s` (default 120 s) and `monitor_timeout_s` (default 30 s), both capped at 600 s. A planner timeout ends the conversation as `error`; a monitor timeout records `monitor_error` and stops it.
   - **Critical hits (review fix).** When a monitor reports critical, the metrics alert fires at once. Then `append_turn` runs, then `stopped_monitor` is persisted (even if the append failed), then the on-call hook runs, and only then the events. A `CancelledError` raised by the hook is swallowed unless the task really was cancelled. In both cases the status is already terminal, so the conversation can never be resumed.
     - On resume, the monitors re-run on the last persisted turn. If they stop, the conversation becomes `stopped_monitor` without sending anything, and a critical alert and on-call fire again. We chose re-running over persisting hit severity: it needs no schema change.
   - **Per-request gate (review fix).** `SessionAdapter(before_attempt=...)` runs before **every** HTTP request: each attempt, each retry, and the OAuth token fetch, cookie login and 401 re-auth (via `build_auth(gate=...)` in `transport/auth.py`). Auth sub-requests now also go through the rate limiter.
@@ -272,7 +276,13 @@ There are no scripted or cosmetic events (fixes D8).
     - RunControl is also checked after planning, right before the send.
     - While a send is in flight, a watcher polls RunControl every `control_poll_s` (1 s) and calls `adapter.cancel()`, which now also interrupts backoff and Retry-After waits.
     - The `adapter_factory` signature is now `(target, campaign_id, limiter, before_attempt)`.
-  - **Start checks (review fix).** `begin_campaign` raises `CampaignRefused` before writing anything if `target.verified` is false, or if a production target violates `production_violations()`. It checks even when the `CampaignRequest` validation was bypassed.
+  - **Start checks (review fixes).** `check_campaign_allowed`, called first in `begin_campaign`, raises `CampaignRefused` before anything is written. It fails closed even on a forged request (`model_construct`):
+    - `target.verified` must be exactly `True`;
+    - any environment other than exactly `"staging"` gets the production rules;
+    - `policy_sanity_violations()` must be empty: whole-number counts ≥ 1 (so the semaphore is bounded), a finite `rate_limit_rps` > 0, a finite `max_llm_cost_usd` ≥ 0, a real boolean for `allow_destructive_tools`, and unique non-empty techniques.
+    - `CampaignPolicy.production_violations()` (shared with the API path) now checks each limit as `not (isfinite(v) and 0 < v <= limit)`, and `allow_destructive_tools is not False`.
+    - `BudgetLedger.exhausted()` treats a non-finite or non-positive cap as exhausted.
+    - The runtime, including the ledger totals read, is built **before** the campaign row is set to `running`, so an init failure never leaves it `running`.
   - **Budget.**
     - One request is charged per outgoing HTTP request, including retries and auth sub-requests, through the gate. The total can **never** exceed `max_total_requests`.
     - The ledger updates its in-memory counters first. A failed `BudgetLedgerRepo` write marks the budget exhausted (fail closed) and refuses that request; the same applies to LLM charges.
@@ -292,6 +302,10 @@ There are no scripted or cosmetic events (fixes D8).
     - `campaign_complete.confirmed` is always 0 until WP5.
     - Repository calls are synchronous on the event loop (short single transactions). Moving them to `asyncio.to_thread` was deferred: SQLite write concurrency across threads needs care.
     - `EngineDeps.limiter_factory(target, policy)` is the hook for WP7's shared per-target limiter.
+    - **Limiter wait vs. cancel.** `limiter.acquire` is not raced against `adapter.cancel()`. Racing them changed request scheduling and broke WP2's fake-clock spacing test. A cancel is still honoured right after the acquire, before anything is sent.
+    - **Later (needs a schema change):** persist the critical flag on the turn row. Resume re-runs the monitors on the last turn instead.
+    - **Later:** a cross-process budget. Today the ledger lock is per process; WP7's heartbeat claim ensures a single runner per campaign.
+    - **Later:** save the raw turn as "pending" before monitoring, so a crash between send and append loses nothing.
     - `trace_op` resolves at decoration (import) time, so WP11 must call `set_tracer` before `cyberredteam.engine` is imported.
     - `cyberredteam.engine/__init__` eagerly imports the runner, `storage.v2` and `transport`, so even `from cyberredteam.engine.control import RunControl` loads them. WP7 should watch for import cycles if storage or the API ever import `jobs/`.
 
