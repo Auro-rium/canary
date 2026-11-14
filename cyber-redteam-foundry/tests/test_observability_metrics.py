@@ -227,7 +227,8 @@ def test_failing_run_methods_never_raise():
 def test_alert_sends_wandb_alert_and_ops_webhook_without_pii():
     sdk, posted = FakeWandb(), []
     m = WandbCampaignMetrics(wandb_module=sdk, oncall_webhook_url="https://ops.test/h",
-                             http_post=lambda url, payload: posted.append((url, payload)))
+                             http_post=lambda url, payload: posted.append((url, payload)),
+                             url_check=lambda url: None)
     m.campaign_started("c", {})
     assert m.flush(5)
     m.alert("Kill switch", f"engaged; contact {EMAIL} ssn {SSN} Bearer abcdefghijklmnopqrstuv",
@@ -245,8 +246,27 @@ def test_webhook_failure_is_swallowed():
     def bad(url, payload):
         raise OSError("net")
 
-    WandbCampaignMetrics(wandb_module=FakeWandb(), oncall_webhook_url="https://x",
-                         http_post=bad).alert("t", "x")
+    m = WandbCampaignMetrics(wandb_module=FakeWandb(), oncall_webhook_url="https://x",
+                             http_post=bad, url_check=lambda url: None)
+    m.alert("t", "x")
+    assert m.flush(5)
+
+
+@pytest.mark.parametrize("url", ["http://127.0.0.1:8080/h", "http://169.254.169.254/x",
+                                 "http://localhost/h", "ftp://example.com/h"])
+def test_ops_webhook_passes_through_ssrf_guard(url):
+    posted = []
+    m = WandbCampaignMetrics(wandb_module=FakeWandb(), oncall_webhook_url=url,
+                             http_post=lambda u, p: posted.append(u))  # default real guard
+    m.alert("Kill switch", "engaged", "ERROR")
+    assert m.flush(5)
+    assert posted == []
+
+
+def test_settings_exposes_ops_webhook_url():
+    from cyberredteam.settings import Settings
+
+    assert Settings(canary_ops_webhook_url="https://ops.example.com/h").canary_ops_webhook_url
 
 
 class _S:

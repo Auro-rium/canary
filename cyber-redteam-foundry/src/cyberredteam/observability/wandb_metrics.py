@@ -55,13 +55,14 @@ _QUEUE_MAX = 2000
 def _default_http_post(url: str, payload: dict[str, Any]) -> None:
     import httpx
 
-    def _go() -> None:
-        try:
-            httpx.post(url, json=payload, timeout=5.0)
-        except Exception as exc:
-            logger.warning("ops webhook failed: %s", exc)
+    httpx.post(url, json=payload, timeout=5.0, follow_redirects=False, trust_env=False)
 
-    threading.Thread(target=_go, daemon=True).start()
+
+def _ssrf_guard(url: str) -> None:
+    """The existing target SSRF guard: public http(s) hosts only (raises TargetRefused)."""
+    from cyberredteam.security.ownership import check_target_url
+
+    check_target_url(url)
 
 
 class CircuitBreaker:
@@ -92,6 +93,7 @@ class WandbCampaignMetrics:
         directory: str | None = None,
         oncall_webhook_url: str | None = None,
         http_post: HttpPost | None = None,
+        url_check: Callable[[str], None] | None = None,
         wandb_module: Any = None,
         init_timeout_s: float = 5.0,
         backoff_s: float = 300.0,
@@ -99,6 +101,9 @@ class WandbCampaignMetrics:
         self.project, self.entity, self.mode, self.directory = project, entity, mode, directory
         self.oncall_webhook_url = oncall_webhook_url  # global ops webhook
         self._http_post = http_post or _default_http_post
+        self._url_check = url_check or _ssrf_guard
+        self._hook_pool: Any = None
+        self._hook_futures: list[Any] = []
         self._wandb = wandb_module
         self.init_timeout_s = init_timeout_s
         self.breaker = CircuitBreaker(backoff_s)
@@ -143,6 +148,11 @@ class WandbCampaignMetrics:
     def flush(self, timeout: float = 30.0) -> bool:
         """Wait until queued work is done (tests / shutdown). True if drained."""
         deadline = time.monotonic() + timeout
+        for fut in list(self._hook_futures):
+            try:
+                fut.result(max(0.0, deadline - time.monotonic()))
+            except Exception:
+                pass
         while self._q.unfinished_tasks and time.monotonic() < deadline:
             time.sleep(0.01)
         return not self._q.unfinished_tasks
@@ -338,12 +348,32 @@ class WandbCampaignMetrics:
         title_r, text_r = sanitize_alert(title), sanitize_alert(text)
         self._submit(lambda: self._do_alert(title_r, text_r, level))
         if self.oncall_webhook_url:
-            try:
-                self._http_post(self.oncall_webhook_url,
-                                {"title": title_r, "text": text_r, "level": level.upper(),
-                                 "ts": time.time()})
-            except Exception as exc:
-                logger.warning("ops webhook failed: %s", exc)
+            payload = {"title": title_r, "text": text_r, "level": level.upper(), "ts": time.time()}
+            self._submit_webhook(self.oncall_webhook_url, payload)
+
+    def _submit_webhook(self, url: str, payload: dict[str, Any]) -> None:
+        """Send off-thread (DNS/HTTP may block); the SSRF guard runs first."""
+        try:
+            from concurrent.futures import ThreadPoolExecutor
+
+            with self._worker_lock:
+                if self._hook_pool is None:
+                    self._hook_pool = ThreadPoolExecutor(1, thread_name_prefix="canary-ops-hook")
+                fut = self._hook_pool.submit(self._send_webhook, url, payload)
+                self._hook_futures = [f for f in self._hook_futures if not f.done()] + [fut]
+        except Exception as exc:
+            logger.warning("ops webhook submit failed: %s", exc)
+
+    def _send_webhook(self, url: str, payload: dict[str, Any]) -> None:
+        try:
+            self._url_check(url)
+        except Exception as exc:
+            logger.warning("ops webhook refused by SSRF guard: %s", exc)
+            return
+        try:
+            self._http_post(url, payload)
+        except Exception as exc:
+            logger.warning("ops webhook failed: %s", type(exc).__name__)
 
     def _do_alert(self, title: str, text: str, level: str) -> None:
         sdk = self._sdk()
