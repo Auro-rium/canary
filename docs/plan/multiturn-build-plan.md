@@ -262,11 +262,21 @@ There are no scripted or cosmetic events (fixes D8).
   - **Heuristic tool calls** (`source="heuristic"`) on the forbidden list produce a non-critical `forbidden_tool_heuristic` hit and never stop the conversation. Only structured calls are critical.
   - **Fail-closed behaviour.**
     - A monitor exception records `monitor_error:<Class>`, keeps the turn, and stops with `stopped_monitor`.
-    - A `RunControl.check` exception is treated as `"killed"`.
-    - Event-sink, metrics and on-call failures are swallowed and logged.
+    - A `RunControl.check` exception or timeout is treated as `"killed"`.
+    - Event-sink, metrics and on-call failures are swallowed and logged. A failed or timed-out on-call call also raises a `Canary: on-call notification failed` alert.
+    - RunControl, the event sink and on-call each run under `asyncio.timeout(EngineDeps.hook_timeout_s)`. The default comes from env `CANARY_ENGINE_HOOK_TIMEOUT_S` (5 s); it is read in the engine because `settings.py` was off-limits for WP3.
+  - **Critical hits (review fix).** When a monitor reports critical, the metrics alert fires at once. Then `append_turn` runs, then `stopped_monitor` is persisted (even if the append failed), then the on-call hook runs, and only then the events. A `CancelledError` raised by the hook is swallowed unless the task really was cancelled. In both cases the status is already terminal, so the conversation can never be resumed.
+    - On resume, the monitors re-run on the last persisted turn. If they stop, the conversation becomes `stopped_monitor` without sending anything, and a critical alert and on-call fire again. We chose re-running over persisting hit severity: it needs no schema change.
+  - **Per-request gate (review fix).** `SessionAdapter(before_attempt=...)` runs before **every** HTTP request: each attempt, each retry, and the OAuth token fetch, cookie login and 401 re-auth (via `build_auth(gate=...)` in `transport/auth.py`). Auth sub-requests now also go through the rate limiter.
+    - The engine's hook re-checks RunControl and charges one request to the ledger. A refusal raises `SendAborted` and nothing more is sent.
+    - RunControl is also checked after planning, right before the send.
+    - While a send is in flight, a watcher polls RunControl every `control_poll_s` (1 s) and calls `adapter.cancel()`, which now also interrupts backoff and Retry-After waits.
+    - The `adapter_factory` signature is now `(target, campaign_id, limiter, before_attempt)`.
+  - **Start checks (review fix).** `begin_campaign` raises `CampaignRefused` before writing anything if `target.verified` is false, or if a production target violates `production_violations()`. It checks even when the `CampaignRequest` validation was bypassed.
   - **Budget.**
-    - Requests count actual HTTP attempts, so SessionAdapter retries are charged. One slot is reserved before each turn, so parallel conversations cannot all pass the last-request check. Retries of in-flight turns can still overshoot the cap by at most 2 requests each.
-    - A cost-free planner is never stopped by `max_llm_cost_usd` (even 0). The USD limit is checked before the turn and charged after the planner call, so a single expensive planner call can overshoot it.
+    - One request is charged per outgoing HTTP request, including retries and auth sub-requests, through the gate. The total can **never** exceed `max_total_requests`.
+    - The ledger updates its in-memory counters first. A failed `BudgetLedgerRepo` write marks the budget exhausted (fail closed) and refuses that request; the same applies to LLM charges.
+    - A cost-free planner is never stopped by `max_llm_cost_usd` (even 0). LLM spend is charged after the planner call, so one expensive call can overshoot the USD limit, but no request is sent after that.
     - Totals reload from `budget_ledger` on a re-run.
   - **Resume.**
     - Conversation ids are `uuid5(campaign_id, technique, trial_index)`. Re-running skips terminal conversations.
@@ -274,13 +284,14 @@ There are no scripted or cosmetic events (fixes D8).
     - New `SessionAdapter.restore(history, session_id)` reseeds `{{HISTORY}}` and the server session id, which is persisted to `target_session_ref` as soon as it is captured.
     - Cookie jars cannot be restored: a resumed cookie-mode conversation starts a new target session.
     - A turn sent but not yet persisted when the worker died is re-planned.
-    - Task cancellation leaves the conversation `running`. Campaign status is `running`, then `completed`, or `cancelled` (cancel or kill), or `failed`.
+    - Task cancellation leaves the conversation `running`, unless a terminal status was already persisted. Campaign status is `running`, then `completed`, or `cancelled` (cancel or kill), or `failed`.
   - **`X-Canary-Campaign`** was already set by `SessionAdapter` on every request, including auth sub-requests. WP3 adds an engine-level test.
   - **LangGraph.** `run_campaign` is the primary entry point. `build_campaign_graph()` / `run_campaign_graph()` (strategist → `Send(conversation_branch)`×N → collect) is a thin adapter that shares `run_conversation` and the semaphore through `config["configurable"]`. It runs without a LangGraph checkpointer, because resume comes from the DB. The legacy v1 `build_redteam_graph` is unchanged.
   - **Not done.**
     - `stop_on_first_confirmed` needs WP5 verdicts.
     - `campaign_complete.confirmed` is always 0 until WP5.
-    - Repository calls are synchronous on the event loop (short single transactions).
+    - Repository calls are synchronous on the event loop (short single transactions). Moving them to `asyncio.to_thread` was deferred: SQLite write concurrency across threads needs care.
+    - `EngineDeps.limiter_factory(target, policy)` is the hook for WP7's shared per-target limiter.
     - `trace_op` resolves at decoration (import) time, so WP11 must call `set_tracer` before `cyberredteam.engine` is imported.
     - `cyberredteam.engine/__init__` eagerly imports the runner, `storage.v2` and `transport`, so even `from cyberredteam.engine.control import RunControl` loads them. WP7 should watch for import cycles if storage or the API ever import `jobs/`.
 
