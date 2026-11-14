@@ -345,6 +345,16 @@ There are no scripted or cosmetic events (fixes D8).
 - ScriptedPlanner packs act as fixed regression suites; LLMPlanner runs act as exploratory suites.
 - **Done when:** the action runs against `fake_target` in CI and fails on an injected regression.
 
+**WP10 status (branch `multiturn-wp10`):**
+- `gate/differential.py`: pure `compare(baseline, candidate, policy) -> GateResult` (regression = candidate ci95_low > baseline ci95_high, optional min rate increase; improvements never flagged; too few trials, lost techniques and empty comparisons are inconclusive; new techniques warn or fail per policy; per-technique overrides). Policy is `GatePolicy` (ported from `release_policy.py`, re-based on CIs instead of severities).
+- `gate/{runner,report,launcher}.py`: orchestration, Markdown/JSON, `CampaignLauncher` protocol (real launcher not wired yet; `--candidate` compares two stored campaigns).
+- `cyber-rt gate --target --suite --baseline [--candidate] [--db-url] [--policy] [--json-out]`, exit 0 pass / 1 regression / 2 inconclusive or error; `--demo` and `--demo-inject-regression` seed synthetic campaigns in a temp SQLite DB. Writes `$GITHUB_STEP_SUMMARY`.
+- `.github/workflows/canary-gate.yml`: backend tests+ruff, gate demo (both directions), conditional calibration check (`eval/calibrate.py`), frontend build+lint+bundle secret grep; `permissions: contents: read`, no secrets.
+- Regression suites: ScriptedPlanner packs (WP4) are the fixed regression suites; LLMPlanner runs are exploratory and not gated.
+- Review fixes: nothing-compared never passes; duplicate techniques fail closed (inconclusive); output-write errors exit 2; `--demo` is exclusive of the other selectors and cleans up its temp dir and env; `min_trials` floor is 3; policy-skipped techniques are warned in the report; bundle scan patterns live in `.github/bundle-secret-patterns.txt` (tested, filenames-only output); actions pinned by SHA; the backend job deselects exactly the 6 known baseline failures (tracked for the purge).
+- NOTE: the CI `gate` job runs against SYNTHETIC campaigns until the lead wires the `CampaignLauncher`; it proves the gate logic, not a real target.
+- Lead wiring: implement `CampaignLauncher` (WP7 enqueue and wait) and pass it to `run_gate`; confirm the WP5 calibrate path/invocation in the workflow; WP11 should map the `job_type="gate"` payload sent via `get_metrics().campaign_finished`; purge pass: nothing duplicated (TechniqueResult already carries CIs, no Wilson copy added).
+
 ### WP11: Production observability and telemetry on Weights & Biases (Sonnet; Opus reviews the redaction)
 Two layers: **W&B Weave** for traces and LLM calls, and **W&B Runs (`wandb`)** for campaign metrics. Add both as optional dependencies: `weave`, `wandb`.
 
