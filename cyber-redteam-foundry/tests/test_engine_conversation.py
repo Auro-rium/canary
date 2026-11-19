@@ -88,7 +88,7 @@ def test_llm_cost_budget_stop(factory):
               planner_kwargs={"cost_usd": 0.4, "tokens": 100})
     campaign = new_campaign_id()
     conv = _only_conversation(h, _run(h, campaign))
-    assert conv.status == "stopped_budget" and len(conv.turns) == 3
+    assert conv.status == "stopped_budget" and len(conv.turns) == 2  # 3rd planner call overshoots USD; its send is refused
     totals = BudgetLedgerRepo(factory).totals(campaign)
     assert totals["tokens"] == 300 and abs(totals["usd"] - 1.2) < 1e-9
 

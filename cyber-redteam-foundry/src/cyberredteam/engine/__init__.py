@@ -5,11 +5,15 @@ from cyberredteam.engine.control import InMemoryRunControl, RunControl, StopSign
 from cyberredteam.engine.monitors import BuiltinSafetyMonitor
 from cyberredteam.engine.runner import (
     AdapterFactory,
+    BeforeAttempt,
     CampaignOutcome,
+    CampaignRefused,
     CampaignRuntime,
     ConversationResult,
     EngineDeps,
     EngineRepos,
+    LimiterFactory,
+    check_campaign_allowed,
     default_adapter_factory,
     plan_conversations,
     run_campaign,
@@ -34,9 +38,11 @@ from cyberredteam.engine.types import (
 
 __all__ = [
     "AdapterFactory",
+    "BeforeAttempt",
     "BudgetLedger",
     "BuiltinSafetyMonitor",
     "CampaignOutcome",
+    "CampaignRefused",
     "CampaignRuntime",
     "CollectingEventSink",
     "ConversationResult",
@@ -46,6 +52,7 @@ __all__ = [
     "EngineRepos",
     "EventSink",
     "InMemoryRunControl",
+    "LimiterFactory",
     "MonitorContext",
     "MonitorHit",
     "MonitorResult",
@@ -58,6 +65,7 @@ __all__ = [
     "StopSignal",
     "TurnMonitor",
     "TurnPlanner",
+    "check_campaign_allowed",
     "default_adapter_factory",
     "plan_conversations",
     "run_campaign",

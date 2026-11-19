@@ -31,3 +31,7 @@ canary/.env*
 # Root-level runtime artifacts
 runs/
 reports/
+
+# W&B local run files (contain entity/host info)
+wandb/
+cyber-redteam-foundry/wandb/

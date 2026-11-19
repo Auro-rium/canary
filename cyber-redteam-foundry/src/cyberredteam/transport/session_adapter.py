@@ -10,6 +10,13 @@ backoff; 429 and 503-with-Retry-After wait the advertised time and retry (max
 twice); a 401 triggers one re-authentication. A read *timeout* is not retried
 (the target may have processed the message), a 2xx is never retried and other
 4xx are never retried.
+
+Every outgoing HTTP request (each attempt, each retry, and each auth
+sub-request: OAuth token fetch, cookie login, 401 re-auth) first passes
+:meth:`SessionAdapter._gate`: cancel check, the optional ``before_attempt``
+hook (the engine charges the budget and checks cancel/kill there; it raises
+:class:`SendAborted` to refuse), then the rate limiter. ``cancel()`` also
+interrupts a pending backoff or Retry-After wait.
 """
 
 from __future__ import annotations
@@ -29,6 +36,7 @@ from typing import Any
 import httpx
 
 from cyberredteam.contracts import TargetConfig, ToolCallObservation
+from cyberredteam.observability.hooks import trace_op
 from cyberredteam.transport.auth import AuthFailure, build_auth
 from cyberredteam.transport.rate_limit import RateLimiter
 from cyberredteam.transport.streaming import (
@@ -58,6 +66,16 @@ _RETRYABLE_BEFORE_RESPONSE = (
 
 class _TooLarge(Exception):
     pass
+
+
+class SendAborted(Exception):
+    """Raised by a ``before_attempt`` hook to refuse the next HTTP request
+    (e.g. budget exhausted, campaign cancelled or killed). The send returns a
+    ``cancelled`` TargetError and nothing further is sent."""
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
 
 _TOOL_HEURISTICS = (
     re.compile(
@@ -193,12 +211,15 @@ class SessionAdapter:
         transport: httpx.AsyncBaseTransport | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], float] = time.monotonic,
+        before_attempt: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._config = config
+        self._before_attempt = before_attempt
+        self._cancel_event = asyncio.Event()
         self._campaign_id = campaign_id
         self._limiter = rate_limiter
         self._sleep = sleep
-        self._auth = build_auth(config.auth, clock)
+        self._auth = build_auth(config.auth, clock, gate=self._gate)
         self._template: Any = json.loads(config.request_template) if config.request_template else None
         self._history: list[dict[str, str]] = []
         self._session_id: str | None = None
@@ -224,8 +245,37 @@ class SessionAdapter:
         await self._client.aclose()
 
     def cancel(self) -> None:
-        """Cooperative cancel: the next send (or retry) returns ``cancelled`` unsent."""
+        """Cooperative cancel: the next send (or retry) returns ``cancelled`` unsent,
+        and a pending backoff / Retry-After wait ends at once."""
         self._cancelled = True
+        self._cancel_event.set()
+
+    @property
+    def cancelled(self) -> bool:
+        return self._cancelled
+
+    async def _gate(self) -> None:
+        """Run before every outgoing HTTP request, including auth sub-requests."""
+        if self._cancelled:
+            raise SendAborted("cancelled")
+        if self._before_attempt is not None:
+            await self._before_attempt()
+        await self._limiter.acquire(self._config.target_id)
+        if self._cancelled:
+            raise SendAborted("cancelled")
+
+    async def _wait(self, seconds: float) -> None:
+        """Sleep, unless cancel() is called first."""
+        if self._cancelled:
+            return
+        sleeper = asyncio.ensure_future(self._sleep(seconds))
+        waiter = asyncio.ensure_future(self._cancel_event.wait())
+        try:
+            await asyncio.wait({sleeper, waiter}, return_when=asyncio.FIRST_COMPLETED)
+        finally:
+            for task in (sleeper, waiter):
+                if not task.done():
+                    task.cancel()
 
     @property
     def session_id(self) -> str | None:
@@ -265,6 +315,7 @@ class SessionAdapter:
 
     # ── Send ─────────────────────────────────────────────────────────────────
 
+    @trace_op("target.send")
     async def send(self, message: str) -> TurnResult:
         async with self._send_lock:
             return await self._send_locked(message)
@@ -276,6 +327,8 @@ class SessionAdapter:
         result.request_hash = _sha16(body)
         try:
             await self._send_with_retries(body, result)
+        except SendAborted as exc:
+            result.error = TargetError(TargetErrorKind.CANCELLED, f"aborted before send ({exc.reason})")
         finally:
             result.latency_ms = (time.perf_counter() - started) * 1000.0
         if result.error is None:
@@ -291,10 +344,7 @@ class SessionAdapter:
             if self._cancelled:
                 result.error = TargetError(TargetErrorKind.CANCELLED, "cancelled before send")
                 return
-            await self._limiter.acquire(self._config.target_id)
-            if self._cancelled:
-                result.error = TargetError(TargetErrorKind.CANCELLED, "cancelled before send")
-                return
+            await self._gate()
 
             result.attempts += 1
             got_response = False
@@ -376,7 +426,7 @@ class SessionAdapter:
                 if rate_waits < MAX_RATE_LIMIT_WAITS:
                     rate_waits += 1
                     await self._limiter.penalize(self._config.target_id, wait)
-                    await self._sleep(wait)
+                    await self._wait(wait)
                     continue
                 kind = TargetErrorKind.RATE_LIMITED
                 result.error = TargetError(kind, f"HTTP {status} after {rate_waits} waits")
@@ -410,7 +460,7 @@ class SessionAdapter:
         return b"".join(chunks), hasher.hexdigest()[:16]
 
     async def _backoff(self, attempt: int) -> None:
-        await self._sleep(BACKOFF_BASE_S * 2 ** (attempt - 1))
+        await self._wait(BACKOFF_BASE_S * 2 ** (attempt - 1))
 
     # ── Response parsing ─────────────────────────────────────────────────────
 

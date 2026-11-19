@@ -27,6 +27,9 @@ from langchain_core.outputs import ChatGeneration, ChatResult
 from langchain_core.runnables import Runnable, RunnableLambda
 from pydantic import BaseModel, Field, SecretStr
 
+from cyberredteam.observability.hooks import trace_op
+from cyberredteam.observability.service import track_backboard_outcome
+
 
 class BackboardError(RuntimeError):
     """Non-retryable Backboard failure (bad key, invalid request, failed run)."""
@@ -111,6 +114,8 @@ class ChatBackboard(BaseChatModel):
 
     # ─── Transport ────────────────────────────────────────────────
 
+    @trace_op("backboard.request")
+    @track_backboard_outcome
     def _post_message(
         self, messages: List[BaseMessage], json_output: bool = False
     ) -> Dict[str, Any]:
@@ -168,6 +173,7 @@ class ChatBackboard(BaseChatModel):
             }
         return AIMessage(content=text, usage_metadata=usage)
 
+    @trace_op("backboard.generate")
     def _generate(
         self,
         messages: List[BaseMessage],

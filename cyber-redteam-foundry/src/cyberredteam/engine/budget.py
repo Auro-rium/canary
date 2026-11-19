@@ -1,25 +1,36 @@
 """Central per-campaign budget (WP3): target requests and estimated LLM spend.
 
-Every turn reserves one request *before* it is planned or sent, so parallel
-conversations cannot all pass the check on the last request. After the send
-the reservation is replaced by the real HTTP attempt count (SessionAdapter
-retries count as requests). All charges are persisted through
-``BudgetLedgerRepo``, so a resumed campaign starts from what it already spent.
+Requests are charged one at a time *before* each outgoing HTTP request: every
+attempt, every retry and every auth sub-request (token fetch, cookie login,
+401 re-auth) goes through ``SessionAdapter``'s ``before_attempt`` hook, which
+calls :meth:`BudgetLedger.charge_request`. So the request total can never
+exceed ``CampaignPolicy.max_total_requests``, whatever the parallelism.
 
-Limits: ``CampaignPolicy.max_total_requests`` and ``max_llm_cost_usd``.
-A reservation is refused once ``used + reserved >= max_total_requests``, or
-once a non-zero LLM spend has reached ``max_llm_cost_usd`` (a cost-free
-planner is never stopped by the USD limit, even when it is 0).
-Known slack: one turn's retries (at most 2 extra attempts per in-flight turn)
-can take the request total above the cap.
+LLM spend (``max_llm_cost_usd``) is charged after each planner call; the limit
+is checked before every turn and before every request, so one expensive
+planner call can overshoot it, but no request is sent after that. A cost-free
+planner is never stopped by the USD limit, even when the limit is 0.
+
+Fail closed: the in-memory counters are updated first; if the ledger write to
+``BudgetLedgerRepo`` fails, the budget counts as exhausted for the rest of
+this run (and that request is refused). All charges are persisted, so a
+resumed campaign starts from what it already spent.
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
+import math
 
 from cyberredteam.contracts import BudgetUpdatePayload, CampaignPolicy
 from cyberredteam.storage.v2.repositories import BudgetLedgerRepo
+
+logger = logging.getLogger(__name__)
+
+
+def _is_number(value: object) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
 
 
 class BudgetLedger:
@@ -31,7 +42,7 @@ class BudgetLedger:
         self._requests = int(totals.get("requests", 0.0))
         self._tokens = int(totals.get("tokens", 0.0))
         self._usd = float(totals.get("usd", 0.0))
-        self._reserved = 0
+        self._write_failed = False
         self._lock = asyncio.Lock()
 
     # ── State ────────────────────────────────────────────────────────────────
@@ -48,19 +59,47 @@ class BudgetLedger:
     def llm_cost_usd(self) -> float:
         return self._usd
 
+    @property
+    def write_failed(self) -> bool:
+        return self._write_failed
+
+    def _caps_valid(self) -> bool:
+        """Fail closed on caps that would never trip (NaN, inf, <= 0, non-numbers)."""
+        try:
+            req = getattr(self._policy, "max_total_requests", None)
+            usd = getattr(self._policy, "max_llm_cost_usd", None)
+            return bool(
+                _is_number(req) and math.isfinite(req) and req > 0
+                and _is_number(usd) and math.isfinite(usd) and usd >= 0
+            )
+        except Exception:  # OverflowError (e.g. 10**400), odd comparisons: invalid
+            return False
+
     def _usd_exhausted(self) -> bool:
         return self._usd > 0 and self._usd >= self._policy.max_llm_cost_usd
 
     def exhausted(self) -> bool:
-        return self._requests + self._reserved >= self._policy.max_total_requests or self._usd_exhausted()
+        try:
+            return bool(
+                self._write_failed
+                or not self._caps_valid()
+                or self._requests >= self._policy.max_total_requests
+                or self._usd_exhausted()
+            )
+        except Exception:  # fail closed
+            return True
 
     def remaining_pct(self) -> float:
         """Smallest remaining share across the limits, in percent (0..100)."""
-        req = 1.0 - self._requests / self._policy.max_total_requests
-        shares = [req]
-        if self._policy.max_llm_cost_usd > 0:
-            shares.append(1.0 - self._usd / self._policy.max_llm_cost_usd)
-        return max(0.0, min(shares)) * 100.0
+        if self._write_failed or not self._caps_valid():
+            return 0.0
+        try:
+            shares = [1.0 - self._requests / self._policy.max_total_requests]
+            if self._policy.max_llm_cost_usd > 0:
+                shares.append(1.0 - self._usd / self._policy.max_llm_cost_usd)
+            return max(0.0, min(shares)) * 100.0
+        except Exception:
+            return 0.0
 
     def snapshot(self) -> BudgetUpdatePayload:
         return BudgetUpdatePayload(
@@ -73,29 +112,30 @@ class BudgetLedger:
 
     # ── Charging ─────────────────────────────────────────────────────────────
 
-    async def reserve_request(self) -> bool:
-        """Check before a turn. True means one request slot is now held."""
+    def _persist(self, kind: str, amount: float) -> bool:
+        try:
+            self._repo.add(self.campaign_id, kind, amount)
+            return True
+        except Exception:
+            logger.error("budget ledger write failed for %s; budget now exhausted", self.campaign_id)
+            self._write_failed = True
+            return False
+
+    async def charge_request(self) -> bool:
+        """Charge one HTTP request. False means it must not be sent."""
         async with self._lock:
             if self.exhausted():
                 return False
-            self._reserved += 1
-            return True
-
-    async def settle_request(self, attempts: int) -> None:
-        """Replace a held slot with the real number of HTTP attempts (0 if unsent)."""
-        async with self._lock:
-            self._reserved = max(0, self._reserved - 1)
-            if attempts > 0:
-                self._repo.add(self.campaign_id, "requests", float(attempts))
-                self._requests += attempts
+            self._requests += 1
+            return self._persist("requests", 1.0)
 
     async def charge_llm(self, tokens: int, usd: float) -> None:
         if tokens <= 0 and usd <= 0:
             return
         async with self._lock:
             if tokens > 0:
-                self._repo.add(self.campaign_id, "tokens", float(tokens))
                 self._tokens += tokens
+                self._persist("tokens", float(tokens))
             if usd > 0:
-                self._repo.add(self.campaign_id, "usd", float(usd))
                 self._usd += usd
+                self._persist("usd", float(usd))

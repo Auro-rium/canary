@@ -191,6 +191,20 @@ def _running_count() -> int:
 
 
 @app.on_event("startup")
+def start_observability() -> None:
+    from cyberredteam.observability.setup import init_observability
+
+    init_observability(settings, service_name="api")
+
+
+@app.on_event("shutdown")
+def stop_observability() -> None:
+    from cyberredteam.observability.setup import shutdown_observability
+
+    shutdown_observability()
+
+
+@app.on_event("startup")
 def recover_interrupted_runs() -> None:
     """Mark runs interrupted by an API restart instead of leaving them hanging."""
     store = SQLiteStore(Path(settings.db_path))
@@ -1426,3 +1440,9 @@ def verify_target_v2(
         "method": body.method,
         "reason": reason,
     }
+
+
+# -- API v2: control plane (WP7): cancel, kill switch, SSE resume --
+from cyberredteam.jobs.api_v2 import router as _jobs_router  # noqa: E402
+
+app.include_router(_jobs_router)

@@ -282,6 +282,11 @@ PRODUCTION_LIMITS: dict[str, float] = {
 PRODUCTION_FORBIDDEN_TECHNIQUES = frozenset({"workflow_manipulation", "denial-of-service"})
 
 
+def normalize_technique(name: str) -> str:
+    """Canonical technique key for comparisons: stripped and casefolded."""
+    return name.strip().casefold()
+
+
 class CampaignPolicy(_Contract):
     """Budgets and limits for one campaign.
 
@@ -293,13 +298,13 @@ class CampaignPolicy(_Contract):
     both halves. Violations are rejected, never clamped.
     """
 
-    techniques: list[str] = Field(min_length=1)
+    techniques: list[str] = Field(min_length=1, max_length=100)
     trials_per_technique: int = Field(default=5, ge=1, le=1000)
     max_turns: int = Field(default=8, ge=1, le=100)
     max_parallel_conversations: int = Field(default=4, ge=1, le=64)
     rate_limit_rps: float = Field(default=1.0, gt=0, le=100)
-    max_total_requests: int = Field(default=500, ge=1)
-    max_llm_cost_usd: float = Field(default=10.0, ge=0)
+    max_total_requests: int = Field(default=500, ge=1, le=1_000_000)
+    max_llm_cost_usd: float = Field(default=10.0, ge=0, le=10_000)
     stop_on_first_confirmed: bool = False
     allow_destructive_tools: bool = False
 
@@ -308,19 +313,44 @@ class CampaignPolicy(_Contract):
     def _techniques(cls, v: list[str]) -> list[str]:
         if any(not t.strip() for t in v):
             raise ValueError("technique names must be non-empty")
-        if len(set(v)) != len(v):
-            raise ValueError("techniques must be unique")
+        if len({normalize_technique(t) for t in v}) != len(v):
+            raise ValueError("techniques must be unique (ignoring case and surrounding spaces)")
         return v
 
     def production_violations(self) -> list[str]:
-        """Return human-readable section-4 violations (empty if compliant)."""
+        """Return human-readable section-4 violations (empty if compliant).
+
+        Fail closed even on an unvalidated instance (``model_construct``):
+        each limit must be a finite number with ``0 < value <= limit`` (NaN,
+        infinities, zero/negative values and non-numbers are violations), and
+        ``allow_destructive_tools`` must be exactly ``False``.
+        """
         problems: list[str] = []
-        if self.allow_destructive_tools:
+        if getattr(self, "allow_destructive_tools", True) is not False:
             problems.append("allow_destructive_tools must be false in production")
         for name, limit in PRODUCTION_LIMITS.items():
-            if getattr(self, name) > limit:
-                problems.append(f"{name} must be <= {limit:g} in production")
-        banned = sorted(PRODUCTION_FORBIDDEN_TECHNIQUES.intersection(self.techniques))
+            value = getattr(self, name, None)
+            try:
+                ok = bool(
+                    isinstance(value, (int, float))
+                    and not isinstance(value, bool)
+                    and math.isfinite(value)
+                    and 0 < value <= limit
+                )
+            except (OverflowError, TypeError, ValueError):
+                ok = False
+            if not ok:
+                problems.append(f"{name} must be > 0 and <= {limit:g} in production")
+        techniques = getattr(self, "techniques", None)
+        if not isinstance(techniques, (list, tuple)) or not techniques:
+            problems.append("techniques must be a non-empty list")
+            techniques = []
+        if not all(type(t) is str for t in techniques):
+            problems.append("technique names must be plain strings")
+        forbidden = {normalize_technique(t) for t in PRODUCTION_FORBIDDEN_TECHNIQUES}
+        banned = sorted(
+            t for t in techniques if type(t) is str and normalize_technique(t) in forbidden
+        )
         if banned:
             problems.append(f"techniques {banned} are staging-only")
         return problems
@@ -799,6 +829,7 @@ __all__ = [
     "VerdictEvent",
     "VerdictPayload",
     "normalize_asi_code",
+    "normalize_technique",
     "parse_sse_event",
     "truncate_preview",
     "validate_policy_for_target",

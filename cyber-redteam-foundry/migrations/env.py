@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from alembic import context
 
+from cyberredteam.jobs import tables as _jobs_tables  # noqa: F401  (registers WP7 tables)
 from cyberredteam.storage.v2.db import make_engine, resolve_url
 from cyberredteam.storage.v2.orm import Base
 
