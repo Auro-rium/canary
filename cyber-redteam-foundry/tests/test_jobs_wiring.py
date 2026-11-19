@@ -218,6 +218,26 @@ def test_auth_secret_values():
 # ── Secrets never reach logs or events ───────────────────────────────────────
 
 
+@dataclass
+class CutEchoTarget(FakeTarget):
+    """Echoes the key so that the 280-char preview cut falls inside it."""
+
+    def _reply(self, turn: int) -> str:
+        return "x" * 268 + SECRET + " tail"
+
+
+def test_secret_split_by_the_preview_cut_is_masked(db_factory, caplog):
+    rt, cid, h = _setup(db_factory, fake=CutEchoTarget(required_headers={"X-Api-Key": SECRET}),
+                        techniques=["a"], max_turns=1)
+    asyncio.run(execute_campaign(rt, cid))
+    turns = [e for e in rt.events.since(cid) if e.type == "turn"]
+    assert turns
+    texts = _event_texts(rt, cid)
+    for k in range(4, len(SECRET) + 1):
+        for i in range(len(SECRET) - k + 1):
+            assert not any(SECRET[i:i + k] in t for t in texts)
+
+
 def test_echoed_auth_secret_never_reaches_logs_events_or_audit(db_factory, caplog):
     caplog.set_level(logging.DEBUG)
     fake = EchoingTarget(required_headers={"X-Api-Key": SECRET})

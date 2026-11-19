@@ -116,12 +116,27 @@ MIN_SECRET_CHARS = 4  # shorter values would mangle ordinary text; not scrubbed
 _ID_KEYS = frozenset({"campaign_id", "conversation_id", "target_id"})  # identifiers stay intact
 
 
+_CUT_MARK = "\u2026"  # what contracts.truncate_preview appends when it cuts
+
+
+def _scrub_text(value: str, secrets: tuple[str, ...]) -> str:
+    for secret in secrets:
+        if secret in value:
+            value = value.replace(secret, SECRET_MASK)
+    # A preview cut in the middle of a secret keeps only its prefix, which the
+    # exact match above misses: mask a trailing secret prefix of a cut string.
+    if value.endswith(_CUT_MARK):
+        body = value[: -len(_CUT_MARK)]
+        for secret in secrets:
+            for k in range(len(secret) - 1, MIN_SECRET_CHARS - 1, -1):
+                if body.endswith(secret[:k]):
+                    return body[:-k] + SECRET_MASK + _CUT_MARK
+    return value
+
+
 def _scrub(value: Any, secrets: tuple[str, ...]) -> Any:
     if isinstance(value, str):
-        for secret in secrets:
-            if secret in value:
-                value = value.replace(secret, SECRET_MASK)
-        return value
+        return _scrub_text(value, secrets)
     if isinstance(value, list):
         return [_scrub(v, secrets) for v in value]
     if isinstance(value, dict):
