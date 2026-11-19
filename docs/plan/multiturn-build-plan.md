@@ -409,6 +409,7 @@ There are no scripted or cosmetic events (fixes D8).
 - **Results:** a per-technique success-rate table with CI bars; findings triage linking to the exact failing turn.
 - Fix the existing bugs: null `score` crash, findings pagination with total, ASI filter debounce, handling every SSE event type.
 - **Done when:** the build and lint pass, and a Playwright smoke test runs a fake campaign end to end.
+- **Overhaul:** see `ui-overhaul-plan.md` (WP9b). The full live test is in `live-test-plan.md`.
 
 ### WP10: CI gate and regression suites (Sonnet) — D5
 - A CLI command plus a GitHub Action, `canary gate --target <id> --suite <pack> --baseline <campaign_id>`. It fails the build when a technique's success-rate CI lower bound rises above the baseline's upper bound.
