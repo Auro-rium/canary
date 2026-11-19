@@ -13,6 +13,15 @@ could, never started, or is a test fake), and never emits ``campaign_started``.
 Final statuses: ``completed``; ``cancelled`` (user cancel, or kill switch with
 event reason ``kill_switch`` plus an audit row; terminal, never auto-resumed);
 ``failed`` (runner or load error; only the exception class name is recorded).
+
+Refusals: WP3's :class:`~cyberredteam.engine.CampaignRefused` (unverified
+target, production-limit or sanity violation, forged/unvalidated request) is a
+terminal job outcome ``"refused"``. ``load_request`` runs the same
+``normalize_request`` check before the campaign is marked running, and the
+engine re-checks it. A refusal is never retried or resumed: the campaign is set
+``failed`` (``CampaignStatus`` has no ``refused`` value) with one
+``campaign_failed`` event ``"CampaignRefused: <reason>"`` (reason redacted and
+capped) and a ``campaign.refused`` audit row.
 """
 
 from __future__ import annotations
@@ -25,6 +34,7 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+from pydantic import ValidationError
 from sqlalchemy.orm import Session, sessionmaker
 
 from cyberredteam.contracts import (
@@ -34,9 +44,11 @@ from cyberredteam.contracts import (
     CampaignFailedPayload,
     CampaignRequest,
 )
+from cyberredteam.engine.runner import CampaignRefused, normalize_request
 from cyberredteam.jobs.control import DbRunControl
 from cyberredteam.jobs.events import EventLog
 from cyberredteam.jobs.resume import HeartbeatRepo
+from cyberredteam.storage.v2.redaction import redact
 from cyberredteam.storage.v2.repositories import (
     TERMINAL_CAMPAIGN_STATUSES,
     AuditRepo,
@@ -79,9 +91,12 @@ class CampaignLoadError(Exception):
 def load_request(runtime: JobRuntime, campaign_id: str) -> CampaignRequest:
     """Rebuild the ``CampaignRequest`` from the stored campaign + target.
 
-    Goes through ``CampaignRequest`` validation again, so production policy
-    rules are enforced at run time as well as at creation. Unverified targets
-    are refused (defence in depth behind the API gate).
+    Goes through ``CampaignRequest`` validation and then WP3's
+    ``normalize_request`` (strict re-validation plus ``check_campaign_allowed``),
+    so production limits are enforced at run time as well as at creation, and
+    returns the normalised copy. An unverified target or a rejected request
+    raises :class:`CampaignRefused` (defence in depth behind the API gate); the
+    validation error text is never kept (it can echo stored values).
     """
     rec = runtime.campaigns.get(campaign_id)
     if rec is None:
@@ -89,9 +104,13 @@ def load_request(runtime: JobRuntime, campaign_id: str) -> CampaignRequest:
     target = runtime.targets.get(rec.target_id)
     if target is None:
         raise CampaignLoadError("target not found")
-    if not target.verified:
-        raise CampaignLoadError("target is not verified")
-    return CampaignRequest(target=target, policy=rec.policy)
+    if target.verified is not True:
+        raise CampaignRefused("target is not verified")
+    try:
+        request = CampaignRequest(target=target, policy=rec.policy)
+    except ValidationError:
+        raise CampaignRefused("campaign request rejected (ValidationError)") from None
+    return normalize_request(request)
 
 
 async def _heartbeat_loop(runtime: JobRuntime, campaign_id: str) -> None:
@@ -108,10 +127,26 @@ async def _to_thread(fn: Callable[..., Any], *args: Any) -> Any:
 
 
 def error_text(exc: BaseException) -> str:
-    """What we record about a failure: the exception class name only, capped."""
+    """What we record about a failure: the exception class name only, capped.
+
+    The two exceptions whose messages are the engine's / this module's own
+    generic strings keep them: ``CampaignLoadError`` verbatim, and
+    ``CampaignRefused`` redacted (policy violations can name techniques).
+    """
     if isinstance(exc, CampaignLoadError):
         return f"CampaignLoadError: {exc}"[:TEXT_MAX_CHARS]
+    if isinstance(exc, CampaignRefused):
+        return f"CampaignRefused: {redact(str(exc)).text}"[:TEXT_MAX_CHARS]
     return type(exc).__name__[:TEXT_MAX_CHARS]
+
+
+async def _refuse(runtime: JobRuntime, campaign_id: str, signal: str | None, error: str) -> str:
+    """Terminal refusal: ``failed`` status, one ``campaign_failed`` event, audit row."""
+    await finalize(runtime, campaign_id, signal, error)
+    await _to_thread(
+        runtime.audit.record, runtime.worker_id, "campaign.refused", f"campaign:{campaign_id}", {}
+    )
+    return "refused"
 
 
 async def finalize(
@@ -156,7 +191,8 @@ async def execute_campaign(runtime: JobRuntime, campaign_id: str) -> str:
     """Run (or resume) one campaign. Returns a short outcome string.
 
     ``skipped`` (unknown/terminal campaign, or another live worker holds it),
-    otherwise the final campaign status.
+    ``refused`` (the engine's start checks refused the request; the campaign
+    is ``failed``), otherwise the final campaign status.
     """
     rec = await _to_thread(runtime.campaigns.get, campaign_id)
     if rec is None:
@@ -179,6 +215,11 @@ async def execute_campaign(runtime: JobRuntime, campaign_id: str) -> str:
     resumed = rec.status == "running"
     try:
         request = await _to_thread(load_request, runtime, campaign_id)
+    except CampaignRefused as exc:
+        error = error_text(exc)
+        logger.error("campaign %s refused: %s", campaign_id, error)
+        await _to_thread(runtime.heartbeats.release, campaign_id)
+        return await _refuse(runtime, campaign_id, None, error)
     except Exception as exc:
         logger.error("cannot load campaign %s: %s", campaign_id, type(exc).__name__)
         await _to_thread(runtime.heartbeats.release, campaign_id)
@@ -192,6 +233,7 @@ async def execute_campaign(runtime: JobRuntime, campaign_id: str) -> str:
         )
     beat = asyncio.create_task(_heartbeat_loop(runtime, campaign_id))
     error: str | None = None
+    refused = False
     try:
         await runtime.runner(request, campaign_id)
     except asyncio.CancelledError:
@@ -199,6 +241,10 @@ async def execute_campaign(runtime: JobRuntime, campaign_id: str) -> str:
         # the reaper resumes the campaign from its persisted turns.
         await asyncio.shield(_to_thread(runtime.heartbeats.release, campaign_id))
         raise
+    except CampaignRefused as exc:  # engine start checks: terminal, never retried
+        refused = True
+        error = error_text(exc)
+        logger.error("campaign %s refused: %s", campaign_id, error)
     except Exception as exc:
         error = error_text(exc)  # never echo exception text (may hold evidence)
         logger.error("campaign %s failed: %s", campaign_id, error)
@@ -209,6 +255,9 @@ async def execute_campaign(runtime: JobRuntime, campaign_id: str) -> str:
 
     runtime.control.invalidate()
     signal = await runtime.control.check(campaign_id)
-    outcome = await finalize(runtime, campaign_id, signal, error)
+    if refused and error is not None:
+        outcome = await _refuse(runtime, campaign_id, signal, error)
+    else:
+        outcome = await finalize(runtime, campaign_id, signal, error)
     await _to_thread(runtime.heartbeats.release, campaign_id)
     return outcome

@@ -111,17 +111,46 @@ class EventLog:
             ) > 0
 
 
+SECRET_MASK = "[REDACTED:secret]"
+MIN_SECRET_CHARS = 4  # shorter values would mangle ordinary text; not scrubbed
+_ID_KEYS = frozenset({"campaign_id", "conversation_id", "target_id"})  # identifiers stay intact
+
+
+def _scrub(value: Any, secrets: tuple[str, ...]) -> Any:
+    if isinstance(value, str):
+        for secret in secrets:
+            if secret in value:
+                value = value.replace(secret, SECRET_MASK)
+        return value
+    if isinstance(value, list):
+        return [_scrub(v, secrets) for v in value]
+    if isinstance(value, dict):
+        return {k: v if k in _ID_KEYS else _scrub(v, secrets) for k, v in value.items()}
+    return value
+
+
 class EventLogSink:
     """``engine.types.EventSink`` that persists contract events to the log.
 
     The campaign id comes from the payload (every contract payload carries it).
+
+    ``secret_values`` are exact strings (the target's own auth secrets, see
+    ``runner_wiring.auth_secret_values``) masked in every string field before
+    the event is stored. The engine already pattern-redacts previews; this
+    catches a target echoing a secret that matches no pattern.
     """
 
-    def __init__(self, log: EventLog) -> None:
+    def __init__(self, log: EventLog, secret_values: tuple[str, ...] = ()) -> None:
         self._log = log
+        self._secrets = tuple(
+            sorted({v for v in secret_values if len(v) >= MIN_SECRET_CHARS}, key=len, reverse=True)
+        )
 
     async def emit(self, event_type: SseEventType, payload: BaseModel) -> None:
         campaign_id = getattr(payload, "campaign_id", None)
         if not campaign_id:
             raise ValueError("event payload has no campaign_id")
-        await asyncio.to_thread(self._log.append, campaign_id, event_type, payload)
+        data: BaseModel | dict[str, Any] = payload
+        if self._secrets:
+            data = _scrub(payload.model_dump(mode="json"), self._secrets)
+        await asyncio.to_thread(self._log.append, campaign_id, event_type, data)

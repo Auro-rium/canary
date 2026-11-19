@@ -60,7 +60,7 @@ def test_load_request_refuses_unverified_target(db_factory):
         s.execute(update(orm.TargetRow).where(orm.TargetRow.target_id == rec.target_id).values(verified=False))
         s.commit()
     assert SqlTargetStore(db_factory).get(rec.target_id).verified is False
-    assert asyncio.run(execute_campaign(rt, cid)) == "failed"
+    assert asyncio.run(execute_campaign(rt, cid)) == "refused"  # terminal, status failed
     assert CampaignRepo(db_factory).get(cid).status == "failed"
 
 
