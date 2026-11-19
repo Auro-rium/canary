@@ -2,7 +2,7 @@
 
 import re
 from collections import Counter
-from typing import Dict, Any
+from typing import Any, Dict
 
 
 class WorkflowManipulationTool:

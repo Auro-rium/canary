@@ -1,13 +1,13 @@
 """Target adapter for executing attack cases against different deployment types."""
 
-import json
 import hashlib
+import json
 import time
-import requests
 from typing import Any, Dict, Optional, Tuple
 
-from cyberredteam.logging import setup_logging
-from cyberredteam.logging import log_event
+import requests
+
+from cyberredteam.logging import log_event, setup_logging
 
 logger = setup_logging()
 
