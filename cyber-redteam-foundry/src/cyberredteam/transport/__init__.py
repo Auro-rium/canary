@@ -3,6 +3,7 @@
 from cyberredteam.transport.rate_limit import InProcessTokenBucket, RateLimiter
 from cyberredteam.transport.session_adapter import (
     CAMPAIGN_HEADER,
+    SendAborted,
     SessionAdapter,
     TargetError,
     TargetErrorKind,
@@ -13,6 +14,7 @@ __all__ = [
     "CAMPAIGN_HEADER",
     "InProcessTokenBucket",
     "RateLimiter",
+    "SendAborted",
     "SessionAdapter",
     "TargetError",
     "TargetErrorKind",
