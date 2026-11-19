@@ -99,6 +99,7 @@ class Harness:
     planners: list[ScriptedPlanner] = field(default_factory=list)
     active: int = 0
     max_active: int = 0
+    transport: Any = None
 
     @property
     def conversations(self) -> ConversationRepo:
@@ -129,10 +130,12 @@ def build(
     fake: FakeTarget | None = None,
     planner_kwargs: dict[str, Any] | None = None,
     techniques: list[str] | None = None,
+    target_overrides: dict[str, Any] | None = None,
+    sleep: Callable[[float], Any] | None = None,
     **policy: Any,
 ) -> Harness:
     fake = fake or FakeTarget()
-    target = fake.target_config()
+    target = fake.target_config(**{"verified": True, **(target_overrides or {})})
     SqlTargetStore(factory).create(target)
     pol = {"techniques": techniques or ["technique_a"], "trials_per_technique": 1, "max_turns": 4}
     pol.update(policy)
@@ -142,9 +145,11 @@ def build(
     clock = FakeClock()
     harness: Harness
 
-    def adapter_factory(cfg, campaign_id, limiter):
+    def adapter_factory(cfg, campaign_id, limiter, before_attempt):
         adapter = SessionAdapter(cfg, campaign_id=campaign_id, rate_limiter=limiter,
-                                 transport=fake.transport(), sleep=clock.sleep, clock=clock)
+                                 transport=harness.transport or fake.transport(),
+                                 sleep=sleep or clock.sleep, clock=clock,
+                                 before_attempt=before_attempt)
         harness.active += 1
         harness.max_active = max(harness.max_active, harness.active)
         original = adapter.aclose
