@@ -54,6 +54,11 @@ dev = [
     "mypy>=1.5.0",
     "ipython>=8.0.0",
 ]
+# WP5 PII monitor. The spaCy model is never auto-downloaded; install it explicitly:
+#   uv run python -m spacy download en_core_web_lg
+eval = [
+    "presidio-analyzer>=2.2.0",
+]
 observability = [
     "wandb>=0.31.0",
     "weave>=0.54.1",
