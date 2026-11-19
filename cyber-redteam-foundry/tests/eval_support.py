@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import itertools
 import threading
 import uuid
 from collections.abc import Callable
@@ -44,6 +45,9 @@ def turn(response: str = "ok", message: str = "hello", index: int = 0, tools=(),
     )
 
 
+_TRIALS = itertools.count()
+
+
 def conversation(replies: list[str] | None = None, hits: list[list[str]] | None = None,
                  tools: list[list] | None = None, technique: str = "prompt_injection",
                  campaign_id: str = "camp1", conversation_id: str | None = None) -> Conversation:
@@ -62,7 +66,7 @@ def conversation(replies: list[str] | None = None, hits: list[list[str]] | None 
     ]
     return Conversation(
         conversation_id=cid, campaign_id=campaign_id, technique=technique,
-        trial_index=0, status="completed", turns=turns,
+        trial_index=next(_TRIALS), status="completed", turns=turns,
     )
 
 
