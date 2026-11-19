@@ -358,5 +358,13 @@ def setup() -> None:
     )
 
 
+@app.command()
+def worker() -> None:
+    """Run a job worker process (campaign runs + stale-run reaper)."""
+    from cyberredteam.jobs.worker import main as worker_main
+
+    worker_main()
+
+
 if __name__ == "__main__":
     app()
