@@ -6,8 +6,9 @@ builds ``engine.EngineDeps`` per run and calls ``engine.run_campaign``:
 * ``run_control``: the DB-backed ``runtime.control`` (cancel + kill switch);
 * ``events``: an ``EventLogSink`` that also masks the target's own auth secrets
   (exact values) in every event before it is stored;
-* ``limiter_factory``: the worker's :class:`SharedLimiters`, one limiter per
-  target shared by every campaign this process runs against it;
+* ``limiter_factory``: the worker's :class:`SharedLimiters`, one token bucket
+  per target shared by every campaign this process runs against it; its rate
+  is only ever lowered, in place;
 * ``adapter_factory``: left at the engine default (``default_adapter_factory``),
   which passes the engine's ``before_attempt`` hook (budget charge + RunControl
   re-check on every HTTP request, auth sub-requests included) and sets the
@@ -26,10 +27,13 @@ configured the runner fails closed: ``NoPlannerConfigured("no planner configured
 
 from __future__ import annotations
 
+import asyncio
 import importlib
 import logging
 import math
 import threading
+import time
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 from pydantic import SecretStr
@@ -39,7 +43,6 @@ from cyberredteam.engine import EngineDeps, EngineRepos, PlannerFactory, run_cam
 from cyberredteam.jobs.events import EventLogSink
 from cyberredteam.jobs.execution import CampaignRunner
 from cyberredteam.storage.v2.repositories import BudgetLedgerRepo, CampaignRepo, ConversationRepo
-from cyberredteam.transport.rate_limit import InProcessTokenBucket
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +58,10 @@ def load_planner_factory(spec: str | None) -> PlannerFactory | None:
     module_name, _, attr = spec.partition(":")
     if not module_name or not attr:
         raise ValueError("planner_factory must look like 'package.module:callable'")
-    return getattr(importlib.import_module(module_name), attr)
+    factory = getattr(importlib.import_module(module_name), attr)
+    if not callable(factory):
+        raise TypeError("planner_factory must name a callable")
+    return factory
 
 
 def auth_secret_values(target: TargetConfig) -> tuple[str, ...]:
@@ -70,36 +76,82 @@ def auth_secret_values(target: TargetConfig) -> tuple[str, ...]:
 
 
 class SharedTargetLimiter:
-    """A per-target limiter whose rate can only ever get stricter.
+    """Token bucket (burst 1) for one target whose rate can only get stricter.
 
-    Every campaign against the target holds this same object; when a campaign
-    with a lower ``rate_limit_rps`` arrives, the underlying bucket is replaced
-    by a stricter one for all holders. A higher rps never loosens it.
+    Every campaign against the target holds this same object. There is exactly
+    one bucket per target, ever: :meth:`set_rps` lowers the rate in place,
+    keeping the token count, timestamp, lock and any Retry-After block, so a
+    tightening never grants a free token and never splits the waiters.
     """
 
-    def __init__(self, rps: float) -> None:
-        self.rps = rps
-        self._bucket = InProcessTokenBucket(rps)
+    def __init__(
+        self,
+        rps: float,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
+        if not math.isfinite(rps) or rps <= 0:
+            raise ValueError("rps must be finite and > 0")
+        self.rps = float(rps)
+        self._clock = clock
+        self._sleep = sleep
+        self._tokens = 1.0
+        self._stamp: float | None = None
+        self._blocked_until = 0.0
+        self._lock = asyncio.Lock()
 
-    def tighten(self, rps: float) -> None:
-        if rps < self.rps:
-            self.rps = rps
-            self._bucket = InProcessTokenBucket(rps)
+    def set_rps(self, rps: float) -> None:
+        """Lower the rate (a higher value is ignored).
 
-    async def acquire(self, target_id: str) -> None:
-        await self._bucket.acquire(target_id)
+        Synchronous with no ``await``, so it is atomic with respect to every
+        coroutine on the event loop (``acquire`` re-reads the rate after each
+        sleep). Tokens accrued since the last refill are settled at the *new*
+        rate, so the change grants nothing the new rate would not have.
+        """
+        if not math.isfinite(rps) or rps <= 0 or rps >= self.rps:
+            return
+        if self._stamp is not None:
+            now = self._clock()
+            self._tokens = min(1.0, self._tokens + max(0.0, now - self._stamp) * rps)
+            self._stamp = now
+        self.rps = float(rps)
 
     async def penalize(self, target_id: str, seconds: float) -> None:
-        await self._bucket.penalize(target_id, seconds)
+        self._blocked_until = max(self._blocked_until, self._clock() + max(0.0, seconds))
+
+    async def acquire(self, target_id: str) -> None:
+        async with self._lock:
+            while True:
+                now = self._clock()
+                blocked = self._blocked_until - now
+                if blocked > 0:
+                    await self._sleep(blocked)
+                    continue
+                last = self._stamp if self._stamp is not None else now
+                tokens = min(1.0, self._tokens + max(0.0, now - last) * self.rps)
+                self._stamp = now
+                if tokens >= 1.0 - 1e-9:
+                    self._tokens = tokens - 1.0
+                    return
+                self._tokens = tokens
+                await self._sleep((1.0 - tokens) / self.rps)
 
 
 class SharedLimiters:
     """``engine.LimiterFactory``: one :class:`SharedTargetLimiter` per target id,
     shared by all campaigns this worker process runs (process-local)."""
 
-    def __init__(self) -> None:
+    def __init__(
+        self,
+        *,
+        clock: Callable[[], float] = time.monotonic,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
+    ) -> None:
         self._by_target: dict[str, SharedTargetLimiter] = {}
         self._lock = threading.Lock()
+        self._clock = clock
+        self._sleep = sleep
 
     def __call__(self, target: TargetConfig, policy: CampaignPolicy) -> SharedTargetLimiter:
         rps = float(policy.rate_limit_rps)
@@ -108,9 +160,10 @@ class SharedLimiters:
         with self._lock:
             limiter = self._by_target.get(target.target_id)
             if limiter is None:
-                limiter = self._by_target[target.target_id] = SharedTargetLimiter(rps)
+                limiter = SharedTargetLimiter(rps, clock=self._clock, sleep=self._sleep)
+                self._by_target[target.target_id] = limiter
             else:
-                limiter.tighten(rps)
+                limiter.set_rps(rps)
             return limiter
 
 

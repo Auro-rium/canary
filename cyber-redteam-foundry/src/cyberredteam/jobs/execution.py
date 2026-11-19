@@ -212,18 +212,41 @@ async def execute_campaign(runtime: JobRuntime, campaign_id: str) -> str:
         logger.info("campaign %s is held by another live worker; skipping", campaign_id)
         return "skipped"
 
-    resumed = rec.status == "running"
+    try:
+        return await _run_claimed(runtime, campaign_id, rec.status == "running")
+    finally:
+        # Always drop the claim (shielded: also on worker shutdown), so a crash
+        # in finalize cannot leave a live-looking heartbeat behind.
+        try:
+            await asyncio.shield(_to_thread(runtime.heartbeats.release, campaign_id))
+        except Exception as exc:
+            logger.warning("heartbeat release failed for %s (%s)", campaign_id, type(exc).__name__)
+
+
+async def _mark_failed_best_effort(runtime: JobRuntime, campaign_id: str) -> None:
+    """Last resort when recording a load-time failure itself failed: a campaign
+    left ``queued`` is never picked up again, so try to make it terminal."""
+    try:
+        await _to_thread(runtime.campaigns.set_status, campaign_id, "failed")
+    except Exception as exc:
+        logger.error("could not mark campaign %s failed (%s)", campaign_id, type(exc).__name__)
+
+
+async def _run_claimed(runtime: JobRuntime, campaign_id: str, resumed: bool) -> str:
+    """The part of :func:`execute_campaign` that runs while holding the claim."""
     try:
         request = await _to_thread(load_request, runtime, campaign_id)
-    except CampaignRefused as exc:
-        error = error_text(exc)
-        logger.error("campaign %s refused: %s", campaign_id, error)
-        await _to_thread(runtime.heartbeats.release, campaign_id)
-        return await _refuse(runtime, campaign_id, None, error)
     except Exception as exc:
-        logger.error("cannot load campaign %s: %s", campaign_id, type(exc).__name__)
-        await _to_thread(runtime.heartbeats.release, campaign_id)
-        return await finalize(runtime, campaign_id, None, error_text(exc))
+        error = error_text(exc)
+        try:
+            if isinstance(exc, CampaignRefused):
+                logger.error("campaign %s refused: %s", campaign_id, error)
+                return await _refuse(runtime, campaign_id, None, error)
+            logger.error("cannot load campaign %s: %s", campaign_id, type(exc).__name__)
+            return await finalize(runtime, campaign_id, None, error)
+        except Exception:
+            await _mark_failed_best_effort(runtime, campaign_id)
+            raise
 
     await _to_thread(runtime.campaigns.set_status, campaign_id, "running")
     if resumed:
@@ -237,9 +260,8 @@ async def execute_campaign(runtime: JobRuntime, campaign_id: str) -> str:
     try:
         await runtime.runner(request, campaign_id)
     except asyncio.CancelledError:
-        # Worker shutting down: leave status "running" and drop the heartbeat so
-        # the reaper resumes the campaign from its persisted turns.
-        await asyncio.shield(_to_thread(runtime.heartbeats.release, campaign_id))
+        # Worker shutting down: leave status "running"; the caller drops the
+        # heartbeat so the reaper resumes the campaign from its persisted turns.
         raise
     except CampaignRefused as exc:  # engine start checks: terminal, never retried
         refused = True
@@ -256,8 +278,5 @@ async def execute_campaign(runtime: JobRuntime, campaign_id: str) -> str:
     runtime.control.invalidate()
     signal = await runtime.control.check(campaign_id)
     if refused and error is not None:
-        outcome = await _refuse(runtime, campaign_id, signal, error)
-    else:
-        outcome = await finalize(runtime, campaign_id, signal, error)
-    await _to_thread(runtime.heartbeats.release, campaign_id)
-    return outcome
+        return await _refuse(runtime, campaign_id, signal, error)
+    return await finalize(runtime, campaign_id, signal, error)
