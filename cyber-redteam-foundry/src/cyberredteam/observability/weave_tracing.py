@@ -127,7 +127,7 @@ def build_tracer() -> Callable[[str], Callable[[Any], Any]]:
                     enable_code_capture=False,
                 )(inner)
             except Exception as exc:  # never break import / decoration
-                logger.warning("weave.op failed for %s: %s", name, exc)
+                logger.warning("weave.op failed for %s: %s", name, type(exc).__name__)
                 return fn
 
             if inspect.iscoroutinefunction(fn):
@@ -176,7 +176,7 @@ def instrument_known_ops() -> list[str]:
                 _patched.append((owner, attr, fn))
                 done.append(op_name)
         except Exception as exc:
-            logger.warning("could not instrument %s.%s: %s", cls_name, attr, exc)
+            logger.warning("could not instrument %s.%s: %s", cls_name, attr, type(exc).__name__)
     return done
 
 
@@ -202,7 +202,7 @@ def init_tracing(entity: str | None, project: str) -> bool:
             postprocess_output=sanitize_output,
         )
     except Exception as exc:  # W&B down or misconfigured: campaigns still run
-        logger.warning("weave.init failed, tracing disabled: %s", exc)
+        logger.warning("weave.init failed, tracing disabled: %s", type(exc).__name__)
         return False
     _client_hooks = True
     hooks.set_tracer(build_tracer())
@@ -287,7 +287,7 @@ def add_feedback(call: Any | None, feedback_type: str, payload: dict[str, Any]) 
         call.feedback.add(feedback_type, sanitize(payload, raw=False))
         return True
     except Exception as exc:
-        logger.warning("weave feedback failed: %s", exc)
+        logger.warning("weave feedback failed: %s", type(exc).__name__)
         return False
 
 

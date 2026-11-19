@@ -39,10 +39,15 @@ _BASIC = re.compile(
     r"(?i)(authorization[\\\"']{0,2}\s*[:=]\s*[\\\"']{0,2}basic\s+)[A-Za-z0-9+/=]{6,}"
 )
 _COOKIE = re.compile(
-    r"(?i)\b((?:set-)?cookie[\\\"']{0,2}\s*:\s*)(?:\\?\"[^\"\\]*\\?\"|'[^']*'|[^\r\n\"]+)"
+    r"(?i)\b((?:set-)?cookie[\\\"']{0,2}\s*:\s*)(?:\\?\"[^\"\\]*\\?\"|'[^']*'"
+    # A missing closing quote means: redact to the end of the line.
+    r"|\\?\"[^\r\n]*|'[^\r\n]*"
+    # Bare value: must not start with whitespace or a quote.
+    r"|[^\s\"'][^\r\n\"]*)"
 )
 _CURL_USER = re.compile(
-    r"(?i)(\bcurl\b[^\n]{0,500}?\s(?:-u|--user)[ =]+)(?:\"[^\"]*\"|'[^']*'|\S+)"
+    r"(?i)(\bcurl\b[^\n]{0,500}?\s(?:-u|--user)[ =]+)(?:\"[^\"]*\"|'[^']*'"
+    r"|\"[^\n]*|'[^\n]*|\S+)"
 )
 _JWT = re.compile(r"\beyJ[A-Za-z0-9_-]{5,}\.eyJ[A-Za-z0-9_-]{5,}\.[A-Za-z0-9_-]{5,}")
 _BEARER = re.compile(r"(?i)\b(bearer)(\s+)[A-Za-z0-9._~+/=-]{8,}")

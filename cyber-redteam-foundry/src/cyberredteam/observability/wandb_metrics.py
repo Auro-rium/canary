@@ -70,11 +70,25 @@ def _ssrf_guard(url: str) -> None:
     check_target_url(url)
 
 
-def default_wandb_dir() -> str:
-    """Run-file directory: never the CWD (run dirs hold entity/host info)."""
-    path = os.path.join(tempfile.gettempdir(), "canary-wandb")
-    os.makedirs(path, exist_ok=True)
-    return path
+def default_wandb_dir() -> str | None:
+    """Per-user 0o700 run-file directory, never the CWD (run dirs hold entity/host info).
+
+    Returns None (caller skips W&B, fail closed) if the directory exists but is a
+    symlink or is owned by another user.
+    """
+    uid = os.getuid() if hasattr(os, "getuid") else None
+    suffix = f"-{uid}" if uid is not None else ""
+    path = os.path.join(tempfile.gettempdir(), f"canary-wandb{suffix}")
+    try:
+        os.makedirs(path, mode=0o700, exist_ok=True)
+        st = os.lstat(path)
+        if os.path.islink(path) or (uid is not None and st.st_uid != uid):
+            return None
+        if st.st_mode & 0o077:
+            os.chmod(path, 0o700)
+        return path
+    except OSError:
+        return None
 
 
 def _never_raises(fn: Callable[..., Any]) -> Callable[..., Any]:
@@ -126,6 +140,7 @@ class WandbCampaignMetrics:
     ) -> None:
         self.project, self.entity, self.mode = project, entity, mode
         self.directory = directory or default_wandb_dir()
+        self._no_dir = self.directory is None  # unsafe default dir: W&B stays off
         self.oncall_webhook_url = oncall_webhook_url  # global ops webhook
         self._http_post = http_post or _default_http_post
         self._url_check = url_check or _ssrf_guard
@@ -145,6 +160,7 @@ class WandbCampaignMetrics:
         self.disabled = False
         self._closed = False
         self._abandon = False  # set if the worker outlives close(): it must not create runs
+        self._finalized = False  # close() has finished runs; any later run is an orphan
         self._service_name = "api"
 
     # ── worker plumbing ─────────────────────────────────────────────────────
@@ -163,7 +179,7 @@ class WandbCampaignMetrics:
         except queue.Full:
             logger.warning("wandb queue full, dropping a telemetry event")
         except Exception as exc:
-            logger.warning("wandb submit failed: %s", exc)
+            logger.warning("wandb submit failed: %s", type(exc).__name__)
 
     def _run_worker(self) -> None:
         while True:
@@ -173,7 +189,7 @@ class WandbCampaignMetrics:
                     return
                 job()
             except Exception as exc:
-                logger.warning("wandb job failed: %s", exc)
+                logger.warning("wandb job failed: %s", type(exc).__name__)
             finally:
                 self._q.task_done()
 
@@ -203,10 +219,17 @@ class WandbCampaignMetrics:
             self.disabled = True
             return None
 
+    @staticmethod
+    def _finish_quietly(run: Any) -> None:
+        try:
+            run.finish()
+        except Exception as exc:
+            logger.warning("wandb finish failed: %s", type(exc).__name__)
+
     def _init_run(self, **kwargs: Any) -> Any | None:
         """Worker-thread only. None when W&B is unavailable or the breaker is open."""
         sdk = self._sdk()
-        if sdk is None or self._abandon or not self.breaker.allow():
+        if sdk is None or self._abandon or self._no_dir or not self.breaker.allow():
             return None
         kwargs.setdefault("project", self.project)
         if self.entity:
@@ -269,7 +292,11 @@ class WandbCampaignMetrics:
         )
         if run is not None:
             with self._lock:
-                self._runs[campaign_id] = run
+                orphan = self._finalized
+                if not orphan:
+                    self._runs[campaign_id] = run
+            if orphan:
+                self._finish_quietly(run)
 
     @_never_raises
     def log(self, campaign_id: str, metrics: dict[str, float], step: int | None = None) -> None:
@@ -316,7 +343,7 @@ class WandbCampaignMetrics:
             try:
                 run.finish()
             except Exception as exc:
-                logger.warning("wandb finish failed: %s", exc)
+                logger.warning("wandb finish failed: %s", type(exc).__name__)
 
     def _write_final(self, run: Any, campaign_id: str, summary: dict[str, Any], env: str) -> None:
         sdk = self._sdk()
@@ -334,7 +361,7 @@ class WandbCampaignMetrics:
             verdicts = summary.get("verdict_counts") or {}
             if verdicts:
                 vt = sdk.Table(columns=["verdict", "count"],
-                               data=[[redact_text(str(k), False)[:60], v]
+                               data=[[redact_text(str(k))[:60], v]
                                      for k, v in verdicts.items()])
                 payload: dict[str, Any] = {"verdict_counts": vt}
                 try:
@@ -350,16 +377,16 @@ class WandbCampaignMetrics:
                 data = [[f.get(c) if isinstance(f, dict) else None for c in cols] for f in red]
                 run.log({"findings": sdk.Table(columns=cols, data=data)})
         except Exception as exc:
-            logger.warning("wandb tables failed: %s", exc)
+            logger.warning("wandb tables failed: %s", type(exc).__name__)
 
         try:
             self._log_report(run, campaign_id, summary, raw)
         except Exception as exc:
-            logger.warning("wandb report artifact failed: %s", exc)
+            logger.warning("wandb report artifact failed: %s", type(exc).__name__)
 
         try:
             for k, v in (summary.get("headline") or {}).items():
-                key = redact_text(str(k), False)[:100]
+                key = redact_text(str(k))[:100]
                 if isinstance(v, (int, float)) and not isinstance(v, bool):
                     run.summary[key] = v
                 elif isinstance(v, str):
@@ -370,7 +397,7 @@ class WandbCampaignMetrics:
             if summary.get("weave_url"):
                 run.summary["weave_url"] = mask_known(str(summary["weave_url"]))
         except Exception as exc:
-            logger.warning("wandb summary failed: %s", exc)
+            logger.warning("wandb summary failed: %s", type(exc).__name__)
 
     def _log_report(self, run: Any, campaign_id: str, summary: dict[str, Any], raw: bool) -> None:
         rj, rm = summary.get("report_json"), summary.get("report_markdown")
@@ -419,13 +446,13 @@ class WandbCampaignMetrics:
                     self._hook_pool.submit(self._send_webhook, url, payload)
                 )
         except Exception as exc:
-            logger.warning("ops webhook submit failed: %s", exc)
+            logger.warning("ops webhook submit failed: %s", type(exc).__name__)
 
     def _send_webhook(self, url: str, payload: dict[str, Any]) -> None:
         try:
             self._url_check(url)
         except Exception as exc:
-            logger.warning("ops webhook refused by SSRF guard: %s", exc)
+            logger.warning("ops webhook refused by SSRF guard: %s", type(exc).__name__)
             return
         try:
             self._http_post(url, payload)
@@ -458,7 +485,12 @@ class WandbCampaignMetrics:
             config=config or {},
         )
         with self._lock:
-            self._service_run = run
+            orphan = run is not None and self._finalized
+            if not orphan:
+                self._service_run = run
+        if orphan:
+            self._finish_quietly(run)
+            return
         self.service_failed = run is None
 
     @_never_raises
@@ -506,6 +538,7 @@ class WandbCampaignMetrics:
             if pool is not None:
                 pool.shutdown(wait=False)
             with self._lock:
+                self._finalized = True
                 runs = list(self._runs.values()) + (
                     [self._service_run] if self._service_run else [])
                 self._runs.clear()
@@ -521,4 +554,4 @@ class WandbCampaignMetrics:
 
 def sanitize_alert(text: str) -> str:
     """Alert text carries no evidence by contract; still redact a bounded prefix."""
-    return redact_text(text, fail_closed=False)[:500]
+    return redact_text(text)[:500]

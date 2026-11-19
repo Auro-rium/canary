@@ -44,8 +44,11 @@ _SECRET_KEY = re.compile(
 _OWN_MARKER = re.compile(r"^\[(?:hmac:[0-9a-f]{16}|REDACTED:text) len=\d+\]$")
 # Long hex strings and long digit runs are masked even where the WP6 redactor has no rule.
 _WS = re.compile(r"\s")
-_EXTRA_TOKEN = re.compile(r"(?<![\w-])(?:[0-9a-fA-F]{20,}|\d{9,}|"
-    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})(?![\w-])")
+_EXTRA_TOKEN = re.compile(
+    r"(?<![A-Za-z0-9])(?:(?:0x)?[0-9a-fA-F]{20,}|\d{9,}|"
+    r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
+    r"(?![A-Za-z0-9])"
+)
 _URL_QUERY = re.compile(r"(https?://[^\s?#\"'<>]+)\?[^\s#\"'<>]*")
 
 _known_secrets: set[str] = set()
@@ -222,7 +225,7 @@ def _sanitize(obj: Any, raw: bool, depth: int, hashes: bool = True) -> Any:
             if _SECRET_KEY.search(key):
                 out[key] = "[REDACTED:secret]"
             else:
-                out[redact_text(key, fail_closed=False)[:100]] = _sanitize(v, raw, nxt, hashes)
+                out[redact_text(key)[:100]] = _sanitize(v, raw, nxt, hashes)
         return out
     if isinstance(obj, (list, tuple, set, frozenset)):
         items = list(obj)
@@ -349,3 +352,12 @@ def redact_long(text: str | None, chunk: int = MAX_REDACT_CHARS, overlap: int = 
         out.append(red(full[pos:cut]))
         pos = cut
     return "".join(out)
+
+
+def reset_state() -> None:
+    """Forget the hash key, known secrets and the raw-export flag (tests / shutdown)."""
+    global _hash_key
+    _hash_key = None
+    with _lock:
+        _known_secrets.clear()
+    configure_raw_export(False)

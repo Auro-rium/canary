@@ -61,7 +61,7 @@ class BackboardErrorTracker:
                     "ERROR",
                 )
             except Exception as exc:
-                logger.warning("backboard alert failed: %s", exc)
+                logger.warning("backboard alert failed: %s", type(exc).__name__)
         return should
 
     def _rate_locked(self) -> tuple[float, int]:
@@ -134,7 +134,7 @@ class ServiceReporter:
             try:
                 out[name] = float(fn())
             except Exception as exc:
-                logger.debug("service provider %s failed: %s", name, exc)
+                logger.debug("service provider %s failed: %s", name, type(exc).__name__)
         out["backboard_error_rate"] = self.tracker.rate()
         return out
 
@@ -142,7 +142,7 @@ class ServiceReporter:
         try:
             self.sink(self.collect())
         except Exception as exc:
-            logger.warning("service report failed: %s", exc)
+            logger.warning("service report failed: %s", type(exc).__name__)
 
     def start(self) -> None:
         if self._thread is not None:

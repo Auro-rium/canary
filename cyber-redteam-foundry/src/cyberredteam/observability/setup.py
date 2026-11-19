@@ -86,7 +86,7 @@ def init_observability(
         try:
             _handle = _init(settings, service_name, providers, ops_webhook_url)
         except Exception as exc:  # observability must never break startup
-            logger.warning("observability init failed: %s", exc)
+            logger.warning("observability init failed: %s", type(exc).__name__)
         return _handle
 
 
@@ -149,6 +149,7 @@ def reset_for_tests() -> None:
             _handle.shutdown()
         _handle = None
     hooks.set_metrics(hooks.NoopMetrics())
+    redact.reset_state()
     from cyberredteam.observability.weave_tracing import reset_tracing
 
     reset_tracing()
