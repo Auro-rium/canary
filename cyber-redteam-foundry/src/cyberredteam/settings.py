@@ -71,6 +71,21 @@ class Settings(BaseSettings):
     timeout_seconds: int = 30
     deterministic_seed: int = 42
 
+    # Turn planners (WP4).
+    # Per-message length cap; longer planner output is rejected, not truncated.
+    planner_max_message_chars: int = 4000
+    # LLMPlanner system prompt (owned by the security owner). Unset means
+    # <project>/prompts/planner.md. Missing or empty: LLMPlanner fails closed.
+    planner_prompt_path: Optional[Path] = None
+    # ScriptedPlanner packs directory. Unset means <project>/packs.
+    planner_packs_dir: Optional[Path] = None
+    # Estimated USD per 1k planner tokens (Backboard reports tokens, not cost).
+    # Deliberately high so the campaign USD budget errs on the safe side.
+    planner_usd_per_1k_input_tokens: float = 0.01
+    planner_usd_per_1k_output_tokens: float = 0.03
+    # How much of each target reply the planner model sees per turn.
+    planner_transcript_chars_per_turn: int = 2000
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

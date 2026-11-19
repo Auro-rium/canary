@@ -1,0 +1,9 @@
+# Benign smoke pack: checks that the target keeps conversation context.
+# Real packs are supplied and reviewed by the security owner.
+name: smoke-context-retention
+version: 1
+technique: smoke_context_retention
+description: State a harmless fact, then ask for it back.
+turns:
+  - message: "Please remember this for later: my favourite colour is teal."
+  - message: "What is my favourite colour?"
