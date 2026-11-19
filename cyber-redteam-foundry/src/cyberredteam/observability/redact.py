@@ -49,7 +49,21 @@ _EXTRA_TOKEN = re.compile(
     r"[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
     r"(?![A-Za-z0-9])"
 )
-_URL_QUERY = re.compile(r"(https?://[^\s?#\"'<>]+)\?[^\s#\"'<>]*")
+# Absolute URLs (any scheme, any case): the whole query string goes. A URL may start only
+# right after a character the host/path scan also stops on, so every character is scanned
+# by at most one candidate start (linear time on ``a://a://...``).
+_URL_QUERY = re.compile(
+    r"((?<![^\s\"'<>(=])[a-z][a-z0-9+.-]{0,31}://[^\s?#\"'<>(=]+)\?[^\s#\"'<>]*", re.I
+)
+# Relative URLs / bare query strings (``/v1/items?key=X``, ``?sig=X``): secret-ish params only.
+_QUERY_PARAM = re.compile(r"([?&;])([A-Za-z0-9_.%-]{1,64})=([^&;\s#\"'<>]*)")
+_SECRET_PARAM = re.compile(
+    r"(key|sig|token|secret|pass|pwd|auth|credential|session|code|jwt|cookie)", re.I
+)
+# Mapping keys are exported verbatim only when they look like plain identifiers.
+_SAFE_KEY = re.compile(r"[A-Za-z0-9_.-]{1,64}")
+# Our marker plus a short numeric de-dup suffix only (a long digit run could be a card).
+_DEDUP_MARKER = re.compile(r"\[(?:hmac:[0-9a-f]{16}|REDACTED:text) len=\d+\](?:#\d{1,4})?")
 
 _known_secrets: set[str] = set()
 _lock = threading.Lock()
@@ -132,9 +146,30 @@ def _mask_known(text: str) -> str:
     return text
 
 
+def _mask_param(m: re.Match) -> str:
+    if m.group(3) and _SECRET_PARAM.search(m.group(2)):
+        return f"{m.group(1)}{m.group(2)}=[REDACTED:query]"
+    return m.group(0)
+
+
 def mask_known(text: str) -> str:
     """Exact-secret masking plus URL query-string stripping (no regex redactor)."""
-    return _URL_QUERY.sub(r"\1?[REDACTED:query]", _mask_known(text))
+    text = _URL_QUERY.sub(r"\1?[REDACTED:query]", _mask_known(text))
+    return _QUERY_PARAM.sub(_mask_param, text)
+
+
+def safe_key(key: Any) -> str:
+    """``key`` if it is a plain identifier (and nothing a redactor would touch), else a marker.
+
+    Keys such as ``token=SECRET`` or ``Authorization: Bearer x`` must never be exported
+    verbatim, whether or not their value is masked.
+    """
+    text = str(key)
+    if _DEDUP_MARKER.fullmatch(text):  # our own (possibly de-duplicated) marker
+        return text
+    if _SAFE_KEY.fullmatch(text) and redact_text(text) == text:
+        return text
+    return hash_marker(text)
 
 
 def _redact_core(piece: str) -> str | None:
@@ -222,10 +257,13 @@ def _sanitize(obj: Any, raw: bool, depth: int, hashes: bool = True) -> Any:
                 out["..."] = f"{len(obj) - _MAX_ITEMS} more"
                 break
             key = str(k)
+            name = safe_key(key)
+            if name in out:  # unkeyed markers carry only the length: keep entries distinct
+                name = f"{name}#{i}"
             if _SECRET_KEY.search(key):
-                out[key] = "[REDACTED:secret]"
+                out[name] = "[REDACTED:secret]"
             else:
-                out[redact_text(key)[:100]] = _sanitize(v, raw, nxt, hashes)
+                out[name] = _sanitize(v, raw, nxt, hashes)
         return out
     if isinstance(obj, (list, tuple, set, frozenset)):
         items = list(obj)

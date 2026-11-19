@@ -250,15 +250,21 @@ def trace_attributes(**attrs: Any) -> Iterator[None]:
             clean[k] = str(attrs[k])[:120]
     token = set_environment(str(attrs["environment"])) if attrs.get("environment") else None
     try:
-        weave = _weave()
-        cm: Any = contextlib.nullcontext()
-        if weave is not None and _initialized:
-            try:
-                cm = weave.attributes(clean)
-            except Exception:
-                cm = contextlib.nullcontext()
-        with cm:
+        stack = contextlib.ExitStack()
+        try:
+            weave = _weave()
+            if weave is not None and _initialized:
+                stack.enter_context(weave.attributes(clean))
+        except Exception:  # building OR entering the weave cm failed: no attributes
+            stack = contextlib.ExitStack()
+            stack.enter_context(contextlib.nullcontext())
+        try:
             yield
+        finally:
+            try:
+                stack.close()
+            except Exception as exc:  # a failing weave __exit__ never reaches the caller
+                logger.debug("weave attributes exit failed: %s", type(exc).__name__)
     finally:
         if token is not None:
             with contextlib.suppress(Exception):

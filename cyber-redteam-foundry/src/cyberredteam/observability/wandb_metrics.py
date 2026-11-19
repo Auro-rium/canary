@@ -46,6 +46,7 @@ from cyberredteam.observability.redact import (
     raw_export_allowed,
     redact_long,
     redact_text,
+    safe_key,
     sanitize,
 )
 
@@ -373,8 +374,12 @@ class WandbCampaignMetrics:
             findings = list(summary.get("findings") or [])[:_TABLE_ROW_CAP]
             if findings:
                 red = [sanitize(f, raw=raw) for f in findings]  # keys are redacted too
-                cols = sorted({k for f in red if isinstance(f, dict) for k in f})
-                data = [[f.get(c) if isinstance(f, dict) else None for c in cols] for f in red]
+                keys = sorted({k for f in red if isinstance(f, dict) for k in f})
+                cols: list[str] = []
+                for i, k in enumerate(keys):
+                    col = safe_key(k)
+                    cols.append(col if col not in cols else f"{col}#{i}")
+                data = [[f.get(k) if isinstance(f, dict) else None for k in keys] for f in red]
                 run.log({"findings": sdk.Table(columns=cols, data=data)})
         except Exception as exc:
             logger.warning("wandb tables failed: %s", type(exc).__name__)
@@ -392,8 +397,11 @@ class WandbCampaignMetrics:
                 elif isinstance(v, str):
                     run.summary[key] = sanitize(v, raw=False)
             for k, v in summary.items():
-                if isinstance(v, (int, float)) and not isinstance(v, bool) and k not in run.summary:
-                    run.summary[k] = v
+                if not isinstance(v, (int, float)) or isinstance(v, bool):
+                    continue
+                key = safe_key(k)
+                if key not in run.summary:
+                    run.summary[key] = v
             if summary.get("weave_url"):
                 run.summary["weave_url"] = mask_known(str(summary["weave_url"]))
         except Exception as exc:
