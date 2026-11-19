@@ -36,6 +36,7 @@ from typing import Any
 import httpx
 
 from cyberredteam.contracts import TargetConfig, ToolCallObservation
+from cyberredteam.observability.hooks import trace_op
 from cyberredteam.transport.auth import AuthFailure, build_auth
 from cyberredteam.transport.rate_limit import RateLimiter
 from cyberredteam.transport.streaming import (
@@ -314,6 +315,7 @@ class SessionAdapter:
 
     # ── Send ─────────────────────────────────────────────────────────────────
 
+    @trace_op("target.send")
     async def send(self, message: str) -> TurnResult:
         async with self._send_lock:
             return await self._send_locked(message)

@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
+from pydantic import SecretStr
 from pydantic_settings import BaseSettings
 
 # Load .env into the process environment so that code reading os.environ
@@ -70,6 +71,18 @@ class Settings(BaseSettings):
     max_concurrent_runs: int = 3
     timeout_seconds: int = 30
     deterministic_seed: int = 42
+
+    # Observability on Weights & Biases (WP11). All optional; no key = no-op.
+    wandb_api_key: Optional[SecretStr] = None
+    wandb_entity: Optional[str] = None
+    wandb_project: str = "canary"
+    wandb_mode: str = "online"  # online | offline | disabled
+    # Local W&B run-file directory (never the CWD). Unset -> <system temp>/canary-wandb.
+    wandb_dir: Optional[str] = None
+    wandb_export_raw_evidence: bool = False  # raw text only if also environment=staging
+    # Global PLATFORM ops webhook (kill switch, Backboard error rate, budget overrun).
+    # Per-target on-call is WP3 EngineDeps.on_call / the WP8 target webhook field.
+    canary_ops_webhook_url: Optional[str] = None
 
     class Config:
         env_file = ".env"
