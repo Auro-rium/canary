@@ -93,6 +93,7 @@ async def run_campaign_graph(
     """Same contract as :func:`cyberredteam.engine.run_campaign`, via LangGraph."""
     started = deps.clock()
     runtime = await begin_campaign(request, campaign_id, deps)
+    request = runtime.request  # the normalised copy only
     config: RunnableConfig = {
         "configurable": {
             RUNTIME_KEY: runtime,
@@ -103,8 +104,12 @@ async def run_campaign_graph(
         final = await build_campaign_graph().compile().ainvoke(
             {"campaign_id": campaign_id, "specs": [], "results": []}, config=config
         )
-    except asyncio.CancelledError:
-        raise
+    except asyncio.CancelledError as exc:
+        task = asyncio.current_task()
+        if task is not None and task.cancelling():
+            raise
+        await fail_campaign(runtime, exc)
+        raise RuntimeError("campaign graph cancelled without a cancel request") from None
     except Exception as exc:
         await fail_campaign(runtime, exc)
         raise

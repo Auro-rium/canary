@@ -281,7 +281,8 @@ def test_production_violation_refused_even_if_validation_bypassed(factory):
     )
     bad = CampaignRequest.model_construct(target=h.request.target, policy=bad_policy)
     campaign = new_campaign_id()
-    with pytest.raises(CampaignRefused, match="max_parallel_conversations"):
+    # Re-validation at the engine boundary rejects it; the reason is generic by design.
+    with pytest.raises(CampaignRefused):
         asyncio.run(run_campaign(bad, campaign, h.deps))
     assert CampaignRepo(factory).get(campaign) is None
     assert h.fake.requests == []

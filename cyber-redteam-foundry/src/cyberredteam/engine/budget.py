@@ -65,32 +65,41 @@ class BudgetLedger:
 
     def _caps_valid(self) -> bool:
         """Fail closed on caps that would never trip (NaN, inf, <= 0, non-numbers)."""
-        req = self._policy.max_total_requests
-        usd = self._policy.max_llm_cost_usd
-        return (
-            _is_number(req) and math.isfinite(req) and req > 0
-            and _is_number(usd) and math.isfinite(usd) and usd >= 0
-        )
+        try:
+            req = getattr(self._policy, "max_total_requests", None)
+            usd = getattr(self._policy, "max_llm_cost_usd", None)
+            return bool(
+                _is_number(req) and math.isfinite(req) and req > 0
+                and _is_number(usd) and math.isfinite(usd) and usd >= 0
+            )
+        except Exception:  # OverflowError (e.g. 10**400), odd comparisons: invalid
+            return False
 
     def _usd_exhausted(self) -> bool:
         return self._usd > 0 and self._usd >= self._policy.max_llm_cost_usd
 
     def exhausted(self) -> bool:
-        return (
-            self._write_failed
-            or not self._caps_valid()
-            or self._requests >= self._policy.max_total_requests
-            or self._usd_exhausted()
-        )
+        try:
+            return bool(
+                self._write_failed
+                or not self._caps_valid()
+                or self._requests >= self._policy.max_total_requests
+                or self._usd_exhausted()
+            )
+        except Exception:  # fail closed
+            return True
 
     def remaining_pct(self) -> float:
         """Smallest remaining share across the limits, in percent (0..100)."""
         if self._write_failed or not self._caps_valid():
             return 0.0
-        shares = [1.0 - self._requests / self._policy.max_total_requests]
-        if self._policy.max_llm_cost_usd > 0:
-            shares.append(1.0 - self._usd / self._policy.max_llm_cost_usd)
-        return max(0.0, min(shares)) * 100.0
+        try:
+            shares = [1.0 - self._requests / self._policy.max_total_requests]
+            if self._policy.max_llm_cost_usd > 0:
+                shares.append(1.0 - self._usd / self._policy.max_llm_cost_usd)
+            return max(0.0, min(shares)) * 100.0
+        except Exception:
+            return 0.0
 
     def snapshot(self) -> BudgetUpdatePayload:
         return BudgetUpdatePayload(

@@ -264,7 +264,8 @@ There are no scripted or cosmetic events (fixes D8).
     - A monitor exception records `monitor_error:<Class>`, keeps the turn, and stops with `stopped_monitor`.
     - A `RunControl.check` exception or timeout is treated as `"killed"`. So is a `CancelledError` the check raises itself, and any returned value other than `None`, `"cancelled"` or `"killed"`.
     - Event-sink, metrics and on-call failures are swallowed and logged. A failed or timed-out on-call call also raises a `Canary: on-call notification failed` alert.
-    - **Hook-raised `CancelledError`.** One raised by a monitor, the sink, on-call or RunControl without the task being cancelled (`current_task().cancelling() == 0`) is handled as a failure. A monitor that does this gets `monitor_error` and stops the conversation. A genuine task cancellation always propagates, including from the in-flight send watcher.
+    - **Hook-raised `CancelledError`.** One raised without the task being cancelled (`current_task().cancelling() == 0`) is handled as a failure. This covers a monitor, the sink, on-call, RunControl, the planner, the planner factory and the adapter. A monitor that does this gets `monitor_error` and stops the conversation. In `run_conversation` it gives `persisted_status or "error"`, never `running`. In `run_campaign` / `run_campaign_graph` it runs `fail_campaign`, then raises `RuntimeError`. A genuine task cancellation always propagates, including one delivered while the send watcher is being awaited.
+    - **Signals and monitor results.** `_control` returns only the literals `None`, `"cancelled"` or `"killed"`, and accepts a value only if it is exactly a `str` (`type(x) is str`). A `MonitorResult` is fully read and type-checked inside the monitor `try`: `hits` must be a list of `MonitorHit` with a plain-string name and a known severity, and `stop` / `critical` must be real bools. Anything malformed becomes `monitor_error` with stop, and the turn is still recorded.
     - **Timeouts.** RunControl, the event sink and on-call each run under `asyncio.timeout(EngineDeps.hook_timeout_s)`.
       - The default comes from env `CANARY_ENGINE_HOOK_TIMEOUT_S` (5 s). It is read in the engine because `settings.py` was off-limits for WP3. A non-finite, zero or negative value falls back to 5 s, and the value is clamped to (0, 60].
       - `EngineDeps` validates its timing fields on construction and on assignment: they must be finite and > 0. `hook_timeout_s` is capped at 60 s; `control_poll_s` is floored at 0.05 s and capped at 60 s.
@@ -276,12 +277,23 @@ There are no scripted or cosmetic events (fixes D8).
     - RunControl is also checked after planning, right before the send.
     - While a send is in flight, a watcher polls RunControl every `control_poll_s` (1 s) and calls `adapter.cancel()`, which now also interrupts backoff and Retry-After waits.
     - The `adapter_factory` signature is now `(target, campaign_id, limiter, before_attempt)`.
-  - **Start checks (review fixes).** `check_campaign_allowed`, called first in `begin_campaign`, raises `CampaignRefused` before anything is written. It fails closed even on a forged request (`model_construct`):
+  - **Normalisation at the engine boundary (round 3).** `begin_campaign` first calls `normalize_request()`.
+    - The request is dumped in JSON mode; auth secrets are re-added revealed, because JSON mode masks them.
+    - It is re-serialised with `allow_nan=False` and re-validated with `CampaignRequest.model_validate_json(..., strict=True)`. Strict mode means no lax coercion: `"no"` does not become `False`, `True` does not become `1`.
+    - This turns str/int/float subclasses, `__eq__` tricks, NaN/inf, huge integers, missing attributes and `None`/dict policies into plain validated values, or into an error.
+    - `check_campaign_allowed` then runs on both the original and the copy. Any exception becomes `CampaignRefused` with a generic reason naming only the exception class, before any row or request.
+    - From then on the engine uses only `runtime.request` (the copy): semaphore, ledger, limiter and plan.
+  - **Policy upper bounds (contracts).** These make huge values fail validation:
+    - `max_total_requests` ≤ 1,000,000 and `max_llm_cost_usd` ≤ 10,000 (both new);
+    - `techniques` at most 100 entries (new);
+    - unchanged: `max_parallel_conversations` ≤ 64, `rate_limit_rps` ≤ 100, `max_turns` ≤ 100, `trials_per_technique` ≤ 1000.
+    - Technique names are compared through `normalize_technique()` (strip + casefold). Uniqueness and the production ban both use it, so `"Workflow_Manipulation "` is staging-only and duplicates `"workflow_manipulation"`.
+  - **Start checks (review fixes).** `check_campaign_allowed` (the second layer) raises `CampaignRefused` before anything is written. It fails closed even on a forged request (`model_construct`):
     - `target.verified` must be exactly `True`;
     - any environment other than exactly `"staging"` gets the production rules;
     - `policy_sanity_violations()` must be empty: whole-number counts ≥ 1 (so the semaphore is bounded), a finite `rate_limit_rps` > 0, a finite `max_llm_cost_usd` ≥ 0, a real boolean for `allow_destructive_tools`, and unique non-empty techniques.
-    - `CampaignPolicy.production_violations()` (shared with the API path) now checks each limit as `not (isfinite(v) and 0 < v <= limit)`, and `allow_destructive_tools is not False`.
-    - `BudgetLedger.exhausted()` treats a non-finite or non-positive cap as exhausted.
+    - `CampaignPolicy.production_violations()` (shared with the API path) checks each limit as `not (isfinite(v) and 0 < v <= limit)`, with `OverflowError` / `TypeError` counted as a violation, and requires `allow_destructive_tools is False` (attributes are read with fail-closed `getattr` defaults).
+    - `BudgetLedger.exhausted()` treats a non-finite or non-positive cap, or any exception while checking it (for example `OverflowError` on a cap of `10**400` assigned after validation), as exhausted.
     - The runtime, including the ledger totals read, is built **before** the campaign row is set to `running`, so an init failure never leaves it `running`.
   - **Budget.**
     - One request is charged per outgoing HTTP request, including retries and auth sub-requests, through the gate. The total can **never** exceed `max_total_requests`.

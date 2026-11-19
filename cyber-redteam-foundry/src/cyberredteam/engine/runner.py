@@ -48,6 +48,7 @@ and run on the event loop.
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import math
 import os
@@ -55,9 +56,9 @@ import time
 from collections import Counter
 from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass, field
-from typing import Literal
+from typing import Any, Literal, get_args
 
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
 
 from cyberredteam.contracts import (
     TERMINAL_CONVERSATION_STATUSES,
@@ -72,10 +73,12 @@ from cyberredteam.contracts import (
     ConversationStartedPayload,
     ConversationStatus,
     MonitorHitPayload,
+    Severity,
     SseEventType,
     TargetConfig,
     Turn,
     TurnPayload,
+    normalize_technique,
 )
 from cyberredteam.engine.budget import BudgetLedger
 from cyberredteam.engine.control import RunControl
@@ -120,6 +123,9 @@ _SIGNAL_STATUS: dict[str, ConversationStatus] = {
     "killed": "stopped_killed",
     "cancelled": "cancelled",
 }
+
+
+_SEVERITIES = frozenset(get_args(Severity))
 
 
 class CampaignRefused(ValueError):
@@ -311,9 +317,12 @@ async def _control(deps: EngineDeps, campaign_id: str) -> str | None:
     except Exception:  # fail closed, timeouts included
         logger.error("run control check failed for %s; treating as killed", campaign_id)
         return "killed"
-    if signal is None or signal == "cancelled":
-        return signal
-    if signal != "killed":
+    # Exact plain strings only (no subclasses / __eq__ tricks); return literals.
+    if signal is None:
+        return None
+    if type(signal) is str and signal == "cancelled":
+        return "cancelled"
+    if not (type(signal) is str and signal == "killed"):
         logger.error("unknown run control signal for %s; treating as killed", campaign_id)
     return "killed"
 
@@ -359,7 +368,7 @@ async def _monitor(monitor: TurnMonitor, turn: Turn, context: MonitorContext) ->
 @dataclass
 class _Conv:
     spec: ConversationSpec
-    planner: TurnPlanner
+    planner: TurnPlanner | None
     context: MonitorContext
     turns: list[Turn]
     session_ref: str | None
@@ -378,8 +387,23 @@ async def _run_monitors(runtime: CampaignRuntime, context: MonitorContext, turn:
         try:
             async with asyncio.timeout(runtime.deps.monitor_timeout_s):
                 res = await _monitor(monitor, turn, context)
+            # Read and check every field here, so a malformed result is a
+            # monitor error (turn still recorded), never a lost turn.
             if not isinstance(res, MonitorResult):
                 raise TypeError("monitor returned a non-MonitorResult")
+            res_hits = list(res.hits)
+            res_stop, res_critical = res.stop, res.critical
+            if type(res_stop) is not bool or type(res_critical) is not bool:
+                raise TypeError("monitor stop/critical must be booleans")
+            for h in res_hits:
+                if (
+                    not isinstance(h, MonitorHit)
+                    or type(h.name) is not str
+                    or not h.name
+                    or type(h.severity) is not str
+                    or h.severity not in _SEVERITIES
+                ):
+                    raise TypeError("monitor returned a malformed hit")
         except (Exception, asyncio.CancelledError) as exc:
             if isinstance(exc, asyncio.CancelledError) and _genuinely_cancelled():
                 raise
@@ -388,9 +412,9 @@ async def _run_monitors(runtime: CampaignRuntime, context: MonitorContext, turn:
             hits.append(MonitorHit(name=f"monitor_error:{type(monitor).__name__}", severity="high"))
             stop = True
             continue
-        hits.extend(res.hits)
-        stop = stop or res.stop or res.critical
-        critical = critical or res.critical
+        hits.extend(res_hits)
+        stop = stop or res_stop or res_critical
+        critical = critical or res_critical
     return MonitorResult(hits=hits, stop=stop, critical=critical)
 
 
@@ -517,6 +541,8 @@ async def _turn_step(runtime: CampaignRuntime, conv: _Conv) -> ConversationStatu
         max_turns=policy.max_turns,
         remaining_turns=policy.max_turns - index,
     )
+    if conv.planner is None:
+        raise RuntimeError("no planner")
     async with asyncio.timeout(deps.planner_timeout_s):  # a hang ends the conversation as error
         planned = await _plan(conv.planner, state)
     if planned is not None:
@@ -680,7 +706,7 @@ async def run_conversation(spec: ConversationSpec, runtime: CampaignRuntime) -> 
     target = runtime.request.target
     conv = _Conv(
         spec=spec,
-        planner=deps.planner_factory(spec),
+        planner=None,
         context=MonitorContext(
             campaign_id=runtime.campaign_id,
             conversation_id=cid,
@@ -707,6 +733,7 @@ async def run_conversation(spec: ConversationSpec, runtime: CampaignRuntime) -> 
     status: ConversationStatus
     adapter: SessionAdapter | None = None
     try:
+        conv.planner = deps.planner_factory(spec)
         if turns and await _recheck_last_turn(runtime, conv):
             status = "stopped_monitor"
         else:
@@ -720,9 +747,11 @@ async def run_conversation(spec: ConversationSpec, runtime: CampaignRuntime) -> 
                 if outcome is not None:
                     status = outcome
                     break
-    except asyncio.CancelledError:
-        raise  # worker shutdown: stays "running" unless a terminal status was persisted
-    except Exception as exc:
+    except (Exception, asyncio.CancelledError) as exc:
+        if isinstance(exc, asyncio.CancelledError) and _genuinely_cancelled():
+            raise  # worker shutdown: stays "running" unless a terminal status was persisted
+        # Any other failure, including a CancelledError raised by the planner,
+        # planner factory, adapter or a hook on its own, ends the conversation.
         logger.error("conversation %s failed: %s", cid, type(exc).__name__)
         status = conv.persisted_status or "error"
     finally:
@@ -757,7 +786,10 @@ def _is_count(value: object) -> bool:
 def _is_finite(value: object, *, positive: bool) -> bool:
     if isinstance(value, bool) or not isinstance(value, (int, float)):
         return False
-    return math.isfinite(value) and (value > 0 if positive else value >= 0)
+    try:
+        return bool(math.isfinite(value) and (value > 0 if positive else value >= 0))
+    except (OverflowError, TypeError, ValueError):
+        return False
 
 
 def policy_sanity_violations(policy: CampaignPolicy) -> list[str]:
@@ -778,8 +810,8 @@ def policy_sanity_violations(policy: CampaignPolicy) -> list[str]:
     if (
         not isinstance(techniques, (list, tuple))
         or not techniques
-        or not all(isinstance(t, str) and t.strip() for t in techniques)
-        or len(set(techniques)) != len(techniques)
+        or not all(type(t) is str and t.strip() for t in techniques)
+        or len({normalize_technique(t) for t in techniques}) != len(techniques)
     ):
         problems.append("techniques must be a non-empty list of unique names")
     return problems
@@ -794,20 +826,65 @@ def check_campaign_allowed(request: CampaignRequest) -> None:
       rules (``CampaignPolicy.production_violations``);
     * :func:`policy_sanity_violations` must be empty.
     """
-    target, policy = request.target, request.policy
+    target = getattr(request, "target", None)
+    policy = getattr(request, "policy", None)
     if getattr(target, "verified", None) is not True:
         raise CampaignRefused("target is not verified")
+    if not isinstance(policy, CampaignPolicy):
+        raise CampaignRefused("campaign policy rejected: not a CampaignPolicy")
     problems = policy_sanity_violations(policy)
-    if getattr(target, "environment", None) != "staging":
+    env = getattr(target, "environment", None)
+    if not (type(env) is str and env == "staging"):
         problems += policy.production_violations()
     if problems:
         raise CampaignRefused("campaign policy rejected: " + "; ".join(problems))
 
 
+def normalize_request(request: Any) -> CampaignRequest:
+    """Rebuild ``request`` from plain JSON data and validate it again, then run
+    :func:`check_campaign_allowed` on both the original and the copy.
+
+    This strips str/int/float subclasses, ``__eq__`` tricks, Decimals, NaN/inf
+    and huge integers, missing attributes and ``None``/dict policies left by
+    ``model_construct``: they either become plain validated values or fail.
+    Any failure is a :class:`CampaignRefused` with a generic reason. Nothing
+    is written before this returns; the engine uses only the returned copy.
+    """
+    try:
+        # First layer on the original object: verified must already be exactly True
+        # (a forged "true" string must not become True through re-validation).
+        if not isinstance(request, CampaignRequest):
+            raise TypeError("not a CampaignRequest")
+        if getattr(getattr(request, "target", None), "verified", None) is not True:
+            raise CampaignRefused("target is not verified")
+        # JSON mode turns URLs, subclasses etc. into plain data; secrets serialise
+        # masked there, so the auth block is re-added with its secrets revealed.
+        raw = request.model_dump(mode="json", warnings=False)
+        auth = request.target.auth
+        auth_raw = auth.model_dump(mode="json", warnings=False)
+        for name, value in auth:
+            if isinstance(value, SecretStr):
+                auth_raw[name] = value.get_secret_value()
+        raw["target"]["auth"] = auth_raw
+        text = json.dumps(raw, allow_nan=False)
+        # Strict: no lax coercion of forged values ("no" -> False, True -> 1).
+        normalized = CampaignRequest.model_validate_json(text, strict=True)
+        # Second layer, on the original and on the plain copy.
+        check_campaign_allowed(request)
+        check_campaign_allowed(normalized)
+        return normalized
+    except CampaignRefused:
+        raise
+    except Exception as exc:
+        raise CampaignRefused(f"campaign request rejected ({type(exc).__name__})") from None
+
+
 async def begin_campaign(request: CampaignRequest, campaign_id: str, deps: EngineDeps) -> CampaignRuntime:
-    """Refuse unsafe launches, create (idempotently) the campaign row, mark it
-    running, emit the start."""
-    check_campaign_allowed(request)
+    """Normalise and check the request (refusing unsafe launches), create
+    (idempotently) the campaign row, mark it running, emit the start. The
+    returned runtime holds the normalised request; callers must use
+    ``runtime.request`` from here on."""
+    request = normalize_request(request)
     # Build the runtime (ledger totals, limiter) first: if that fails, no
     # campaign row has been left "running".
     runtime = CampaignRuntime.create(request, campaign_id, deps)
@@ -938,6 +1015,7 @@ async def run_campaign(request: CampaignRequest, campaign_id: str, deps: EngineD
     cancellation propagates and leaves unfinished conversations ``running``."""
     started = deps.clock()
     runtime = await begin_campaign(request, campaign_id, deps)
+    request = runtime.request  # the normalised copy only
     specs = plan_conversations(request, campaign_id)
     sem = asyncio.Semaphore(request.policy.max_parallel_conversations)
 
@@ -948,8 +1026,11 @@ async def run_campaign(request: CampaignRequest, campaign_id: str, deps: EngineD
     try:
         async with asyncio.TaskGroup() as tg:
             tasks = [tg.create_task(guarded(s)) for s in specs]
-    except asyncio.CancelledError:
-        raise
+    except asyncio.CancelledError as exc:
+        if _genuinely_cancelled():
+            raise
+        await fail_campaign(runtime, exc)
+        raise RuntimeError("campaign run cancelled without a cancel request") from None
     except BaseExceptionGroup as group:
         await fail_campaign(runtime, group.exceptions[0])
         raise
@@ -969,6 +1050,8 @@ __all__ = [
     "LimiterFactory",
     "begin_campaign",
     "check_campaign_allowed",
+    "normalize_request",
+    "normalize_technique",
     "policy_sanity_violations",
     "default_adapter_factory",
     "finish_campaign",
