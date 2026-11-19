@@ -14,7 +14,6 @@ from cyberredteam.tools.target_adapter import (
     TargetAdapter,
 )
 
-
 logger = setup_logging()
 
 def _extract_tool_calls(response: str) -> list:
