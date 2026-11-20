@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 
 import pytest
 from cryptography.fernet import Fernet
@@ -31,6 +32,7 @@ from cyberredteam.storage.v2.repositories import (
     CampaignRepo,
     ConversationRepo,
     FindingRepo,
+    InvalidTransition,
     SqlTargetStore,
     VerdictRepo,
 )
@@ -112,6 +114,10 @@ def test_component_is_the_real_tool_and_part_of_the_id():
                                       ToolCallObservation(name="Functions.Delete_Record")]])
     assert resolve_component(ns, v, {"delete_record"}) == "tool:delete_record"
     assert resolve_component(ns, v, {"functions.delete_record"}) == "tool:delete_record"
+    a_ns = conversation(["ok"], tools=[[ToolCallObservation(name="a.delete_record")]])
+    b_ns = conversation(["ok"], tools=[[ToolCallObservation(name="b.delete_record")]])
+    assert resolve_component(a_ns, v) == "tool:a.delete_record"
+    assert resolve_component(b_ns, v) == "tool:b.delete_record"
     a = finding_id("t1", "tool:delete_record", "tool_misuse", "ASI02")
     b = finding_id("t1", "tool:lookup_order_status", "tool_misuse", "ASI02")
     assert a != b and len(a) == 16
@@ -339,3 +345,247 @@ def test_compute_technique_results_stores_rates(env):
     assert (by["prompt_injection"].trials, by["prompt_injection"].confirmed) == (3, 1)
     assert by["jailbreak"].trials == 0
     assert env["campaigns"].technique_results("camp-1") == results
+
+
+# ── human triage is never overridden by automation (re-review B2) ────────────
+
+
+def _up(env, conv, verdict="confirmed"):
+    first = 0 if verdict == "confirmed" else None
+    return upsert_finding_for_verdict(_verdict(conv, verdict, first=first), conv,
+                                      target_id=env["target_id"], campaign_id="camp-1",
+                                      findings=env["findings"])
+
+
+def test_repro_inconclusive_vs_confirmed(env):
+    conv_a, conv_b = mk(env, ["leak"]), mk(env, ["meh"])
+    repo = env["findings"]
+    real_get = repo.get
+    state = {"first": True}
+
+    def racing_get(fid):
+        if state["first"]:
+            state["first"] = False
+            _up(env, conv_a)
+            return None
+        return real_get(fid)
+
+    repo.get = racing_get
+    _up(env, conv_b, "inconclusive")
+    repo.get = real_get
+    (rec,) = repo.list()
+    assert rec.status == "open"
+
+
+def test_two_confirmed_race(env):
+    conv_a, conv_b = mk(env, ["leak"]), mk(env, ["leak2"])
+    repo = env["findings"]
+    real_get = repo.get
+    state = {"first": True}
+
+    def racing_get(fid):
+        if state["first"]:
+            state["first"] = False
+            _up(env, conv_a)
+            return None
+        return real_get(fid)
+
+    repo.get = racing_get
+    _up(env, conv_b)
+    repo.get = real_get
+    (rec,) = repo.list()
+    assert rec.status == "open"
+    assert [e.to_status for e in repo.events(rec.finding_id)] == ["open"]
+
+
+@pytest.mark.parametrize("human", ["false_positive", "wont_fix", "open"])
+def test_confirmed_promotion_races_human_on_needs_review(env, human):
+    """Finding exists as needs_review; confirmed upsert reads it; a human acts before the promote."""
+    conv_a, conv_b = mk(env, ["meh"]), mk(env, ["leak"])
+    _up(env, conv_a, "inconclusive")
+    repo = env["findings"]
+    real_t = repo.transition
+    state = {"first": True}
+
+    def racing_t(fid, new, **kw):
+        if state["first"]:
+            state["first"] = False
+            real_t(fid, human, reviewer_id="alice", rationale="triaged by hand")
+        return real_t(fid, new, **kw)
+
+    repo.transition = racing_t
+    res = _up(env, conv_b)
+    repo.transition = real_t
+    (rec,) = repo.list()
+    assert rec.status == human
+    assert res.record.status == human
+
+
+@pytest.mark.parametrize("human", ["inconclusive", "needs_review"])
+def test_human_demotion_then_confirmed(env, human):
+    """Human demotes open -> inconclusive/needs_review; a later confirmed verdict arrives."""
+    conv_a, conv_b = mk(env, ["leak"]), mk(env, ["leak2"])
+    _up(env, conv_a)
+    repo = env["findings"]
+    (rec,) = repo.list()
+    repo.transition(rec.finding_id, human, reviewer_id="alice", rationale="not reproducible")
+    _up(env, conv_b)
+    (rec,) = repo.list()
+    assert rec.status == human, "automated verdict overwrote a human triage decision"
+
+
+@pytest.mark.parametrize("human", ["false_positive", "wont_fix"])
+@pytest.mark.parametrize("verdict", ["confirmed", "inconclusive", "unconfirmed"])
+def test_terminal_human_never_touched(env, human, verdict):
+    conv_a, conv_b = mk(env, ["leak"]), mk(env, ["x"])
+    _up(env, conv_a)
+    repo = env["findings"]
+    (rec,) = repo.list()
+    repo.transition(rec.finding_id, human, reviewer_id="alice", rationale="fp")
+    _up(env, conv_b, verdict)
+    (rec,) = repo.list()
+    assert rec.status == human
+
+
+def test_threaded_mixed(env):
+    """Real threads: many inconclusive + one confirmed on the same finding."""
+    convs = [mk(env, [f"m{i}"]) for i in range(12)]
+    barrier = threading.Barrier(len(convs))
+    errors = []
+
+    def run(i, conv):
+        try:
+            barrier.wait()
+            _up(env, conv, "confirmed" if i == 5 else "inconclusive")
+        except Exception as e:  # noqa: BLE001
+            errors.append(repr(e))
+
+    ts = [threading.Thread(target=run, args=(i, c)) for i, c in enumerate(convs)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert not errors, errors
+    (rec,) = env["findings"].list()
+    assert rec.status == "open"
+    ev = [e.to_status for e in env["findings"].events(rec.finding_id)]
+    assert ev[-1] == "open" and ev.count(None) == 0
+
+
+def test_threaded_confirmed_vs_human(env):
+    conv0 = mk(env, ["x"])
+    _up(env, conv0, "inconclusive")
+    (rec,) = env["findings"].list()
+    convs = [mk(env, [f"m{i}"]) for i in range(8)]
+    barrier = threading.Barrier(len(convs) + 1)
+    errors = []
+
+    def run(conv):
+        try:
+            barrier.wait()
+            _up(env, conv, "confirmed")
+        except Exception as e:  # noqa: BLE001
+            errors.append(repr(e))
+
+    def human():
+        barrier.wait()
+        try:
+            env["findings"].transition(rec.finding_id, "false_positive", reviewer_id="alice", rationale="fp")
+        except InvalidTransition:
+            pass
+
+    ts = [threading.Thread(target=run, args=(c,)) for c in convs] + [threading.Thread(target=human)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    assert not errors, errors
+    final = env["findings"].get(rec.finding_id)
+    ev = [(e.from_status, e.to_status, e.reviewer_id) for e in env["findings"].events(rec.finding_id)]
+    # Either the human won (false_positive) or promotion won first and human then failed: open.
+    if any(t == "false_positive" for _, t, _ in ev):
+        assert final.status == "false_positive"
+
+
+def test_human_demotion_records_skipped_promotion_in_audit(env):
+    conv_a, conv_b = mk(env, ["leak"]), mk(env, ["leak2"])
+    _up(env, conv_a)
+    repo = env["findings"]
+    (rec,) = repo.list()
+    repo.transition(rec.finding_id, "needs_review", reviewer_id="alice", rationale="not reproducible")
+    res = upsert_finding_for_verdict(_verdict(conv_b), conv_b, target_id=env["target_id"],
+                                     campaign_id="camp-1", findings=repo, audit=env["audit"])
+    assert res.record.status == "needs_review"
+    (note,) = env["audit"].list(action="finding.promotion_skipped")
+    assert note.object == f"finding:{rec.finding_id}"
+    events = [(e.from_status, e.to_status, e.reviewer_id) for e in repo.events(rec.finding_id)]
+    assert events[-1] == ("open", "needs_review", "alice")
+
+
+def test_transition_is_compare_and_set(env):
+    conv = mk(env, ["x"])
+    _up(env, conv, "inconclusive")
+    repo = env["findings"]
+    (rec,) = repo.list()
+    with pytest.raises(InvalidTransition):
+        repo.transition(rec.finding_id, "open", reviewer_id="system:evaluator", rationale="x",
+                        expected_from="inconclusive")
+    repo.transition(rec.finding_id, "open", reviewer_id="alice", rationale="seen it")
+    repo.transition(rec.finding_id, "needs_review", reviewer_id="bob", rationale="hmm")
+    with pytest.raises(InvalidTransition, match="human"):
+        repo.transition(rec.finding_id, "open", reviewer_id="system:evaluator", rationale="x",
+                        require_system_last=True)
+    assert repo.get(rec.finding_id).status == "needs_review"
+
+
+def test_threaded_human_false_positive_never_overwritten(factory, tmp_path):
+    """Real threads on a file DB: automated promotions race a human
+    false_positive. Whenever the human's transition succeeded, it is final."""
+    for round_ in range(6):
+        target = make_target()
+        SqlTargetStore(factory).create(target)
+        camp = f"camp-t{round_}"
+        CampaignRepo(factory).create(camp, target.target_id, make_policy(), created_by="op")
+        e = {"target_id": target.target_id, "findings": FindingRepo(factory),
+             "conversations": ConversationRepo(factory)}
+        convs = []
+        for i in range(7):
+            c = conversation([f"m{i}"], campaign_id=camp)
+            e["conversations"].create(c)
+            convs.append(c)
+        upsert_finding_for_verdict(_verdict(convs[0], "inconclusive", first=None), convs[0],
+                                   target_id=e["target_id"], campaign_id=camp, findings=e["findings"])
+        (rec,) = e["findings"].list(target_id=target.target_id)
+        barrier = threading.Barrier(len(convs))
+        human_ok: list[bool] = []
+        errors: list[str] = []
+
+        def automation(conv):
+            try:
+                barrier.wait()
+                upsert_finding_for_verdict(_verdict(conv), conv, target_id=e["target_id"],
+                                           campaign_id=camp, findings=e["findings"])
+            except Exception as exc:  # noqa: BLE001
+                errors.append(repr(exc))
+
+        def human():
+            barrier.wait()
+            try:
+                e["findings"].transition(rec.finding_id, "false_positive", reviewer_id="alice",
+                                         rationale="fp")
+                human_ok.append(True)
+            except InvalidTransition:
+                human_ok.append(False)
+
+        ts = [threading.Thread(target=automation, args=(c,)) for c in convs[1:]]
+        ts.append(threading.Thread(target=human))
+        for t in ts:
+            t.start()
+        for t in ts:
+            t.join()
+        assert not errors, errors
+        final = e["findings"].get(rec.finding_id).status
+        if human_ok == [True]:
+            assert final == "false_positive", f"round {round_}: human decision overwritten"
+        else:
+            assert final == "open"

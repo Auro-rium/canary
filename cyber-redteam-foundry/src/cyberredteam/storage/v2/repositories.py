@@ -19,7 +19,7 @@ from datetime import datetime, timezone
 from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, SecretStr, TypeAdapter
-from sqlalchemy import func, select, text
+from sqlalchemy import func, select, text, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session, sessionmaker
 
@@ -638,6 +638,18 @@ class InvalidTransition(ValueError):
     pass
 
 
+class _ConcurrentChange(RuntimeError):
+    """The row's status changed between read and write; the upsert is retried."""
+
+
+SYSTEM_ACTOR = "system"
+
+
+def is_system_actor(reviewer_id: str | None) -> bool:
+    """``system`` or ``system:<component>`` (automation), never a human reviewer."""
+    return bool(reviewer_id) and (reviewer_id == SYSTEM_ACTOR or reviewer_id.startswith(SYSTEM_ACTOR + ":"))
+
+
 class FindingRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -713,12 +725,15 @@ class FindingRepo:
         the race is retried as an update."""
         if initial_status not in FINDING_TRANSITIONS or initial_status in TERMINAL_FINDING_STATUSES:
             raise InvalidTransition(f"cannot create a finding as {initial_status!r}")
-        for attempt in (0, 1):
+        for attempt in range(5):
             try:
                 return self._upsert_once(record, campaign_id, embedding, initial_status)
             except IntegrityError:
                 if attempt:
                     raise
+            except _ConcurrentChange:
+                if attempt == 4:
+                    raise InvalidTransition(f"finding {record.finding_id} kept changing") from None
         raise AssertionError("unreachable")  # pragma: no cover
 
     def _upsert_once(
@@ -755,16 +770,33 @@ class FindingRepo:
                     )
                 )
             else:
+                # Merge a sighting with a compare-and-set on the status read here,
+                # so the merge never lands on (or rewrites) a status it did not see.
+                # The status itself is never written.
+                values: dict[str, Any] = {}
                 if campaign_id:
                     seen = list(row.seen_in_campaigns or [])
                     if campaign_id not in seen:
                         seen.append(campaign_id)
-                    row.seen_in_campaigns = seen
-                    row.last_seen_campaign = campaign_id
+                    values["seen_in_campaigns"] = seen
+                    values["last_seen_campaign"] = campaign_id
                 if _SEVERITY_ORDER.index(record.severity) > _SEVERITY_ORDER.index(row.severity):
-                    row.severity = record.severity
+                    values["severity"] = record.severity
                 if embedding is not None and row.embedding is None:
-                    row.embedding = embedding
+                    values["embedding"] = embedding
+                if values:
+                    result = s.execute(
+                        update(orm.FindingRow)
+                        .where(
+                            orm.FindingRow.finding_id == row.finding_id,
+                            orm.FindingRow.status == row.status,
+                        )
+                        .values(**values)
+                        .execution_options(synchronize_session=False)
+                    )
+                    if result.rowcount != 1:
+                        raise _ConcurrentChange(row.finding_id)
+                    s.refresh(row)
             s.flush()
             return self._rec(row)
 
@@ -789,10 +821,21 @@ class FindingRepo:
         *,
         reviewer_id: str | None = None,
         rationale: str | None = None,
+        expected_from: FindingStatus | None = None,
+        require_system_last: bool = False,
     ) -> FindingRecord:
         """Move a finding along the lifecycle, storing who and why, plus an audit row.
 
-        Terminal targets (wont_fix, false_positive) require reviewer and rationale."""
+        Terminal targets (wont_fix, false_positive) require reviewer and rationale.
+
+        The status write is a compare-and-set (``UPDATE … WHERE status = :old``
+        plus a rowcount check), so a concurrent transition is never silently
+        overwritten, also on SQLite where ``FOR UPDATE`` is a no-op: the loser
+        gets :class:`InvalidTransition`. ``expected_from`` additionally requires
+        the current status to be that value. ``require_system_last`` refuses the
+        move unless the latest status change was made by a system actor
+        (``system`` / ``system:*``), so automation never overrides a human
+        triage decision."""
         if new_status not in FINDING_TRANSITIONS:
             raise InvalidTransition(f"unknown status {new_status!r}")
         reviewer = (reviewer_id or "").strip() or None
@@ -804,9 +847,27 @@ class FindingRepo:
             if row is None:
                 raise KeyError(finding_id)
             old = row.status
+            if expected_from is not None and old != expected_from:
+                raise InvalidTransition(f"finding is {old}, expected {expected_from}")
             if new_status not in FINDING_TRANSITIONS.get(old, frozenset()):
                 raise InvalidTransition(f"cannot move finding from {old} to {new_status}")
-            row.status = new_status
+            if require_system_last:
+                last = s.scalars(
+                    select(orm.FindingEventRow.reviewer_id)
+                    .where(orm.FindingEventRow.finding_id == finding_id)
+                    .order_by(orm.FindingEventRow.id.desc())
+                    .limit(1)
+                ).first()
+                if not is_system_actor(last):
+                    raise InvalidTransition("the current status was set by a human reviewer")
+            result = s.execute(
+                update(orm.FindingRow)
+                .where(orm.FindingRow.finding_id == finding_id, orm.FindingRow.status == old)
+                .values(status=new_status)
+                .execution_options(synchronize_session=False)
+            )
+            if result.rowcount != 1:
+                raise InvalidTransition(f"finding {finding_id} changed concurrently")
             s.add(
                 orm.FindingEventRow(
                     finding_id=finding_id, from_status=old, to_status=new_status,
@@ -822,6 +883,7 @@ class FindingRepo:
                 )
             )
             s.flush()
+            s.refresh(row)
             return self._rec(row)
 
     def events(self, finding_id: str) -> list[FindingEvent]:

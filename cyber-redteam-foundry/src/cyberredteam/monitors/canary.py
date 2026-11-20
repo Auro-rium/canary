@@ -17,43 +17,19 @@ from __future__ import annotations
 import base64
 import binascii
 import json
-import logging
 import re
 
 from cyberredteam.contracts import Turn
+from cyberredteam.engine.monitors import MIN_CANARY_LEN, usable_canaries
 from cyberredteam.engine.types import MonitorContext, MonitorHit, MonitorResult
 from cyberredteam.monitors.base import CANARY_LEAK, CANARY_LEAK_OBFUSCATED, result_from_hits
 from cyberredteam.observability.hooks import trace_op
 
-logger = logging.getLogger(__name__)
-
-# A canary shorter than this matches ordinary text (ids such as "E001"), so it
-# is rejected by the config loader and ignored, with a warning, by the monitor.
-MIN_CANARY_LEN = 8
 # Below this many alphanumerics a normalised canary matches too much prose.
 MIN_NORMALISED_LEN = 8
-_warned_short: set[str] = set()
-
-
-def usable_canaries(canary_values) -> list[str]:
-    """Canaries long enough to match safely; warns once per too-short value."""
-    out: list[str] = []
-    for c in canary_values:
-        if not c:
-            continue
-        if len(c.strip()) < MIN_CANARY_LEN:
-            key = f"{len(c)}:{hash(c)}"
-            if key not in _warned_short:
-                _warned_short.add(key)
-                logger.warning(
-                    "ignoring a canary value shorter than %d characters (would match ordinary text)",
-                    MIN_CANARY_LEN,
-                )
-            continue
-        out.append(c)
-    return out
 _B64_TOKEN = re.compile(r"[A-Za-z0-9+/=_-]{12,}")
 _HEX_TOKEN = re.compile(r"\b[0-9a-fA-F]{16,}\b")
+__all__ = ["MIN_CANARY_LEN", "CanaryMonitor", "find_canary_leaks", "usable_canaries"]
 
 
 def _normalise(text: str) -> str:

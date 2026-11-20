@@ -11,7 +11,8 @@
   created atomically in its final status (``FindingRepo.upsert(initial_status=)``),
   so there is no create-as-open-then-transition window. Merging into an existing
   row never demotes it: a weaker verdict only adds a sighting; the only status
-  change made here is the promotion to ``open``. Terminal findings are never
+  change made here is the promotion to ``open``, and only when the current
+  status was set by automation (a human triage decision is never overridden). Terminal findings are never
   reopened. ``needs_review`` already exists in the v2 schema (no migration).
 * **Semantic dedup.** With an embedder, a new finding whose embedding is at least
   ``dedup_threshold`` (cosine) similar to an existing non-terminal finding of the
@@ -51,6 +52,7 @@ Embedder = Callable[[str], "list[float] | None"]
 SYSTEM_REVIEWER = "system:evaluator"
 DEDUP_OVERRIDE_ACTION = "finding.dedup_override"
 DEDUP_MERGED_ACTION = "finding.dedup_merged"
+PROMOTION_SKIPPED_ACTION = "finding.promotion_skipped"
 
 _PROMOTABLE = frozenset({"needs_review", "inconclusive"})
 _VERDICT_STATUS: dict[str, FindingStatus] = {
@@ -72,9 +74,10 @@ def resolve_component(
 ) -> str:
     """``tool:<name>`` of the structured call at the failing turn, else ``reply``.
 
-    Names are normalised like :class:`ForbiddenToolMonitor` matches them
-    (lower case, last ``.``/``/``/``:`` segment), so ``functions.delete_record``
-    and ``delete_record`` are one component and one finding."""
+    Names go through the same :func:`monitors.tools.normalise_tool_name` the
+    forbidden-tool monitor uses (lower case, only the ``functions.`` wrapper
+    removed), so ``functions.delete_record`` and ``delete_record`` are one
+    component, while ``a.delete_record`` and ``b.delete_record`` stay distinct."""
     index = verdict.first_failing_turn
     if index is None:
         for t in conversation.turns:
@@ -193,22 +196,34 @@ def upsert_finding_for_verdict(
              "component": component},
         )
 
-    # The only status change made here is a promotion to open by a confirmed verdict.
+    # The only status change made here is a promotion to open by a confirmed
+    # verdict, and only over a status that automation set: a human triage
+    # decision (e.g. alice moved it open -> needs_review) is never overridden.
+    # The repo checks both inside the transaction with a compare-and-set.
     if desired == "open" and saved.status in _PROMOTABLE:
         reason = f"confirmed verdict for conversation {conversation.conversation_id}"
         try:
             saved = findings.transition(
-                saved.finding_id, "open", reviewer_id=SYSTEM_REVIEWER, rationale=reason
+                saved.finding_id, "open", reviewer_id=SYSTEM_REVIEWER, rationale=reason,
+                expected_from=saved.status, require_system_last=True,
             )
-        except InvalidTransition:
-            # Raced with another promotion or a human decision: keep theirs.
+        except InvalidTransition as exc:
+            # A human decided, or another writer won the race: keep their status
+            # and record only the sighting (done by the upsert above).
             saved = findings.get(saved.finding_id) or saved
+            if audit is not None:
+                audit.record(
+                    SYSTEM_REVIEWER, PROMOTION_SKIPPED_ACTION, f"finding:{saved.finding_id}",
+                    {"reason": str(exc), "status": saved.status,
+                     "conversation_id": conversation.conversation_id},
+                )
     return FindingOutcome(saved, action, merged_into, similarity)
 
 
 __all__ = [
     "DEDUP_MERGED_ACTION",
     "DEDUP_OVERRIDE_ACTION",
+    "PROMOTION_SKIPPED_ACTION",
     "Embedder",
     "FindingOutcome",
     "dedup_overrides",

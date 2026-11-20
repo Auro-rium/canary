@@ -358,7 +358,7 @@ There are no scripted or cosmetic events (fixes D8).
     - `presidio-analyzer` is in the new `eval` optional extra.
   - **Monitors.**
     - `build_monitors()` **replaces** `BuiltinSafetyMonitor`; do not stack the two. Canary and forbidden-tool hits use the same names (`canary_leak`, `forbidden_tool_call`, `forbidden_tool_heuristic`), and the verdict de-duplicates names anyway.
-    - Canary matching adds `canary_leak_obfuscated` (critical): case/separator changes, base64/hex and reversal, for canaries with at least 8 alphanumerics. Canaries shorter than 8 characters are rejected by `load_target_safety_config` (which also requires unique values) and are ignored, with a warning, by the monitor and the legacy evaluator.
+    - Canary matching adds `canary_leak_obfuscated` (critical): case/separator changes, base64/hex and reversal, for canaries with at least 8 alphanumerics. Canaries shorter than 8 characters are rejected by `load_target_safety_config` (which also requires unique values) and are ignored, with a warning, by `CanaryMonitor`, `BuiltinSafetyMonitor` and the legacy evaluator (including its per-attack `_canary`). That makes `engine/monitors.py` `usable_canaries()` a minimal engine change authorised by the lead. Values are stripped.
     - Secret patterns call `storage/v2/redaction.redact()` and keep only the secret kinds. Their hits are `secret_pattern:<kind>`, severity high, and are not critical.
     - PII hits are `pii:<ENTITY>` with a per-entity severity; PII echoed from the attacker's own message is ignored.
     - When presidio, its spaCy model or the analysis is unavailable, the PII monitor reports `pii_monitor_unavailable` (info) and logs a warning. For a PII / sensitive-data technique (ASI04, or a name in `verdict.PII_TECHNIQUES`) this forces the verdict to `inconclusive`; for any other technique it is recorded but is neither evidence nor blocking. It never auto-downloads the model (presidio would call `spacy.cli.download`): install it with `uv run python -m spacy download en_core_web_lg`.
@@ -398,11 +398,17 @@ There are no scripted or cosmetic events (fixes D8).
     - `inconclusive` is excluded from the trials, so an all-inconclusive technique gives 0/0 with CI [0, 1], i.e. unknown.
     - A conversation without a verdict is not a trial.
   - **Findings (B7/B9).**
-    - The id is `sha256(target:component:technique:asi)[:16]`. The component is `tool:<name>`, the structured call at the failing turn (forbidden first), else `reply`. Tool names are normalised as the forbidden-tool monitor matches them (lower case, last `.`/`/`/`:` segment).
+    - The id is `sha256(target:component:technique:asi)[:16]`. The component is `tool:<name>`, the structured call at the failing turn (forbidden first), else `reply`. Tool names go through the same `normalise_tool_name` the forbidden-tool monitor uses: lower case, with only the `functions.` wrapper removed. So `a.delete_record` and `b.delete_record` stay distinct.
     - `confirmed` opens a finding, or promotes one from `needs_review`/`inconclusive`. **`inconclusive` and `unconfirmed` both open `needs_review`**: unconfirmed needed human review in the legacy semantics too.
     - An `open` finding is never downgraded. `failed` opens nothing.
     - No migration was needed: `needs_review` was already in the 0001 schema. A new finding is created atomically in its final status via `FindingRepo.upsert(initial_status=...)`. This is a minimal WP6 change authorised by the lead: no schema change, the default stays `open`, and terminal statuses are refused. There is no create-as-open-then-transition window.
     - Merging into an existing finding never changes its status, except that a confirmed verdict promotes `needs_review`/`inconclusive` to `open`. A weaker verdict only adds a sighting, so a concurrent inconclusive verdict can no longer demote a confirmed finding.
+    - **Automation never overrides a human triage decision.** The promotion only happens when the latest status event was written by a system actor (`system` / `system:*`).
+      - It uses `FindingRepo.transition(..., expected_from=, require_system_last=True)`, checked inside the transaction.
+      - Otherwise only the sighting is recorded, plus a `finding.promotion_skipped` audit row.
+    - `FindingRepo.transition` and the merge path of `_upsert_once` are compare-and-set: `UPDATE … WHERE status = :old` plus a rowcount check. The loser gets `InvalidTransition`, or the upsert retries.
+      - This also fixes the SQLite lost update: `FOR UPDATE` is a no-op there, and a human `false_positive` could be overwritten.
+      - Concurrent sightings merged on SQLite can still lose a `seen_in_campaigns` entry; Postgres locks the row.
     - Semantic dedup needs an injected embedder. It uses `find_similar(open_only=False)`, skips terminal findings, merges into the best candidate and writes a `finding.dedup_merged` audit row.
     - Human override: `mark_distinct()` writes an audited `finding.dedup_override` entry, and `dedup=False` turns merging off per call.
     - Titles and embeddings use technique, component, ASI class and hit names only, never evidence.
