@@ -84,6 +84,26 @@ class Settings(BaseSettings):
     # Per-target on-call is WP3 EngineDeps.on_call / the WP8 target webhook field.
     canary_ops_webhook_url: Optional[str] = None
 
+    # WP7 control plane / jobs. Appended; do not reorder fields above.
+    # The global kill switch env var CANARY_KILL_SWITCH is read directly from the
+    # process environment by jobs/control.py (any value other than empty/0/false/
+    # no/off means ON; it takes effect when the process starts). The live control
+    # is the DB flag set by POST /api/v2/admin/kill-switch.
+    # Worker heartbeat cadence and the age after which a "running" campaign
+    # without a fresh heartbeat is considered orphaned and re-enqueued.
+    worker_heartbeat_interval_s: float = 10.0
+    worker_stale_after_s: float = 45.0
+    # DbRunControl cache TTL. 0 = read the flags uncached before every turn
+    # (one PK lookup), which is what guarantees "within one turn".
+    run_control_cache_s: float = 0.0
+    # SSE event-log poll interval for GET /api/v2/campaigns/{id}/events.
+    sse_poll_interval_s: float = 0.5
+    # Worker graceful shutdown; must stay below the compose stop_grace_period (40s).
+    worker_shutdown_graceful_s: float = 25.0
+    # "package.module:callable" returning a PlannerFactory for the worker (WP4 supplies
+    # real planners). Unset: the worker fails campaigns closed ("no planner configured").
+    planner_factory: Optional[str] = None
+
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

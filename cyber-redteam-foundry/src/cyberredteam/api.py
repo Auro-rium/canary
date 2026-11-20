@@ -1440,3 +1440,9 @@ def verify_target_v2(
         "method": body.method,
         "reason": reason,
     }
+
+
+# -- API v2: control plane (WP7): cancel, kill switch, SSE resume --
+from cyberredteam.jobs.api_v2 import router as _jobs_router  # noqa: E402
+
+app.include_router(_jobs_router)

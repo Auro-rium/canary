@@ -34,11 +34,10 @@ services:
     build:
       context: ./cyber-redteam-foundry
       dockerfile: Dockerfile
+    # Migrations (alembic head + procrastinate schema) run before the API starts.
     command: >
-      uvicorn cyberredteam.api:app
-        --host 0.0.0.0
-        --port 8001
-        --timeout-keep-alive 300
+      sh -c "python -m cyberredteam.jobs.migrate &&
+      exec uvicorn cyberredteam.api:app --host 0.0.0.0 --port 8001 --timeout-keep-alive 300"
     env_file:
       - ./cyber-redteam-foundry/.env
     environment:
@@ -62,6 +61,35 @@ services:
     restart: unless-stopped
     depends_on:
       postgres:
+        condition: service_healthy
+
+  # ── Worker: runs campaigns from the Postgres queue (separate process) ────
+  # Same image as the API; starts after the API is healthy so migrations are done.
+  redteam-worker:
+    build:
+      context: ./cyber-redteam-foundry
+      dockerfile: Dockerfile
+    command: ["python", "-m", "cyberredteam.jobs.worker"]
+    # Must exceed the worker's graceful shutdown (WORKER_SHUTDOWN_GRACEFUL_S, default 25s)
+    # so in-flight campaigns are released for resume before SIGKILL.
+    stop_grace_period: 40s
+    env_file:
+      - ./cyber-redteam-foundry/.env
+    environment:
+      - RUNNING_IN_DOCKER=true
+      - DATABASE_URL=postgresql+psycopg://canary:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/canary
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./runs:/app/runs
+      - ./reports:/app/reports
+    networks:
+      - canary-net
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redteam-backend:
         condition: service_healthy
 
   # ── Public: nginx + React SPA (host port 8000 → container port 80) ───────
