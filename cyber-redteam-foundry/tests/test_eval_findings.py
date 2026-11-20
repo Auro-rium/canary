@@ -108,6 +108,10 @@ def test_component_is_the_real_tool_and_part_of_the_id():
     assert resolve_component(conversation(["leak"]), v) == "reply"
     heuristic = conversation(["x"], tools=[[ToolCallObservation(name="t", source="heuristic")]])
     assert resolve_component(heuristic, v) == "reply"
+    ns = conversation(["ok"], tools=[[ToolCallObservation(name="lookup_order_status"),
+                                      ToolCallObservation(name="Functions.Delete_Record")]])
+    assert resolve_component(ns, v, {"delete_record"}) == "tool:delete_record"
+    assert resolve_component(ns, v, {"functions.delete_record"}) == "tool:delete_record"
     a = finding_id("t1", "tool:delete_record", "tool_misuse", "ASI02")
     b = finding_id("t1", "tool:lookup_order_status", "tool_misuse", "ASI02")
     assert a != b and len(a) == 16
@@ -146,8 +150,8 @@ def test_inconclusive_and_unconfirmed_open_needs_review(env, verdict):
     )
     assert res.record.status == "needs_review"
     events = env["findings"].events(res.record.finding_id)
-    assert [e.to_status for e in events] == ["open", "needs_review"]
-    assert events[-1].reviewer_id == "system:evaluator"
+    # Created atomically in needs_review: never visible as open (review B2).
+    assert [(e.from_status, e.to_status) for e in events] == [(None, "needs_review")]
 
 
 def test_confirmed_promotes_needs_review_and_never_downgrades(env):
@@ -162,6 +166,75 @@ def test_confirmed_promotes_needs_review_and_never_downgrades(env):
     assert up.record.status == "open"
     down = upsert_finding_for_verdict(_verdict(conv, "inconclusive", first=None), conv, **kw)
     assert down.record.status == "open"
+
+
+# ── concurrency (review B2) ──────────────────────────────────────────────────
+
+
+def test_race_inconclusive_never_demotes_concurrent_confirmed(env):
+    """B read "no finding" before A's confirmed verdict landed; B's inconclusive
+    upsert must merge as a sighting and leave the finding open."""
+    conv_a, conv_b = mk(env, ["leak"]), mk(env, ["meh"])
+    repo = env["findings"]
+    real_get = repo.get
+    state = {"first": True}
+
+    def racing_get(fid):
+        if state["first"]:
+            state["first"] = False
+            upsert_finding_for_verdict(_verdict(conv_a), conv_a, target_id=env["target_id"],
+                                       campaign_id="camp-1", findings=repo)
+            return None
+        return real_get(fid)
+
+    repo.get = racing_get
+    try:
+        upsert_finding_for_verdict(_verdict(conv_b, "inconclusive", first=None), conv_b,
+                                   target_id=env["target_id"], campaign_id="camp-1", findings=repo)
+    finally:
+        repo.get = real_get
+    recs = repo.list()
+    assert len(recs) == 1 and recs[0].status == "open"
+    assert all(e.to_status != "needs_review" for e in repo.events(recs[0].finding_id))
+
+
+def test_race_confirmed_after_concurrent_inconclusive_is_promoted(env):
+    conv_a, conv_b = mk(env, ["meh"]), mk(env, ["leak"])
+    repo = env["findings"]
+    real_get = repo.get
+    state = {"first": True}
+
+    def racing_get(fid):
+        if state["first"]:
+            state["first"] = False
+            upsert_finding_for_verdict(_verdict(conv_a, "inconclusive", first=None), conv_a,
+                                       target_id=env["target_id"], campaign_id="camp-1", findings=repo)
+            return None
+        return real_get(fid)
+
+    repo.get = racing_get
+    try:
+        upsert_finding_for_verdict(_verdict(conv_b), conv_b, target_id=env["target_id"],
+                                   campaign_id="camp-1", findings=repo)
+    finally:
+        repo.get = real_get
+    (rec,) = repo.list()
+    assert rec.status == "open"
+    assert [e.to_status for e in repo.events(rec.finding_id)] == ["needs_review", "open"]
+
+
+def test_upsert_initial_status_only_applies_on_create(env):
+    from cyberredteam.storage.v2.repositories import FindingRecord, InvalidTransition
+
+    conv = mk(env, ["x"])
+    rec = FindingRecord(finding_id="f" * 16, target_id=env["target_id"], asi_class="ASI01",
+                        severity="low", conversation_id=conv.conversation_id)
+    repo = env["findings"]
+    assert repo.upsert(rec, initial_status="needs_review").status == "needs_review"
+    repo.transition(rec.finding_id, "open", reviewer_id="alice", rationale="confirmed by hand")
+    assert repo.upsert(rec, initial_status="needs_review").status == "open"
+    with pytest.raises(InvalidTransition):
+        repo.upsert(rec.model_copy(update={"finding_id": "e" * 16}), initial_status="wont_fix")
 
 
 # ── semantic dedup ───────────────────────────────────────────────────────────

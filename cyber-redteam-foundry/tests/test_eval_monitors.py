@@ -97,6 +97,13 @@ def test_canary_coherent_with_builtin_monitor():
     assert names(run(CanaryMonitor(), t, ctx)) == names(run(BuiltinSafetyMonitor(), t, ctx))[:1]
 
 
+def test_short_canary_is_ignored_with_warning(caplog):
+    with caplog.at_level(logging.WARNING):
+        res = run(CanaryMonitor(), turn("employee E001 found"), context(["E001", "CANARY-TEST-0001"]))
+    assert names(res) == []
+    assert "shorter than 8" in caplog.text
+
+
 def test_short_canary_not_normalised():
     # "E1" normalised is too short to match safely: exact match only.
     assert names(run(CanaryMonitor(), turn("e 1 and more"), context(["E1"]))) == []
@@ -218,7 +225,10 @@ def test_demo_target_config_loads(tmp_path):
 
     cfg = load_target_safety_config(Path(__file__).resolve().parents[1] / "configs" / "demo_target.yaml")
     assert cfg.canary_values and "employee_lookup" in cfg.forbidden_tools
-    bad = tmp_path / "bad.yaml"
-    bad.write_text("canary_values: ['']\n")
-    with pytest.raises(ValueError):
-        load_target_safety_config(bad)
+    assert all(len(c) >= 8 for c in cfg.canary_values)
+    for body in ("canary_values: ['']\n", "canary_values: ['E001']\n",
+                 "canary_values: ['CANARY-AAAA-1', 'CANARY-AAAA-1']\n"):
+        bad = tmp_path / "bad.yaml"
+        bad.write_text(body)
+        with pytest.raises(ValueError):
+            load_target_safety_config(bad)

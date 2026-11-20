@@ -26,9 +26,13 @@ from cyberredteam.monitors.base import (
 from cyberredteam.observability.hooks import trace_op
 
 
+def normalise_tool_name(name: str) -> str:
+    """``Functions.Delete_Record`` / ``admin/delete_record`` -> ``delete_record``."""
+    return re.split(r"[./:]", name.strip().lower())[-1]
+
+
 def _variants(name: str) -> set[str]:
-    low = name.strip().lower()
-    return {low, re.split(r"[./:]", low)[-1]}
+    return {name.strip().lower(), normalise_tool_name(name)}
 
 
 def forbidden_calls(turn: Turn, forbidden_tools: frozenset[str] | set[str]) -> tuple[list[str], list[str]]:

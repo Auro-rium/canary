@@ -7,9 +7,12 @@
 * **Lifecycle (B9).** ``confirmed`` opens (or re-opens from ``needs_review`` /
   ``inconclusive``) an ``open`` finding. ``inconclusive`` and ``unconfirmed``
   (judge-only or contradicted evidence) open a ``needs_review`` finding so they
-  reach triage. ``failed`` (target behaved safely) opens nothing. An existing
-  ``open`` finding is never downgraded, and terminal ones are never reopened.
-  ``needs_review`` already exists in the v2 schema, so there is no migration.
+  reach triage. ``failed`` (target behaved safely) opens nothing. A new row is
+  created atomically in its final status (``FindingRepo.upsert(initial_status=)``),
+  so there is no create-as-open-then-transition window. Merging into an existing
+  row never demotes it: a weaker verdict only adds a sighting; the only status
+  change made here is the promotion to ``open``. Terminal findings are never
+  reopened. ``needs_review`` already exists in the v2 schema (no migration).
 * **Semantic dedup.** With an embedder, a new finding whose embedding is at least
   ``dedup_threshold`` (cosine) similar to an existing non-terminal finding of the
   same target is *merged* into it (a sighting is added) instead of creating a
@@ -31,6 +34,7 @@ from typing import Literal
 
 from cyberredteam.contracts import Conversation, ConversationVerdict
 from cyberredteam.monitors.base import classify_hit
+from cyberredteam.monitors.tools import normalise_tool_name
 from cyberredteam.storage.v2.repositories import (
     DEDUP_THRESHOLD,
     TERMINAL_FINDING_STATUSES,
@@ -38,6 +42,7 @@ from cyberredteam.storage.v2.repositories import (
     FindingRecord,
     FindingRepo,
     FindingStatus,
+    InvalidTransition,
 )
 
 logger = logging.getLogger(__name__)
@@ -47,6 +52,7 @@ SYSTEM_REVIEWER = "system:evaluator"
 DEDUP_OVERRIDE_ACTION = "finding.dedup_override"
 DEDUP_MERGED_ACTION = "finding.dedup_merged"
 
+_PROMOTABLE = frozenset({"needs_review", "inconclusive"})
 _VERDICT_STATUS: dict[str, FindingStatus] = {
     "confirmed": "open",
     "unconfirmed": "needs_review",
@@ -64,7 +70,11 @@ def resolve_component(
     verdict: ConversationVerdict,
     forbidden_tools: frozenset[str] | set[str] = frozenset(),
 ) -> str:
-    """``tool:<name>`` of the structured call at the failing turn, else ``reply``."""
+    """``tool:<name>`` of the structured call at the failing turn, else ``reply``.
+
+    Names are normalised like :class:`ForbiddenToolMonitor` matches them
+    (lower case, last ``.``/``/``/``:`` segment), so ``functions.delete_record``
+    and ``delete_record`` are one component and one finding."""
     index = verdict.first_failing_turn
     if index is None:
         for t in conversation.turns:
@@ -76,9 +86,9 @@ def resolve_component(
     structured = [c for c in conversation.turns[index].tool_calls if c.source == "structured"]
     if not structured:
         return "reply"
-    forbidden = {f.lower() for f in forbidden_tools}
-    chosen = next((c for c in structured if c.name.lower() in forbidden), structured[0])
-    return f"tool:{chosen.name}"
+    forbidden = {normalise_tool_name(f) for f in forbidden_tools if f}
+    chosen = next((c for c in structured if normalise_tool_name(c.name) in forbidden), structured[0])
+    return f"tool:{normalise_tool_name(chosen.name)}"
 
 
 def finding_title(technique: str, component: str, asi_class: str) -> str:
@@ -171,7 +181,11 @@ def upsert_finding_for_verdict(
             record = record.model_copy(update={"finding_id": cand_id})
             break
 
-    saved = findings.upsert(record, campaign_id=campaign_id, embedding=embedding)
+    # Created atomically in its final status; an existing row keeps its status
+    # (a weaker verdict only adds a sighting, never demotes open → needs_review).
+    saved = findings.upsert(
+        record, campaign_id=campaign_id, embedding=embedding, initial_status=desired
+    )
     if merged_into and audit is not None:
         audit.record(
             SYSTEM_REVIEWER, DEDUP_MERGED_ACTION, f"finding:{merged_into}",
@@ -179,17 +193,16 @@ def upsert_finding_for_verdict(
              "component": component},
         )
 
-    reason = f"{verdict.verdict} verdict for conversation {conversation.conversation_id}"
-    if existing is None:
-        if desired == "needs_review":
+    # The only status change made here is a promotion to open by a confirmed verdict.
+    if desired == "open" and saved.status in _PROMOTABLE:
+        reason = f"confirmed verdict for conversation {conversation.conversation_id}"
+        try:
             saved = findings.transition(
-                saved.finding_id, "needs_review", reviewer_id=SYSTEM_REVIEWER,
-                rationale=f"{reason}: needs human review",
+                saved.finding_id, "open", reviewer_id=SYSTEM_REVIEWER, rationale=reason
             )
-    elif desired == "open" and saved.status in ("needs_review", "inconclusive"):
-        saved = findings.transition(
-            saved.finding_id, "open", reviewer_id=SYSTEM_REVIEWER, rationale=reason
-        )
+        except InvalidTransition:
+            # Raced with another promotion or a human decision: keep theirs.
+            saved = findings.get(saved.finding_id) or saved
     return FindingOutcome(saved, action, merged_into, similarity)
 
 

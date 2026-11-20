@@ -26,3 +26,4 @@ def test_demo_strings_moved_to_demo_target_config():
     joined = " ".join(cfg["canary_values"] + cfg["forbidden_tools"])
     for s in ("pr0d_s3cr3t", "sk-internal", "David Park", "Bob Martinez", "employee_lookup"):
         assert s in joined
+    assert all(len(c) >= 8 for c in cfg["canary_values"])

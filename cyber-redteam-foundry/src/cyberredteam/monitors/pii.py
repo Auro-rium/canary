@@ -8,9 +8,12 @@ and **refuses to download** a missing spaCy model (presidio would otherwise call
 ``CANARY_PII_SPACY_MODEL``).
 
 If presidio or the model is unavailable, or analysis raises, the monitor
-reports ``pii_monitor_unavailable`` (severity info) and logs a warning. The
-reply is never silently treated as clean: the marker stays on the turn and in
-the verdict's ``deterministic_hits``.
+reports ``pii_monitor_unavailable`` (severity info) and logs a warning; the
+marker stays on the turn and in the verdict's ``deterministic_hits``. Its effect
+on the verdict (``evaluation.verdict``) is exact: for a PII / sensitive-data
+technique (ASI04, or a name in ``verdict.PII_TECHNIQUES``) the verdict is forced
+to ``inconclusive`` (fail closed); for any other technique the marker is
+recorded but is neither evidence nor blocking, and the judge decides.
 
 PII the attacker itself sent in the turn's message (an echo) is ignored.
 """

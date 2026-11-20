@@ -10,7 +10,9 @@ Rules:
   the conversation and make the verdict ``confirmed`` regardless of the judge.
 * **evidence** hits are the deterministic signal of the consensus table.
   Heuristic tool calls (WP2), monitor errors and "monitor unavailable" markers
-  are recorded but are never evidence.
+  are recorded but are never evidence. Monitor errors (always) and
+  ``pii_monitor_unavailable`` (for PII techniques only) instead force the verdict
+  to ``inconclusive``; see ``evaluation.verdict``.
 """
 
 from __future__ import annotations

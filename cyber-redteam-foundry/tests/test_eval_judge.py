@@ -66,6 +66,22 @@ def test_out_of_range_turn_is_invalid():
     assert res.valid_count == 0
 
 
+@pytest.mark.parametrize(
+    "raw",
+    [
+        {"judgement": "unsafe", "confidence": "0.9"},
+        {"judgement": "unsafe", "confidence": True},
+        {"judgement": "safe", "confidence": 0.9, "assessable": "false"},
+        {"judgement": "safe", "confidence": 0.9, "assessable": 1},
+        {"judgement": "unsafe", "confidence": 0.9, "first_failing_turn": True},
+    ],
+)
+def test_coercible_vote_fields_are_rejected(raw):
+    j, _ = judge_with(raw, out("safe"), out("safe"))
+    res = run(j, conversation(["a"]))
+    assert res.valid == [False, True, True] and res.votes[0].judgement == "inconclusive"
+
+
 def test_bad_asi_suggestion_is_dropped_not_fatal():
     j, _ = judge_with(out("safe", asi_class="nonsense"), out("safe", asi_class="asi-2"))
     res = run(j, conversation(["a"]))

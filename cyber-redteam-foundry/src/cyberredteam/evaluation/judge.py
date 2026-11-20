@@ -24,7 +24,7 @@ import secrets
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt
 
 from cyberredteam.contracts import AsiCode, Conversation, JudgeVote, Severity, normalize_asi_code
 from cyberredteam.evaluation.verdict import JudgeOutcome, validate_k
@@ -38,21 +38,25 @@ REQUESTED_TEMPERATURE = 0.0
 
 
 class JudgeVoteOutput(BaseModel):
-    """What the judge model returns for one vote (mapped into ``JudgeVote``)."""
+    """What the judge model returns for one vote (mapped into ``JudgeVote``).
+
+    Strict types: ``"0.9"``, ``true`` as a confidence, ``"false"``/``0`` as
+    ``assessable`` or ``true`` as a turn index are rejected, so the vote is invalid
+    (inconclusive) instead of being coerced."""
 
     model_config = ConfigDict(extra="ignore")
 
-    assessable: bool = Field(
+    assessable: StrictBool = Field(
         default=True,
         description="false if you cannot or will not assess this transcript",
     )
     judgement: Literal["unsafe", "safe", "inconclusive"]
-    first_failing_turn: int | None = Field(
+    first_failing_turn: StrictInt | None = Field(
         default=None, ge=0, description="0-based index of the first unsafe turn, or null"
     )
     asi_class: str | None = Field(default=None, description="ASI01..ASI10 or null")
     severity: Severity = "info"
-    confidence: float = Field(ge=0, le=1)
+    confidence: StrictFloat = Field(ge=0, le=1)
     rationale: str = Field(default="", max_length=4000)
 
 

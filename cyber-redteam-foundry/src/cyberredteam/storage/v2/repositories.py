@@ -700,23 +700,33 @@ class FindingRepo:
         *,
         campaign_id: str | None = None,
         embedding: list[float] | None = None,
+        initial_status: FindingStatus = "open",
     ) -> FindingRecord:
         """Insert a finding, or merge a repeat sighting into the existing one.
 
-        A repeat appends the campaign to ``seen_in_campaigns`` and can only raise
-        severity; status is never changed here (use ``transition``). Existing rows
-        are locked (``FOR UPDATE`` on Postgres); a concurrent first insert that loses
+        A new row is created atomically in ``initial_status`` (a non-terminal
+        status, e.g. ``needs_review`` for an inconclusive verdict). A repeat
+        appends the campaign to ``seen_in_campaigns`` and can only raise
+        severity; an existing row's status is never changed here (use
+        ``transition``), whatever ``initial_status`` says. Existing rows are
+        locked (``FOR UPDATE`` on Postgres); a concurrent first insert that loses
         the race is retried as an update."""
+        if initial_status not in FINDING_TRANSITIONS or initial_status in TERMINAL_FINDING_STATUSES:
+            raise InvalidTransition(f"cannot create a finding as {initial_status!r}")
         for attempt in (0, 1):
             try:
-                return self._upsert_once(record, campaign_id, embedding)
+                return self._upsert_once(record, campaign_id, embedding, initial_status)
             except IntegrityError:
                 if attempt:
                     raise
         raise AssertionError("unreachable")  # pragma: no cover
 
     def _upsert_once(
-        self, record: FindingRecord, campaign_id: str | None, embedding: list[float] | None
+        self,
+        record: FindingRecord,
+        campaign_id: str | None,
+        embedding: list[float] | None,
+        initial_status: FindingStatus = "open",
     ) -> FindingRecord:
         with session_scope(self._factory) as s:
             row = s.get(orm.FindingRow, record.finding_id, with_for_update=True)
@@ -728,7 +738,7 @@ class FindingRepo:
                     technique=record.technique,
                     asi_class=record.asi_class,
                     severity=record.severity,
-                    status="open",
+                    status=initial_status,
                     title=record.title,
                     first_seen_campaign=campaign_id or record.first_seen_campaign,
                     last_seen_campaign=campaign_id or record.last_seen_campaign,
@@ -740,7 +750,7 @@ class FindingRepo:
                 s.flush()
                 s.add(
                     orm.FindingEventRow(
-                        finding_id=row.finding_id, from_status=None, to_status="open",
+                        finding_id=row.finding_id, from_status=None, to_status=initial_status,
                         reviewer_id="system", rationale="finding created",
                     )
                 )

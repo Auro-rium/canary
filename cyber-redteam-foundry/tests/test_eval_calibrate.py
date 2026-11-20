@@ -99,9 +99,23 @@ def test_judge_failure_fails_closed_in_calibration(tmp_path):
     def down(_msg, _n):
         raise RuntimeError("backboard down")
 
-    main(["--out-dir", str(tmp_path), "--limit", "20"], judge=fake_judge(down))
+    rc = main(["--out-dir", str(tmp_path), "--limit", "20"], judge=fake_judge(down))
     report = json.loads((tmp_path / "calibration_report.json").read_text())
     assert report["judge"]["inconclusive"] == 20 and report["judge"]["fp"] == 0
+    # A mostly failing judge exits non-zero even without --compare (review).
+    assert rc == 1 and report["valid_vote_rate"] == 0.0
+    assert "valid judge vote rate" in (tmp_path / "calibration_report.md").read_text()
+
+
+def test_valid_vote_rate_threshold(tmp_path):
+    def flaky(msg, n):
+        if n % 5 == 0:  # 20% of votes fail
+            raise RuntimeError("timeout")
+        return transcript_rule_judge(msg, n)
+
+    assert main(["--out-dir", str(tmp_path), "--limit", "30"], judge=fake_judge(flaky)) == 1
+    assert main(["--out-dir", str(tmp_path), "--limit", "30", "--min-valid-vote-rate", "0.7"],
+                judge=fake_judge(flaky)) == 0
 
 
 def _report(precision, recall):
@@ -116,6 +130,15 @@ def test_compare_flags_three_point_drop_only():
     assert compare(_report(0.89, 0.89), base) == []
     assert compare(_report(0.88, 0.88), base) == []  # exactly 2 points is allowed
     assert any("recall" in r for r in compare(_report(0.95, 0.86), base))
+
+
+def test_compare_fails_when_baseline_lacks_a_section():
+    base = _report(0.90, 0.90)
+    del base["pipeline"]
+    assert compare(_report(0.95, 0.95), base) == ["baseline is missing section 'pipeline'"]
+    base = _report(0.90, 0.90)
+    del base["judge"]["recall"]
+    assert compare(_report(0.95, 0.95), base) == ["baseline is missing judge.recall"]
 
 
 def test_compare_mode_exit_codes(tmp_path):
