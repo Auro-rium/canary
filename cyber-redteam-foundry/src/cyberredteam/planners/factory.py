@@ -24,7 +24,12 @@ from typing import Literal
 from cyberredteam.engine.types import ConversationSpec, TurnPlanner
 from cyberredteam.llm.observable import ObservableLLM
 from cyberredteam.planners.errors import PlannerConfigError, ScopeClassifierMissing
-from cyberredteam.planners.guards import DenyCategoryChecker, GuardRails, ScopeClassifier, default_deny_checker
+from cyberredteam.planners.guards import (
+    DenyCategoryChecker,
+    GuardRails,
+    ScopeClassifier,
+    default_deny_checker,
+)
 from cyberredteam.planners.llm_planner import LLMPlanner, PlannerPrompt, load_planner_prompt
 from cyberredteam.planners.packs import PackLoader
 from cyberredteam.planners.scripted import ScriptedPlanner, validate_pack_messages
