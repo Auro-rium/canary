@@ -6,8 +6,11 @@ runtime path. Runtime inference goes through Backboard and fails loudly when
 unconfigured; a security tool must never fabricate findings in production.
 """
 
+import json
+import threading
 from typing import Any
 
+from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 
 
@@ -113,3 +116,42 @@ class FakeStructuredLLM:
 
     def __ror__(self, other: Any) -> Any:
         return other | RunnableLambda(self.invoke)
+
+
+class ScriptedStructuredLLM:
+    """Scriptable fake chat model for planner tests (WP4).
+
+    ``replies`` is a list of ``(fields, usage)``: ``fields`` is the dict the
+    "model" returns, ``usage`` the provider's ``usage_metadata`` (or ``None``
+    when the provider reports none). ``with_structured_output`` honours
+    ``include_raw`` like ``ChatBackboard``: it returns ``{"raw", "parsed",
+    "parsing_error"}`` with the usage on ``raw``. The last reply repeats once
+    the script runs out. Every prompt the fake receives is recorded.
+    """
+
+    def __init__(self, replies: list[tuple[dict, dict | None]]):
+        if not replies:
+            raise ValueError("at least one scripted reply is required")
+        self.replies = list(replies)
+        self.prompts: list[Any] = []
+        self.calls = 0
+        self._lock = threading.Lock()
+
+    def with_structured_output(self, schema: Any, *, include_raw: bool = False, **kwargs: Any) -> RunnableLambda:
+        def _run(prompt_value: Any) -> Any:
+            with self._lock:
+                fields, usage = self.replies[min(self.calls, len(self.replies) - 1)]
+                self.calls += 1
+                self.prompts.append(prompt_value)
+            raw = AIMessage(content=json.dumps(fields), usage_metadata=usage)
+            try:
+                parsed, error = schema.model_validate(fields), None
+            except ValueError as exc:
+                parsed, error = None, exc
+            if include_raw:
+                return {"raw": raw, "parsed": parsed, "parsing_error": error}
+            if error is not None:
+                raise error
+            return parsed
+
+        return RunnableLambda(_run)

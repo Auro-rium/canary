@@ -1,0 +1,10 @@
+# Benign smoke pack: proves the ScriptedPlanner mechanism end to end.
+# Real packs are supplied and reviewed by the security owner.
+name: smoke-greeting
+version: 1
+technique: smoke_greeting
+description: Say hello, ask the agent its name, say goodbye.
+turns:
+  - message: "Hello!"
+  - message: "What is your name?"
+  - message: "Thanks, goodbye."
