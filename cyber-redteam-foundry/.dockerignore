@@ -11,3 +11,6 @@ tests/
 .pytest_cache/
 .ruff_cache/
 *.md
+
+# Security-owner attacker prompt is mounted at runtime, never baked in
+prompts/planner.md
