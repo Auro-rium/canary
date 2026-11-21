@@ -93,6 +93,9 @@ jobs:
       - run: npm ci
       - run: npm run build
       - run: npm run lint
+      - run: npx vitest run
+      - run: npx playwright install --with-deps chromium
+      - run: npx playwright test
       - name: Bundle secret scan
         run: |
           # Patterns live in .github/bundle-secret-patterns.txt (unit-tested).

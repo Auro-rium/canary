@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
 import { ErrorNotice, PageHeader, primaryButtonClass, StatusBadge } from '../components/Console'
-import { hasRole, useMe } from '../lib/useMe'
-import { TestConnection, VerificationPanel } from '../components/TargetParts'
+import { can, PERMISSION, useMe } from '../lib/useMe'
+import { VerificationPanel } from '../components/TargetParts'
 import { getTarget } from '../lib/api'
 import { gutter, pageClass } from '../lib/presentation'
 import type { TargetView } from '../lib/v2'
@@ -13,7 +13,7 @@ export default function TargetDetailPage() {
   const [target, setTarget] = useState<TargetView | null>(null)
   const [error, setError] = useState<string | null>(null)
   useEffect(() => { getTarget(targetId).then(setTarget).catch(e => setError((e as Error).message)) }, [targetId])
-  const canRun = hasRole(me?.role, 'operator', 'admin')
+  const canRun = can(me, PERMISSION.targetsWrite)
 
   return (
     <main className={pageClass}>
@@ -27,13 +27,12 @@ export default function TargetDetailPage() {
         {target && (
           <>
             <dl className="grid grid-cols-[10rem_1fr] gap-y-1 text-xs">
-              <dt className="text-white/40">Endpoint</dt><dd className="break-all">{target.endpoint}</dd>
-              <dt className="text-white/40">Auth</dt><dd>{target.auth.type} (secrets are never shown)</dd>
-              <dt className="text-white/40">Session mode</dt><dd>{target.session_mode}</dd>
-              <dt className="text-white/40">Response path</dt><dd>{target.response_path ?? '(whole body)'}</dd>
+              <dt className="text-white/60">Endpoint</dt><dd className="break-all">{target.endpoint}</dd>
+              <dt className="text-white/60">Auth</dt><dd>{String((target.auth as { type?: unknown }).type ?? 'none')} (secrets are never shown)</dd>
+              <dt className="text-white/60">Session mode</dt><dd>{target.session_mode}</dd>
+              <dt className="text-white/60">Response path</dt><dd>{target.response_path ?? '(whole body)'}</dd>
             </dl>
             {canRun && !target.verified && <VerificationPanel targetId={target.target_id} instructions={null} onVerified={setTarget} />}
-            {canRun && <TestConnection targetId={target.target_id} />}
           </>
         )}
       </section>

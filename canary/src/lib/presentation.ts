@@ -27,6 +27,7 @@ export const CONVERSATION_STATUS_STYLE: Record<ConversationStatus, { label: stri
   stopped_monitor: { label: 'stopped: monitor', classes: 'border-red-500/50 bg-red-950/30 text-red-300' },
   stopped_target_refusal_streak: { label: 'stopped: refusals', classes: 'border-sky-500/40 bg-sky-950/20 text-sky-300' },
   stopped_target_error_streak: { label: 'stopped: target errors', classes: 'border-fuchsia-500/40 bg-fuchsia-950/20 text-fuchsia-300' },
+  stopped_planner_guardrail: { label: 'stopped: planner guardrail', classes: 'border-violet-500/40 bg-violet-950/20 text-violet-300' },
   stopped_killed: { label: 'stopped: kill switch', classes: 'border-red-600 bg-red-900/50 text-red-200' },
   cancelled: { label: 'cancelled', classes: 'border-white/30 bg-white/5 text-white/60' },
   error: { label: 'error', classes: 'border-red-600/60 bg-red-950/40 text-red-300' },

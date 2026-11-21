@@ -1,13 +1,13 @@
-import { useState } from 'react'
+import { useEffect, useState } from 'react'
 import type { TechniqueResult } from '../lib/contracts'
 import { budgetFraction, type LiveCell } from '../lib/liveState'
 import { CONVERSATION_STATUS_STYLE, percent, strategyLabel, VERDICT_STYLE } from '../lib/presentation'
-import { setKillSwitch } from '../lib/api'
-import type { BudgetState } from '../lib/v2'
+import { ApiError, getKillSwitch, setKillSwitch } from '../lib/api'
+import type { BudgetState, KillSwitchState } from '../lib/v2'
 import { buttonClass, ErrorNotice, inputClass } from './Console'
 
 export function BudgetMeter({ budget }: { budget: BudgetState | null }) {
-  if (!budget) return <p className="text-[10px] text-white/30 uppercase tracking-wider">Budget: waiting for first update</p>
+  if (!budget) return <p className="text-[10px] text-white/60 uppercase tracking-wider">Budget: waiting for first update</p>
   const rows = [
     { label: 'Requests', used: budget.requests_used, max: budget.max_total_requests, text: `${budget.requests_used} / ${budget.max_total_requests}` },
     { label: 'LLM cost', used: budget.llm_cost_usd, max: budget.max_llm_cost_usd, text: `$${budget.llm_cost_usd.toFixed(2)} / $${budget.max_llm_cost_usd.toFixed(2)}` },
@@ -48,8 +48,8 @@ export function ConversationGrid({
       <table className="text-[10px] border-separate border-spacing-1" data-testid="conversation-grid">
         <thead>
           <tr>
-            <th className="text-left text-white/30 uppercase tracking-wider font-normal pr-3">Technique</th>
-            {Array.from({ length: columns }, (_, trial) => <th key={trial} className="text-white/30 font-normal">T{trial + 1}</th>)}
+            <th className="text-left text-white/60 uppercase tracking-wider font-normal pr-3">Technique</th>
+            {Array.from({ length: columns }, (_, trial) => <th key={trial} className="text-white/60 font-normal">T{trial + 1}</th>)}
           </tr>
         </thead>
         <tbody>
@@ -58,8 +58,8 @@ export function ConversationGrid({
               <th scope="row" className="text-left text-white/60 font-normal pr-3 whitespace-nowrap">{strategyLabel(technique)}</th>
               {Array.from({ length: columns }, (_, trial) => {
                 const cell = byKey.get(`${technique}:${trial}`)
-                if (!cell) return <td key={trial}><div className="w-24 h-12 border border-dashed border-white/10 text-white/20 flex items-center justify-center">pending</div></td>
-                const style = CONVERSATION_STATUS_STYLE[cell.status] ?? CONVERSATION_STATUS_STYLE.error
+                if (!cell) return <td key={trial}><div className="w-24 h-12 border border-dashed border-white/10 text-white/60 flex items-center justify-center">pending</div></td>
+                const style = (CONVERSATION_STATUS_STYLE as Record<string, { label: string; classes: string }>)[cell.status] ?? { label: cell.status, classes: CONVERSATION_STATUS_STYLE.error.classes }
                 return (
                   <td key={trial}>
                     <button
@@ -72,7 +72,7 @@ export function ConversationGrid({
                     >
                       <span className="block">{style.label}</span>
                       <span className="block text-white/50">{cell.turns} turns{cell.hits.length > 0 ? ` · ${cell.hits.length} hit` : ''}</span>
-                      {cell.verdict && <span className={`block ${VERDICT_STYLE[cell.verdict]}`}>{cell.verdict}</span>}
+                      {cell.verdict && <span className={`block ${(VERDICT_STYLE as Record<string, string>)[cell.verdict] ?? ''}`}>{cell.verdict}</span>}
                     </button>
                   </td>
                 )
@@ -97,11 +97,11 @@ export function CiBar({ result }: { result: TechniqueResult }) {
 }
 
 export function ResultsTable({ results }: { results: TechniqueResult[] }) {
-  if (results.length === 0) return <p className="text-xs text-white/35">Results appear when the campaign completes.</p>
+  if (results.length === 0) return <p className="text-xs text-white/60">Results appear when the campaign completes.</p>
   return (
     <table className="w-full text-xs" data-testid="results-table">
       <thead>
-        <tr className="text-left text-[9px] uppercase tracking-wider text-white/30">
+        <tr className="text-left text-[9px] uppercase tracking-wider text-white/60">
           <th className="py-2 font-normal">Technique</th><th className="font-normal">Confirmed / trials</th>
           <th className="font-normal">Success rate</th><th className="font-normal">95% CI</th><th className="font-normal">Interval</th>
         </tr>
@@ -121,40 +121,54 @@ export function ResultsTable({ results }: { results: TechniqueResult[] }) {
   )
 }
 
-/** Admin-only global kill switch with an explicit two-step confirmation. */
-export function KillSwitchControl({ onEngaged }: { onEngaged?: () => void }) {
+/**
+ * Global kill switch. Rendered only for callers with `kill_switch:write`, but the
+ * backend further limits it to platform admins (CANARY_PLATFORM_ADMINS), which
+ * /me does not expose; a 403 therefore hides the control instead of erroring.
+ */
+export function KillSwitchControl({ onChanged }: { onChanged?: (state: KillSwitchState) => void }) {
+  const [state, setState] = useState<KillSwitchState | null>(null)
   const [open, setOpen] = useState(false)
   const [reason, setReason] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
-  const [engaged, setEngaged] = useState(false)
+  const [forbidden, setForbidden] = useState(false)
 
-  const engage = async () => {
+  useEffect(() => { getKillSwitch().then(setState).catch(() => undefined) }, [])
+
+  const apply = async (enabled: boolean) => {
     setBusy(true)
     setError(null)
     try {
-      await setKillSwitch(true, reason.trim())
-      setEngaged(true)
+      const next = await setKillSwitch({ enabled, reason: reason.trim() || null })
+      setState(next)
       setOpen(false)
-      onEngaged?.()
+      setReason('')
+      onChanged?.(next)
     } catch (e) {
-      setError((e as Error).message)
+      if (e instanceof ApiError && e.status === 403) { setForbidden(true); setOpen(false) } else setError((e as Error).message)
     } finally {
       setBusy(false)
     }
   }
 
-  if (engaged) return <span data-testid="kill-engaged" className="text-xs text-red-300 uppercase tracking-wider">Kill switch engaged: all campaigns halting</span>
+  if (forbidden) return <span data-testid="kill-forbidden" className="text-[10px] text-white/60 uppercase tracking-wider">Kill switch is limited to platform admins</span>
+  const active = state?.active ?? false
   if (!open) {
-    return <button type="button" data-testid="kill-open" onClick={() => setOpen(true)} className="px-4 py-2 border border-red-600 text-red-300 text-xs uppercase tracking-wider hover:bg-red-950/40">Kill switch</button>
+    return (
+      <span className="inline-flex items-center gap-3">
+        {active && <span data-testid="kill-engaged" className="text-xs text-red-300 uppercase tracking-wider">Kill switch engaged: campaigns halting</span>}
+        <button type="button" data-testid="kill-open" onClick={() => setOpen(true)} className="px-4 py-2 border border-red-600 text-red-300 text-xs uppercase tracking-wider hover:bg-red-950/40">{active ? 'Release kill switch' : 'Kill switch'}</button>
+      </span>
+    )
   }
   return (
     <div role="alertdialog" aria-label="Confirm kill switch" className="border border-red-600 bg-red-950/30 p-4 max-w-md space-y-3">
-      <p className="text-xs text-red-200">This halts ALL running campaigns for every user within one turn. Use it for an emergency only.</p>
+      <p className="text-xs text-red-200">{active ? 'Releasing lets new campaigns start again.' : 'This halts ALL running campaigns for every organisation within one turn. Use it for an emergency only.'}</p>
       <input aria-label="Kill switch reason" className={inputClass} placeholder="Reason (required)" value={reason} onChange={event => setReason(event.target.value)} />
       {error && <ErrorNotice message={error} />}
       <div className="flex gap-2">
-        <button type="button" data-testid="kill-confirm" disabled={busy || reason.trim().length < 3} onClick={engage} className="px-4 py-2 bg-red-600 text-xs uppercase tracking-wider disabled:opacity-40">Halt everything</button>
+        <button type="button" data-testid="kill-confirm" disabled={busy || reason.trim().length < 3} onClick={() => apply(!active)} className="px-4 py-2 bg-red-600 text-xs uppercase tracking-wider disabled:opacity-40">{active ? 'Release' : 'Halt everything'}</button>
         <button type="button" onClick={() => setOpen(false)} className={buttonClass}>Back</button>
       </div>
     </div>

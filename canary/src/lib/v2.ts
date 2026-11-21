@@ -1,21 +1,17 @@
-// Request/response shapes for the /api/v2 routes that are not part of the
-// frozen contracts (those live in ./contracts.ts). Targets exist today; the
-// rest follow the WP8 spec and are ASSUMED until WP7/WP8 land. Keep this file
-// in sync with the backend and list every change in the WP9 status notes.
+// Request/response shapes for the /api/v2 routes. Wire types come from the
+// backend's OpenAPI contract via ./api-schema (generated: `npm run gen:api`;
+// src/lib/apiSchema.test.ts fails when it drifts from openapi/v2.json).
+// Hand-written types here only narrow or rename; they must stay assignable to
+// the generated ones (see the compile-time checks at the bottom).
+import type { Schemas } from './api-schema'
 import type {
-  AsiCode, CampaignPolicy, Conversation, ConversationStatus, ConversationVerdict, Severity,
-  TargetConfig, TargetConfigInput, TechniqueResult, Verdict,
+  Conversation, ConversationVerdict, TargetConfig, TargetConfigInput, TechniqueResult,
 } from './contracts'
 
-export type Role = 'viewer' | 'operator' | 'admin'
+export type Role = Schemas['Me']['role']
 
-/** GET /api/v2/me (assumed). */
-export interface Me {
-  user_id: string
-  email: string | null
-  role: Role
-  org_id?: string | null
-}
+/** GET /api/v2/me. `permissions` is authoritative for UI gating. */
+export type Me = Schemas['Me']
 
 export interface Paged<T> {
   items: T[]
@@ -25,115 +21,50 @@ export interface Paged<T> {
 }
 
 /** Public view of a target: secrets are always masked. */
-export type TargetView = TargetConfig & { allowed_auth_hosts: string[] }
+export type TargetView = Schemas['TargetView']
 
-export type VerifyMethod = 'http_wellknown' | 'dns_txt' | 'response_header'
-
-export interface VerificationInstructions {
-  http_wellknown: { url: string; content: string }
-  dns_txt: { name: string; type: 'TXT'; value: string }
-  response_header: { header: string; value: string }
-}
+export type VerifyMethod = Schemas['VerifyRequest']['method']
+export type VerificationInstructions = Schemas['VerificationInstructions']
 
 /** POST /api/v2/targets body: TargetConfigInput minus target_id/verified (server-assigned). */
-export type TargetCreateBody = Omit<TargetConfigInput, 'target_id'> & { allowed_auth_hosts?: string[] }
-
-export interface TargetCreated {
-  target: TargetView
-  verification_token: string
-  verification: VerificationInstructions
+export type TargetCreateBody = Omit<TargetConfigInput, 'target_id' | 'verified' | 'auth'> & {
+  auth: TargetConfig['auth']
+  allowed_auth_hosts?: string[]
 }
 
-export interface VerifyResult {
-  target: TargetView
-  verified: boolean
-  method: VerifyMethod
-  reason: string
-}
+export type TargetCreated = Schemas['TargetCreated']
+export type VerifyResult = Schemas['VerifyResult']
 
-/** POST /api/v2/targets/{id}/test (assumed): one benign hello, parsed reply. */
-export interface TestConnectionResult {
-  ok: boolean
-  http_status: number | null
-  latency_ms: number
-  reply_text: string | null
-  session_ref: string | null
-  error: string | null
-}
+export type CampaignStatus = Schemas['CampaignSummary']['status']
+export type CampaignSummary = Schemas['CampaignSummary']
+export type ConversationSummary = Schemas['ConversationSummary']
+export type BudgetState = Schemas['BudgetState']
+export type CampaignDetail = Schemas['CampaignDetail']
+export type CampaignCreateBody = Schemas['CampaignCreate']
+export type CancelResult = Schemas['CancelResult']
 
-export type CampaignStatus = 'queued' | 'running' | 'complete' | 'failed' | 'cancelled'
-
-export interface CampaignSummary {
-  campaign_id: string
-  target_id: string
-  target_name: string | null
-  environment: 'staging' | 'production'
-  status: CampaignStatus
-  created_at: string
-  finished_at: string | null
-  confirmed: number
-  total_conversations: number
-}
-
-export interface ConversationSummary {
-  conversation_id: string
-  technique: string
-  trial_index: number
-  status: ConversationStatus
-  turns: number
-  verdict: Verdict | null
-}
-
-export interface BudgetState {
-  requests_used: number
-  max_total_requests: number
-  llm_cost_usd: number
-  max_llm_cost_usd: number
-}
-
-/** GET /api/v2/campaigns/{id} (assumed). */
-export interface CampaignDetail extends CampaignSummary {
-  policy: CampaignPolicy
-  conversations: ConversationSummary[]
-  technique_results: TechniqueResult[]
-  budget: BudgetState | null
-  /** Highest SSE seq already folded into this snapshot; resume the stream after it. */
-  last_seq: number
-}
-
-/** POST /api/v2/campaigns body (assumed): the target is already registered and verified. */
-export interface CampaignCreateBody {
-  target_id: string
-  policy: CampaignPolicy
-}
-
-/** GET /api/v2/conversations/{id} (assumed): transcript redacted by default. */
+/** GET /api/v2/conversations/{id}: transcript redacted unless `raw` was requested and permitted. */
 export interface ConversationDetail {
   conversation: Conversation
   verdict: ConversationVerdict | null
+  /** True only when the server returned unredacted evidence (audited). */
+  raw: boolean
 }
 
-export type FindingStatus = 'open' | 'inconclusive' | 'wont_fix' | 'false_positive'
+export type FindingStatus = Schemas['FindingTransition']['status']
+export type FindingV2 = Schemas['FindingView']
+export type FindingDetail = Schemas['FindingDetail']
+export type FindingTransitionBody = Schemas['FindingTransition']
 
-/** GET /api/v2/findings item (assumed). `score` may be null (old rows). */
-export interface FindingV2 {
-  finding_id: string
-  campaign_id: string
-  conversation_id: string
-  technique: string
-  asi_class: AsiCode
-  severity: Severity
-  status: FindingStatus
-  title: string | null
-  rationale: string
-  first_failing_turn: number | null
-  score: number | null
-  reviewer_id: string | null
-  created_at: string
-}
+export type KillSwitchState = Schemas['KillSwitchState']
+export type KillSwitchBody = Schemas['KillSwitchBody']
 
-export interface KillSwitchState {
-  active: boolean
-  reason?: string | null
-  set_by?: string | null
-}
+export type ProvidersView = Schemas['ProvidersView']
+
+// Compile-time alignment: a drift here is a tsc error.
+type Assert<T extends true> = T
+type _CreateBody = Assert<TargetCreateBody extends Schemas['TargetCreate'] ? true : false>
+type _Tech = Assert<TechniqueResult extends Schemas['TechniqueResult'] ? true : false>
+// (ConversationDetail is wider than the schema on purpose: the status enum also has
+// stopped_planner_guardrail; apiSchema.test.ts checks the schema's values are a subset.)
+export type { _CreateBody, _Tech }

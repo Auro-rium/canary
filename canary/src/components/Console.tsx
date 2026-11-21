@@ -4,7 +4,7 @@ import { gutter } from '../lib/presentation'
 export function PageHeader({ eyebrow, title, children }: { eyebrow: string; title: string; children?: ReactNode }) {
   return (
     <header className={`${gutter} py-10 border-b border-white/10`}>
-      <p className="text-white/30 text-[10px] tracking-[0.28em] uppercase">// {eyebrow}</p>
+      <p className="text-white/60 text-[10px] tracking-[0.28em] uppercase">// {eyebrow}</p>
       <div className="mt-4 flex flex-wrap gap-4 items-end justify-between">
         <h1 className="text-3xl sm:text-4xl font-bold uppercase tracking-[-0.04em]">{title}</h1>
         <div className="flex flex-wrap gap-3 items-center">{children}</div>
@@ -17,7 +17,7 @@ export function Metric({ label, value, tone = 'default' }: { label: string; valu
   const color = tone === 'danger' ? 'text-red-400' : tone === 'warning' ? 'text-orange-400' : 'text-white'
   return (
     <div className="border border-white/10 bg-white/[0.02] px-4 py-3 min-w-[140px]">
-      <div className="text-white/30 text-[9px] uppercase tracking-[0.15em]">{label}</div>
+      <div className="text-white/60 text-[9px] uppercase tracking-[0.15em]">{label}</div>
       <div className={`mt-1 text-lg ${color}`}>{value}</div>
     </div>
   )
@@ -53,10 +53,10 @@ export function Notice({ children }: { children: ReactNode }) {
 }
 
 export function EmptyState({ children }: { children: ReactNode }) {
-  return <div className="border border-dashed border-white/15 p-10 text-center text-white/35 text-xs uppercase tracking-[0.15em]">{children}</div>
+  return <div className="border border-dashed border-white/15 p-10 text-center text-white/60 text-xs uppercase tracking-[0.15em]">{children}</div>
 }
 
-export const inputClass = 'w-full bg-black border border-white/20 px-3 py-2 text-xs text-white placeholder-white/25 focus:border-white/60 outline-none disabled:opacity-40'
+export const inputClass = 'w-full bg-black border border-white/20 px-3 py-2 text-xs text-white placeholder-white/60 focus:border-white/60 outline-none disabled:opacity-40'
 export const buttonClass = 'px-4 py-2 border border-white/25 text-xs uppercase tracking-wider hover:bg-white/10 disabled:opacity-30 disabled:cursor-not-allowed'
 export const primaryButtonClass = 'px-4 py-2 bg-red-600 text-xs uppercase tracking-wider hover:bg-red-500 disabled:opacity-40 disabled:cursor-not-allowed'
 
@@ -65,7 +65,7 @@ export function Field({ label, hint, children }: { label: string; hint?: string;
     <label className="block text-[10px] text-white/50 uppercase tracking-wider">
       {label}
       <div className="mt-1 normal-case tracking-normal">{children}</div>
-      {hint && <span className="mt-1 block normal-case tracking-normal text-white/30">{hint}</span>}
+      {hint && <span className="mt-1 block normal-case tracking-normal text-white/60">{hint}</span>}
     </label>
   )
 }

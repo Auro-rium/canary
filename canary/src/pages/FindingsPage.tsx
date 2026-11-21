@@ -1,30 +1,32 @@
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { Badge, buttonClass, EmptyState, ErrorNotice, Field, inputClass, Metric, PageHeader, StatusBadge } from '../components/Console'
-import { hasRole, useMe } from '../lib/useMe'
+import { can, PERMISSION, useMe } from '../lib/useMe'
 import { listFindings, updateFindingStatus } from '../lib/api'
 import { ASI_CODE_PATTERN } from '../lib/contracts'
-import { formatDate, formatScore, gutter, pageClass, SEVERITY_STYLE, strategyLabel } from '../lib/presentation'
+import { formatDate, gutter, pageClass, SEVERITY_STYLE, strategyLabel } from '../lib/presentation'
 import { useDebounced } from '../lib/useDebounced'
-import type { FindingStatus, FindingV2, Paged } from '../lib/v2'
+import type { FindingDetail, FindingStatus, FindingV2, Paged } from '../lib/v2'
 
 const PAGE_SIZE = 50
-const STATUSES: FindingStatus[] = ['open', 'inconclusive', 'wont_fix', 'false_positive']
+const STATUSES: FindingStatus[] = ['open', 'needs_review', 'inconclusive', 'wont_fix', 'false_positive']
 const SEVERITIES = ['critical', 'high', 'medium', 'low', 'info']
+// Mirrors storage/v2/repositories.py FINDING_TRANSITIONS; the server is authoritative (409 on an illegal move).
 const ALLOWED: Record<FindingStatus, FindingStatus[]> = {
-  open: ['inconclusive', 'wont_fix', 'false_positive'],
+  open: ['needs_review', 'inconclusive', 'wont_fix', 'false_positive'],
+  needs_review: ['open', 'wont_fix', 'false_positive'],
   inconclusive: ['open', 'wont_fix', 'false_positive'],
   wont_fix: [],
   false_positive: [],
 }
 
-function Transition({ finding, onUpdated }: { finding: FindingV2; onUpdated: (finding: FindingV2) => void }) {
+function Transition({ finding, onUpdated }: { finding: FindingV2; onUpdated: (finding: FindingDetail) => void }) {
   const [next, setNext] = useState<FindingStatus | ''>('')
   const [rationale, setRationale] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const options = ALLOWED[finding.status] ?? []
-  if (options.length === 0) return <span className="text-[10px] text-white/30 uppercase">Terminal lifecycle state</span>
+  if (options.length === 0) return <span className="text-[10px] text-white/60 uppercase">Terminal lifecycle state</span>
   const needsRationale = next === 'wont_fix' || next === 'false_positive'
 
   const submit = async () => {
@@ -101,8 +103,8 @@ export default function FindingsPage() {
     setSearch(params)
   }
   const totalPages = data ? Math.max(1, Math.ceil(data.total / data.page_size)) : 1
-  const replace = (updated: FindingV2) => setData(previous => previous && { ...previous, items: previous.items.map(item => item.finding_id === updated.finding_id ? updated : item) })
-  const canReview = hasRole(me?.role, 'operator', 'admin')
+  const replace = (updated: FindingDetail) => setData(previous => previous && { ...previous, items: previous.items.map(item => item.finding_id === updated.finding_id ? { ...item, ...updated } : item) })
+  const canReview = can(me, PERMISSION.findingsTriage)
   const asiInvalid = asiInput.trim() !== '' && !ASI_CODE_PATTERN.test(asiInput.trim().toUpperCase())
 
   return (
@@ -124,27 +126,27 @@ export default function FindingsPage() {
           {data?.items.map(finding => (
             <li key={finding.finding_id} data-testid="finding" className="border border-white/10 p-4">
               <div className="flex flex-wrap items-center gap-2">
-                <Badge className={SEVERITY_STYLE[finding.severity] ?? SEVERITY_STYLE.info}>{finding.severity}</Badge>
+                <Badge className={(SEVERITY_STYLE as Record<string, string>)[finding.severity] ?? SEVERITY_STYLE.info}>{finding.severity}</Badge>
                 <Badge>{finding.asi_class}</Badge>
                 <StatusBadge status={finding.status} />
-                <span className="text-xs">{finding.title ?? strategyLabel(finding.technique)}</span>
-                <span className="ml-auto text-[10px] text-white/40">score {formatScore(finding.score)} · {formatDate(finding.created_at)}</span>
+                <span className="text-xs">{finding.title || strategyLabel(finding.technique)}</span>
+                <span className="ml-auto text-[10px] text-white/60">{formatDate(finding.created_at)}</span>
               </div>
               <p className="mt-2 text-xs text-white/60 whitespace-pre-wrap break-words">{finding.rationale}</p>
               <div className="mt-3 flex flex-wrap items-start justify-between gap-3">
-                <Link className="text-[11px] underline text-white/70 hover:text-white" to={`/campaigns/${finding.campaign_id}?conversation=${encodeURIComponent(finding.conversation_id)}${finding.first_failing_turn !== null ? `&turn=${finding.first_failing_turn}` : ''}`}>
+                {finding.campaign_id && finding.conversation_id ? <Link className="text-[11px] underline text-white/70 hover:text-white" to={`/campaigns/${finding.campaign_id ?? ''}?conversation=${encodeURIComponent(finding.conversation_id ?? '')}${finding.first_failing_turn !== null ? `&turn=${finding.first_failing_turn}` : ''}`}>
                   Open transcript{finding.first_failing_turn !== null ? ` at turn ${finding.first_failing_turn + 1}` : ''}
-                </Link>
-                {canReview ? <Transition finding={finding} onUpdated={replace} /> : <span className="text-[10px] text-white/30">Read-only role</span>}
+                </Link> : <span className="text-[10px] text-white/60">No transcript linked</span>}
+                {canReview ? <Transition finding={finding} onUpdated={replace} /> : <span className="text-[10px] text-white/60">Read-only role</span>}
               </div>
-              {finding.reviewer_id && <p className="mt-2 text-[10px] text-white/30">Last reviewed by {finding.reviewer_id}</p>}
+              {finding.reviewer_id && <p className="mt-2 text-[10px] text-white/60">Last reviewed by {finding.reviewer_id}</p>}
             </li>
           ))}
         </ul>
         {data && data.total > 0 && (
           <div className="mt-5 flex items-center justify-between text-xs">
             <button disabled={page <= 1} onClick={() => setParam('page', String(page - 1))} className="border border-white/20 px-3 py-2 disabled:opacity-30">Previous</button>
-            <span className="text-white/40">{(page - 1) * data.page_size + 1}–{Math.min(page * data.page_size, data.total)} of {data.total}</span>
+            <span className="text-white/60">{(page - 1) * data.page_size + 1}–{Math.min(page * data.page_size, data.total)} of {data.total}</span>
             <button disabled={page >= totalPages} onClick={() => setParam('page', String(page + 1))} className="border border-white/20 px-3 py-2 disabled:opacity-30">Next</button>
           </div>
         )}

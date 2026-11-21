@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
 import { buttonClass, ErrorNotice, Field, inputClass, Notice, PageHeader, primaryButtonClass } from '../components/Console'
-import { hasRole, useMe } from '../lib/useMe'
+import { can, PERMISSION, useMe } from '../lib/useMe'
 import { createCampaign, listTargets } from '../lib/api'
 import type { CampaignPolicy } from '../lib/contracts'
 import { gutter, pageClass } from '../lib/presentation'
@@ -47,7 +47,7 @@ export default function CampaignNewPage() {
     }
   }
 
-  if (me && !hasRole(me.role, 'operator', 'admin')) {
+  if (me && !can(me, PERMISSION.campaignsLaunch)) {
     return <main className={pageClass}><PageHeader eyebrow="Campaign builder" title="New campaign" /><section className={`${gutter} py-8`}><Notice>Your role ({me.role}) cannot launch campaigns. Ask an operator.</Notice></section></main>
   }
 
@@ -63,7 +63,7 @@ export default function CampaignNewPage() {
             {targets.map(item => <option key={item.target_id} value={item.target_id} disabled={!item.verified}>{item.name} ({item.environment}){item.verified ? '' : ' - unverified'}</option>)}
           </select>
         </Field>
-        {targets.some(item => !item.verified) && <p className="text-[10px] text-white/40">Unverified targets cannot be attacked. <Link className="underline" to="/targets">Verify ownership first.</Link></p>}
+        {targets.some(item => !item.verified) && <p className="text-[10px] text-white/60">Unverified targets cannot be attacked. <Link className="underline" to="/targets">Verify ownership first.</Link></p>}
 
         {production && (
           <div data-testid="production-notice"><Notice>
@@ -81,7 +81,7 @@ export default function CampaignNewPage() {
               return (
                 <label key={technique.id} className={`border px-3 py-2 text-xs flex gap-3 ${blocked ? 'opacity-40 border-white/10' : 'border-white/20 cursor-pointer'}`}>
                   <input type="checkbox" disabled={blocked} checked={policy.techniques.includes(technique.id)} onChange={() => toggle(technique.id)} />
-                  <span><span className="block">{technique.name} <span className="text-white/30">{technique.asiCode}</span></span><span className="block text-white/40">{blocked ? 'Staging only' : technique.description}</span></span>
+                  <span><span className="block">{technique.name} <span className="text-white/60">{technique.asiCode}</span></span><span className="block text-white/60">{blocked ? 'Staging only' : technique.description}</span></span>
                 </label>
               )
             })}

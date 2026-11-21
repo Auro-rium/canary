@@ -1,8 +1,8 @@
 import { useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
 import { buttonClass, ErrorNotice, Field, inputClass, Notice, PageHeader, primaryButtonClass, StatusBadge } from '../components/Console'
-import { hasRole, useMe } from '../lib/useMe'
-import { TestConnection, VerificationPanel } from '../components/TargetParts'
+import { can, PERMISSION, useMe } from '../lib/useMe'
+import { VerificationPanel } from '../components/TargetParts'
 import { createTarget } from '../lib/api'
 import { gutter, pageClass } from '../lib/presentation'
 import { AUTH_TYPES, buildTargetBody, EMPTY_TARGET_FORM, validateTarget, validateTemplate, type AuthType, type TargetFormState } from '../lib/targetForm'
@@ -47,7 +47,7 @@ export default function TargetNewPage() {
     }
   }
 
-  if (me && !hasRole(me.role, 'operator', 'admin')) {
+  if (me && !can(me, PERMISSION.targetsWrite)) {
     return <main className={pageClass}><PageHeader eyebrow="Onboarding" title="Add target" /><section className={`${gutter} py-8`}><Notice>Your role ({me.role}) cannot register targets.</Notice></section></main>
   }
 
@@ -56,7 +56,7 @@ export default function TargetNewPage() {
       <PageHeader eyebrow="Onboarding" title="Add target" />
       <section className={`${gutter} py-8 max-w-3xl space-y-6`}>
         <ol className="flex flex-wrap gap-2 text-[10px] uppercase tracking-wider" aria-label="Wizard steps">
-          {STEPS.map((label, index) => <li key={label} aria-current={index === step ? 'step' : undefined} className={`border px-2 py-1 ${index === step ? 'border-white text-white' : 'border-white/15 text-white/35'}`}>{index + 1}. {label}</li>)}
+          {STEPS.map((label, index) => <li key={label} aria-current={index === step ? 'step' : undefined} className={`border px-2 py-1 ${index === step ? 'border-white text-white' : 'border-white/15 text-white/60'}`}>{index + 1}. {label}</li>)}
         </ol>
         {error && <ErrorNotice message={error} />}
 
@@ -100,12 +100,12 @@ export default function TargetNewPage() {
         {step === 3 && (
           <div className="space-y-3 text-xs">
             <dl className="grid grid-cols-[10rem_1fr] gap-y-1">
-              <dt className="text-white/40">Name</dt><dd>{form.name}</dd>
-              <dt className="text-white/40">Endpoint</dt><dd className="break-all">{form.endpoint}</dd>
-              <dt className="text-white/40">Environment</dt><dd>{form.environment}</dd>
-              <dt className="text-white/40">Auth</dt><dd>{form.authType} (secret hidden)</dd>
-              <dt className="text-white/40">Session</dt><dd>{form.sessionMode}</dd>
-              <dt className="text-white/40">Response path</dt><dd>{form.responsePath || '(whole body)'}</dd>
+              <dt className="text-white/60">Name</dt><dd>{form.name}</dd>
+              <dt className="text-white/60">Endpoint</dt><dd className="break-all">{form.endpoint}</dd>
+              <dt className="text-white/60">Environment</dt><dd>{form.environment}</dd>
+              <dt className="text-white/60">Auth</dt><dd>{form.authType} (secret hidden)</dd>
+              <dt className="text-white/60">Session</dt><dd>{form.sessionMode}</dd>
+              <dt className="text-white/60">Response path</dt><dd>{form.responsePath || '(whole body)'}</dd>
             </dl>
             {problems.length > 0 && <ul className="text-[11px] text-orange-300 list-disc pl-5">{problems.map(problem => <li key={problem}>{problem}</li>)}</ul>}
           </div>
@@ -115,7 +115,6 @@ export default function TargetNewPage() {
           <div className="space-y-8">
             <p className="text-xs">Registered <strong>{created.target.name}</strong> <StatusBadge status={verified ? 'verified' : 'unverified'} /></p>
             <VerificationPanel targetId={created.target.target_id} instructions={created.verification} onVerified={() => setVerified(true)} />
-            <TestConnection targetId={created.target.target_id} />
             <div className="flex gap-3">
               {verified && <Link data-testid="goto-campaign" to={`/campaigns/new?target=${created.target.target_id}`} className={primaryButtonClass}>Run a campaign</Link>}
               <Link to="/targets" className={buttonClass}>All targets</Link>

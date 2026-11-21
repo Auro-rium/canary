@@ -70,6 +70,8 @@ export function frameToEvent(frame: SseFrame): SseEvent | null {
   return parsed as SseEvent
 }
 
+export const SESSION_ENDED_MESSAGE = 'Your session ended. Sign in again to resume the live view.'
+
 const TERMINAL = new Set(['campaign_complete', 'campaign_failed', 'campaign_cancelled'])
 
 export interface StreamOptions {
@@ -128,6 +130,12 @@ export async function followEvents(options: StreamOptions): Promise<number> {
         const { done, value } = await reader.read()
         if (done) break
         for (const frame of parser.push(decoder.decode(value, { stream: true }))) {
+          if (frame.event === 'error') {
+            // Server-side `event: error` (e.g. {"detail":"session ended"}): final, never retried.
+            let detail = ''
+            try { detail = String((JSON.parse(frame.data) as { detail?: unknown }).detail ?? '') } catch { /* not JSON */ }
+            throw new ApiError(detail === 'session ended' ? SESSION_ENDED_MESSAGE : (detail || 'The event stream reported an error.'), 401)
+          }
           const event = frameToEvent(frame)
           if (!event || event.seq <= lastSeq) continue
           lastSeq = event.seq

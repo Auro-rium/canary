@@ -24,7 +24,7 @@ export interface LiveCampaign {
 
 export const TERMINAL_STATUSES: readonly ConversationStatus[] = [
   'stopped_budget', 'stopped_monitor', 'stopped_target_refusal_streak', 'stopped_target_error_streak',
-  'stopped_killed', 'completed', 'cancelled', 'error',
+  'stopped_planner_guardrail', 'stopped_killed', 'completed', 'cancelled', 'error',
 ]
 
 export function emptyCampaign(campaignId: string): LiveCampaign {
@@ -93,7 +93,7 @@ export function reduceEvent(state: LiveCampaign, event: SseEvent): LiveCampaign 
       return { ...next, budget: { requests_used, max_total_requests, llm_cost_usd, max_llm_cost_usd } }
     }
     case 'campaign_complete':
-      return { ...next, status: 'complete', results: event.payload.technique_results, confirmed: event.payload.confirmed }
+      return { ...next, status: 'completed', results: event.payload.technique_results, confirmed: event.payload.confirmed }
     case 'campaign_failed':
       return { ...next, status: 'failed', message: event.payload.message }
     case 'campaign_cancelled':
@@ -107,7 +107,7 @@ export function reduceEvent(state: LiveCampaign, event: SseEvent): LiveCampaign 
 }
 
 export function isCampaignTerminal(status: CampaignStatus): boolean {
-  return status === 'complete' || status === 'failed' || status === 'cancelled'
+  return status === 'completed' || status === 'failed' || status === 'cancelled'
 }
 
 export function budgetFraction(used: number, max: number): number {

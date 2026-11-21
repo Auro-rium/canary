@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { EmptyState, ErrorNotice, Metric, PageHeader, StatusBadge } from '../components/Console'
-import { hasRole, useMe } from '../lib/useMe'
+import { can, PERMISSION, useMe } from '../lib/useMe'
 import { listCampaigns } from '../lib/api'
 import { formatDate, gutter, pageClass } from '../lib/presentation'
 import type { CampaignSummary, Paged } from '../lib/v2'
@@ -30,7 +30,7 @@ export default function CampaignsPage() {
   return (
     <main className={pageClass}>
       <PageHeader eyebrow="Campaign operations" title="Campaigns">
-        {hasRole(me?.role, 'operator', 'admin') && <Link to="/campaigns/new" className="px-4 py-2 bg-red-600 text-xs uppercase tracking-wider hover:bg-red-500">New campaign</Link>}
+        {can(me, PERMISSION.campaignsLaunch) && <Link to="/campaigns/new" className="px-4 py-2 bg-red-600 text-xs uppercase tracking-wider hover:bg-red-500">New campaign</Link>}
       </PageHeader>
       <section className={`${gutter} py-6 border-b border-white/10 flex flex-wrap gap-3`}>
         <Metric label="Campaigns" value={data?.total ?? '—'} />
@@ -42,7 +42,7 @@ export default function CampaignsPage() {
         {data?.items.length === 0 && <EmptyState>No campaigns yet</EmptyState>}
         {data && data.items.length > 0 && (
           <table className="w-full text-xs">
-            <thead><tr className="text-left text-[9px] uppercase tracking-wider text-white/30"><th className="py-2 font-normal">Target</th><th className="font-normal">Status</th><th className="font-normal">Confirmed</th><th className="font-normal">Started</th></tr></thead>
+            <thead><tr className="text-left text-[9px] uppercase tracking-wider text-white/60"><th className="py-2 font-normal">Target</th><th className="font-normal">Status</th><th className="font-normal">Confirmed</th><th className="font-normal">Started</th></tr></thead>
             <tbody>
               {data.items.map(campaign => (
                 <tr key={campaign.campaign_id} className="border-t border-white/10">
@@ -58,7 +58,7 @@ export default function CampaignsPage() {
         {data && (
           <div className="mt-5 flex items-center justify-between text-xs">
             <button disabled={page <= 1} onClick={() => goto(page - 1)} className="border border-white/20 px-3 py-2 disabled:opacity-30">Previous</button>
-            <span className="text-white/40">{data.total} total</span>
+            <span className="text-white/60">{data.total} total</span>
             <button disabled={page >= totalPages} onClick={() => goto(page + 1)} className="border border-white/20 px-3 py-2 disabled:opacity-30">Next</button>
           </div>
         )}

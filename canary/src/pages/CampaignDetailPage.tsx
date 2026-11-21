@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
 import { Badge, buttonClass, ErrorNotice, Metric, Notice, PageHeader, StatusBadge } from '../components/Console'
 import { BudgetMeter, ConversationGrid, KillSwitchControl, ResultsTable } from '../components/LiveParts'
-import { hasRole, useMe } from '../lib/useMe'
+import { can, PERMISSION, useMe } from '../lib/useMe'
 import { Transcript } from '../components/Transcript'
 import { cancelCampaign, getCampaign, reportUrl, streamCampaignEvents } from '../lib/api'
 import { emptyCampaign, fromDetail, isCampaignTerminal, reduceEvent, type LiveCampaign } from '../lib/liveState'
@@ -51,7 +51,7 @@ export default function CampaignDetailPage() {
   )
   const selectedCell = selected ? live.cells[selected] : undefined
   const terminal = isCampaignTerminal(live.status)
-  const canControl = hasRole(me?.role, 'operator', 'admin')
+  const canControl = can(me, PERMISSION.campaignsCancel)
 
   const cancel = useCallback(async () => {
     setCancelling(true)
@@ -66,7 +66,7 @@ export default function CampaignDetailPage() {
         {canControl && !terminal && (
           <button type="button" data-testid="cancel-campaign" disabled={cancelling} onClick={cancel} className={buttonClass}>Cancel campaign</button>
         )}
-        {hasRole(me?.role, 'admin') && <KillSwitchControl />}
+        {can(me, PERMISSION.killSwitchWrite) && <KillSwitchControl />}
       </PageHeader>
 
       <section className={`${gutter} py-6 space-y-4 border-b border-white/10`}>
@@ -84,17 +84,17 @@ export default function CampaignDetailPage() {
 
       <section className={`${gutter} py-8 grid xl:grid-cols-[auto_1fr] gap-8 border-b border-white/10`}>
         <div>
-          <h2 className="mb-3 text-[10px] uppercase tracking-[0.2em] text-white/40">Conversations (technique × trial)</h2>
+          <h2 className="mb-3 text-[10px] uppercase tracking-[0.2em] text-white/60">Conversations (technique × trial)</h2>
           {techniques.length === 0
-            ? <p className="text-xs text-white/35">Waiting for the first conversation…</p>
+            ? <p className="text-xs text-white/60">Waiting for the first conversation…</p>
             : <ConversationGrid cells={cells} techniques={techniques} trials={detail?.policy.trials_per_technique ?? 1} selected={selected} onSelect={setSelected} />}
         </div>
-        <div>{selectedCell ? <Transcript cell={selectedCell} highlightTurn={search.get('turn') !== null ? Number(search.get('turn')) : null} /> : <p className="text-xs text-white/35">Select a cell to read its transcript.</p>}</div>
+        <div>{selectedCell ? <Transcript cell={selectedCell} highlightTurn={search.get('turn') !== null ? Number(search.get('turn')) : null} /> : <p className="text-xs text-white/60">Select a cell to read its transcript.</p>}</div>
       </section>
 
       <section className={`${gutter} py-8`}>
         <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
-          <h2 className="text-[10px] uppercase tracking-[0.2em] text-white/40">Results by technique</h2>
+          <h2 className="text-[10px] uppercase tracking-[0.2em] text-white/60">Results by technique</h2>
           <div className="flex gap-2 items-center">
             <Link to={`/findings?campaign_id=${encodeURIComponent(campaignId)}`} className={buttonClass}>Findings</Link>
             {terminal && (['md', 'json', 'pdf'] as const).map(format => <a key={format} href={reportUrl(campaignId, format)} className="text-[10px] uppercase text-white/50 hover:text-white"><Badge>{format}</Badge></a>)}

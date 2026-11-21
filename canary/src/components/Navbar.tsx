@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { NavLink, Link } from 'react-router-dom'
-import { hasRole, useMe } from '../lib/useMe'
+import { logout } from '../lib/api'
+import { can, PERMISSION, useMe } from '../lib/useMe'
 
 const Logo = () => (
   <svg aria-hidden="true" xmlns="http://www.w3.org/2000/svg" width="32" height="32" viewBox="0 0 256 256" fill="none">
@@ -32,15 +33,16 @@ export default function Navbar() {
         {links.map(link => <NavLink key={link.to} to={link.to} className={({ isActive }) => `text-xs uppercase tracking-[0.2em] transition-colors ${isActive ? 'text-white' : 'text-white/55 hover:text-white'}`}>{link.label}</NavLink>)}
       </div>
       <div className="hidden lg:flex items-center gap-3">
-        {me && <span data-testid="role-badge" className="text-[10px] uppercase tracking-[0.15em] text-white/40">{me.email ?? me.user_id} · {me.role}</span>}
-        {hasRole(me?.role, 'operator', 'admin') && <Link to="/campaigns/new" className="px-5 py-2.5 bg-red-600 text-white text-xs uppercase tracking-[0.15em] font-medium hover:bg-red-500 transition-colors">New campaign</Link>}
+        {me && <span data-testid="role-badge" className="text-[10px] uppercase tracking-[0.15em] text-white/60">{me.display_name || me.email || me.user_id} · {me.role}</span>}
+        {me && <button type="button" data-testid="sign-out" onClick={() => { logout().catch(() => undefined).finally(() => window.location.assign('/')) }} className="text-[10px] uppercase tracking-[0.15em] text-white/55 hover:text-white">Sign out</button>}
+        {can(me, PERMISSION.campaignsLaunch) && <Link to="/campaigns/new" className="px-5 py-2.5 bg-red-600 text-white text-xs uppercase tracking-[0.15em] font-medium hover:bg-red-500 transition-colors">New campaign</Link>}
       </div>
       <button className="lg:hidden w-9 h-9 text-white" aria-label="Toggle navigation" aria-expanded={menuOpen} onClick={() => setMenuOpen(value => !value)}>
         <span className="block text-xl">{menuOpen ? '×' : '☰'}</span>
       </button>
       {menuOpen && <div className="absolute top-16 inset-x-0 bg-black border-y border-white/10 p-6 lg:hidden flex flex-col gap-5">
         {links.map(link => <NavLink key={link.to} to={link.to} onClick={() => setMenuOpen(false)} className="text-white/70 text-sm uppercase tracking-[0.2em]">{link.label}</NavLink>)}
-        {hasRole(me?.role, 'operator', 'admin') && <Link to="/campaigns/new" onClick={() => setMenuOpen(false)} className="py-3 text-center bg-red-600 text-xs uppercase tracking-[0.15em]">New campaign</Link>}
+        {can(me, PERMISSION.campaignsLaunch) && <Link to="/campaigns/new" onClick={() => setMenuOpen(false)} className="py-3 text-center bg-red-600 text-xs uppercase tracking-[0.15em]">New campaign</Link>}
       </div>}
     </nav>
   )
