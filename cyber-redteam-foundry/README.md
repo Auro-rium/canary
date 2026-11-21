@@ -83,7 +83,7 @@ cyber-redteam-foundry/
     │   ├── artifact_store.py # SQLiteStore — all persistence methods
     │   └── embedder.py      # sentence-transformers all-MiniLM-L6-v2 semantic dedup
     └── tools/
-        ├── target_adapter.py         # HttpTargetAdapter — generic payload/label contract
+        ├── target_adapter.py         # SessionTargetAdapter — v1 sync bridge over the v2 SessionAdapter
         ├── prompt_injection.py       # Deterministic detector
         ├── sensitive_data.py         # PII/credential detector
         ├── tool_abuse.py             # Tool parameter injection detector
@@ -204,7 +204,7 @@ Full contract and refusal-category list: `prompts/attacker.md`.
 
 ## Targeting Any HTTP Agent
 
-`HttpTargetAdapter` sends `POST {endpoint}` with a configurable request/response contract — not limited to the demo agent's `{"message": "..."} → {"response": "..."}` format:
+`SessionTargetAdapter` (a sync bridge over the v2 `SessionAdapter`) sends `POST {endpoint}` with a configurable request/response contract — not limited to the demo agent's `{"message": "..."} → {"response": "..."}` format:
 
 | Config | Purpose | Default |
 |---|---|---|

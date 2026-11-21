@@ -58,7 +58,7 @@ The graph supports `MAX_PARALLEL_BRANCHES = 12`. The current dashboard exposes e
 
 ### Parallel attacker branches
 
-Each `Send` invokes `node_attacker_branch()` independently. The branch calls the NVIDIA-backed attacker agent to generate one structured `AttackerOutput`, then passes the resulting prompt to `HttpTargetAdapter`. It returns one `AttackResult` containing:
+Each `Send` invokes `node_attacker_branch()` independently. The branch calls the NVIDIA-backed attacker agent to generate one structured `AttackerOutput`, then passes the resulting prompt to `SessionTargetAdapter`. It returns one `AttackResult` containing:
 
 - branch and iteration identity;
 - strategy and ASI technique;
@@ -94,7 +94,7 @@ There is no mock or fabricated-output fallback in the production factory. `get_l
 
 ## 4. Target adapter contract
 
-`HttpTargetAdapter` is the only production target path. It supports a generic JSON contract rather than a target-specific SDK.
+`SessionAdapter` is the only production target path (the v1 flow reaches it through `SessionTargetAdapter`). It supports a generic JSON contract rather than a target-specific SDK.
 
 Default request:
 
@@ -269,7 +269,7 @@ The focused backend suite covers API/auth behavior and URL target detail routing
 - **Orchestrator:** `GraphOrchestrator` owns run setup, checkpoint invocation, and persistence.
 - **Scatter-gather:** LangGraph `Send()` fans out independent attacker branches and gathers their deltas at the evaluator barrier.
 - **Strategy:** each `StrategyType` selects one scoped attack technique behind the common attacker contract.
-- **Adapter:** `HttpTargetAdapter` normalizes HTTP request templates, auth headers, response paths, and observations.
+- **Adapter:** `SessionAdapter` (v1: `SessionTargetAdapter`) normalizes HTTP request templates, auth headers, response paths, and observations.
 - **Reducer:** `Annotated[..., operator.add]` merges parallel branch results and log events.
 - **Checkpoint:** SQLite-backed LangGraph state uses the campaign ID as `thread_id`.
 - **Proxy:** Vercel server functions isolate the browser from the AWS API credential.
