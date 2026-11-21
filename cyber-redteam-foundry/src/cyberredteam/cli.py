@@ -282,6 +282,29 @@ def server(
 # gate (WP10)
 # -------------------------------------------------------------------
 
+def _queue_launcher(session_factory, db_url: str, timeout_s: float):
+    """The real CampaignLauncher: enqueue via the WP7 Postgres queue and wait.
+
+    ``None`` without a Postgres database (the in-process queue never runs jobs,
+    so waiting on it could only time out); ``run_gate`` then reports that no
+    launcher is configured.
+    """
+    from cyberredteam.gate.launcher import QueueCampaignLauncher
+    from cyberredteam.jobs.queue import ProcrastinateQueue, make_app, make_connector
+    from cyberredteam.settings import get_settings
+
+    settings = get_settings()
+    connector = make_connector(db_url or settings.database_url)
+    if connector is None:
+        return None
+    return QueueCampaignLauncher(
+        session_factory,
+        ProcrastinateQueue(make_app(connector)),
+        packs_dir=settings.planner_packs_dir,
+        timeout_s=timeout_s,
+    )
+
+
 @app.command()
 def gate(
     target: str = typer.Option("", "--target", help="Target id."),
@@ -294,6 +317,9 @@ def gate(
     demo: bool = typer.Option(False, "--demo", help="Seed synthetic campaigns and compare."),
     demo_inject_regression: bool = typer.Option(
         False, "--demo-inject-regression", help="With --demo: candidate regresses."
+    ),
+    launch_timeout: float = typer.Option(
+        1800.0, "--launch-timeout", help="Seconds to wait for a launched candidate campaign."
     ),
 ) -> None:
     """CI gate: exit 0 pass, 1 regression, 2 inconclusive or error."""
@@ -325,10 +351,14 @@ def gate(
         else:
             if not (target and baseline):
                 raise GateError("--target and --baseline are required")
-            repo = CampaignRepo(make_session_factory(make_engine(db_url or None)))
+            session_factory = make_session_factory(make_engine(db_url or None))
+            repo = CampaignRepo(session_factory)
+            launcher = None
+            if not candidate:
+                launcher = _queue_launcher(session_factory, db_url, launch_timeout)
             result, md, js = run_gate(
                 repo, target_id=target, suite=suite, baseline_id=baseline,
-                candidate_id=candidate or None, policy=policy,
+                candidate_id=candidate or None, policy=policy, launcher=launcher,
             )
         typer.echo(md)
         write_step_summary(md)
