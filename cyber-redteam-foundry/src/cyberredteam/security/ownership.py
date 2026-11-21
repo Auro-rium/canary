@@ -23,6 +23,10 @@ Network safety (fail closed):
   resolves to a private, loopback, link-local, multicast, reserved or
   unspecified address are refused. A host resolving to a mix of public and
   private addresses is refused.
+* Dev/test only: loopback (``localhost``, 127.0.0.0/8, ``::1``) is allowed when
+  ``CANARY_ENV`` is ``dev`` or ``test`` AND ``CANARY_ALLOW_LOOPBACK_TARGETS=1``.
+  Nothing else is relaxed (private ranges, link-local, metadata names stay
+  refused), and it never applies in production. See :func:`loopback_targets_allowed`.
 * Redirects are never followed automatically. A redirect to the same host is
   followed (at most ``MAX_REDIRECTS``, no https->http downgrade, re-checked);
   a redirect to any other host is refused.
@@ -39,6 +43,7 @@ Ported in part from ``security/target.py`` on
 from __future__ import annotations
 
 import ipaddress
+import os
 import re
 import socket
 from dataclasses import dataclass
@@ -108,6 +113,38 @@ def _is_public(address: ipaddress.IPv4Address | ipaddress.IPv6Address) -> bool:
     )
 
 
+LOOPBACK_FLAG_ENV = "CANARY_ALLOW_LOOPBACK_TARGETS"
+
+
+def loopback_targets_allowed() -> bool:
+    """True only for CANARY_ENV in {dev, test} with CANARY_ALLOW_LOOPBACK_TARGETS=1.
+
+    Fails closed: any error reading the settings, or any other environment name
+    (including ``production`` and an unset value), returns False.
+    """
+    if os.environ.get(LOOPBACK_FLAG_ENV, "").strip() != "1":
+        return False
+    try:
+        from cyberredteam.settings import get_settings
+
+        env = get_settings().canary_env.strip().lower()
+    except Exception:  # noqa: BLE001 - fail closed
+        return False
+    return env in {"dev", "test"}
+
+
+def _is_loopback_host(hostname: str) -> bool:
+    if hostname == "localhost":
+        return True
+    try:
+        literal = ipaddress.ip_address(hostname)
+    except ValueError:
+        return False
+    if literal.version == 6 and literal.ipv4_mapped is not None:
+        return False
+    return literal.is_loopback
+
+
 def default_resolve_host(hostname: str) -> list[str]:
     """Resolve A/AAAA records with the system resolver."""
     infos = socket.getaddrinfo(hostname, None, proto=socket.IPPROTO_TCP)
@@ -143,6 +180,8 @@ def check_target_url(
     if allow_private_targets:
         return scheme, hostname
 
+    if _is_loopback_host(hostname) and loopback_targets_allowed():
+        return scheme, hostname
     if hostname == "localhost" or hostname.endswith(".localhost"):
         raise TargetRefused("localhost targets are not allowed")
     if hostname in _METADATA_HOSTS:
