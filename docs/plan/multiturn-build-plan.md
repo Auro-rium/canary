@@ -428,6 +428,8 @@ There are no scripted or cosmetic events (fixes D8).
   - OpenAPI exported to `cyber-redteam-foundry/openapi/v2.json` and snapshot-tested (`cyber-rt export-openapi`).
   - v1: read routes kept behind a deprecation flag (admin-only, `Deprecation`/`Sunset` headers); `POST /api/runs` and the old SSE route are removed.
   - Frontend: proxy `canary/api/[...path].js` is byte-identical to the `multiturn-wp9` copy (forwards cookie/authorization, never injects a token); `VITE_API_TOKEN` read removed; bundle grep clean.
+  - Review fixes: OIDC login is bound to the starting browser (`canary_oidc_state` cookie, HttpOnly/Secure/Lax, path limited to the callback, 600 s; sha256 of the binder is stored in `oidc_login_states.binder_hash`, compared in constant time; amended into 0003). Outside dev/test (`CANARY_ENV`, default `production`) OIDC login needs `PUBLIC_BASE_URL` (never derived from the Host header) and Secure session cookies, else 503. SSE `events` re-validates the session/API key every 30 s and closes when revoked or disabled. Kill-switch POST needs a platform admin (`CANARY_PLATFORM_ADMINS`: user ids or emails); org admins keep read access.
+  - Known limits: 0003 does not backfill a default org. Legacy targets keep `org_id` NULL (visible to no org) until `cyber-rt auth assign-target` is run. The v1 legacy reads are unscoped (legacy data has no org), admin-only, and on the sunset path.
   - Tests: `test_api_v2_authz_matrix.py` (every route x every role x API key/session, plus cross-org and anonymous); matrix fails if a route lacks an entry. Full suite: only the 6 known baseline failures on SQLite and Postgres.
 
 ### WP9: Frontend (Sonnet) — D8

@@ -2476,7 +2476,7 @@
         ]
       },
       "post": {
-        "description": "Set the global DB kill switch (admin only). It is platform-wide: it halts\nevery org's campaigns. The env var CANARY_KILL_SWITCH is independent.",
+        "description": "Set the global DB kill switch (platform admins only: ``CANARY_PLATFORM_ADMINS``).\nIt halts every org's campaigns, so an org admin cannot flip it. The env var CANARY_KILL_SWITCH is independent.",
         "operationId": "set_kill_switch_api_v2_admin_kill_switch_post",
         "requestBody": {
           "content": {

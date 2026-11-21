@@ -76,3 +76,14 @@ class Principal:
     def actor(self) -> str:
         """The identity written to audit rows and finding events."""
         return f"user:{self.user_id}"
+
+
+def is_platform_admin(principal: Principal) -> bool:
+    """Platform operators (``CANARY_PLATFORM_ADMINS``: user ids or emails) who may
+    act across orgs, e.g. the global kill switch. An org admin is not one."""
+    from cyberredteam.settings import get_settings
+
+    allowed = get_settings().platform_admin_set
+    if not allowed or principal.role != "admin":
+        return False
+    return principal.user_id.lower() in allowed or bool(principal.email and principal.email.lower() in allowed)

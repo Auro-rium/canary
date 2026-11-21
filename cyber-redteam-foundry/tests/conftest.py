@@ -28,6 +28,14 @@ def _wandb_disabled(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _canary_env(monkeypatch):
+    """Tests run as dev/test (Host-derived redirect_uri allowed); the legacy bypass
+    admin is a platform admin so kill-switch tests can write."""
+    monkeypatch.setenv("CANARY_ENV", "test")
+    monkeypatch.setenv("CANARY_PLATFORM_ADMINS", "test-admin,admin@a.example")
+
+
+@pytest.fixture(autouse=True)
 def _inject_fake_llm(monkeypatch):
     def _fake_get_llm(model=None, agent_name="unknown", store=None, provider=None, temperature=None):
         return ObservableLLM(

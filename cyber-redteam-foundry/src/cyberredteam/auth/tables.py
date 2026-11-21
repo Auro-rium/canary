@@ -104,5 +104,8 @@ class OidcLoginStateRow(Base):
     state_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
     provider: Mapped[str] = mapped_column(String(32))
     code_verifier: Mapped[str] = mapped_column(String(128))
+    # sha256 of the random binder held in the starting browser's canary_oidc_state
+    # cookie (login CSRF defence): the callback must present the same browser.
+    binder_hash: Mapped[str] = mapped_column(String(64))
     redirect_to: Mapped[str] = mapped_column(String(500), default="/")
     expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))

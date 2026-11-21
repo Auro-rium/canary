@@ -43,6 +43,9 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/v2", tags=["auth"])
 
 CSRF_COOKIE = "canary_csrf"
+STATE_COOKIE = "canary_oidc_state"
+STATE_TTL_S = 600
+CALLBACK_PATH = "/api/v2/auth/callback"
 
 
 def get_oidc_providers() -> dict[str, OIDCProvider]:
@@ -67,8 +70,20 @@ def _safe_next(value: str | None) -> str:
 
 
 def _redirect_uri(request: Request, provider: str) -> str:
-    base = get_settings().public_base_url or str(request.base_url)
+    settings = get_settings()
+    base = settings.public_base_url
+    if not base:
+        if not settings.is_dev_or_test:
+            # Never trust the Host header for the redirect_uri in production.
+            raise HTTPException(status_code=503, detail="OIDC login is not configured (PUBLIC_BASE_URL)")
+        base = str(request.base_url)
     return f"{base.rstrip('/')}/api/v2/auth/callback/{provider}"
+
+
+def _require_cookie_safety() -> None:
+    settings = get_settings()
+    if not settings.session_cookie_secure and not settings.is_dev_or_test:
+        raise HTTPException(status_code=503, detail="Insecure session cookies are refused outside dev/test")
 
 
 @router.get("/auth/providers", response_model=ProvidersView)
@@ -87,12 +102,18 @@ def login(
 ):
     """Public: start an OIDC login (redirects to the identity provider)."""
     idp = _provider(provider, providers)
+    _require_cookie_safety()
+    redirect_uri = _redirect_uri(request, provider)
     state = secrets.token_urlsafe(32)
+    binder = secrets.token_urlsafe(32)
     verifier, challenge = new_pkce()
-    repo.save_login_state(state, provider, verifier, _safe_next(next))
-    url = idp.authorization_url(state=state, code_challenge=challenge,
-                                redirect_uri=_redirect_uri(request, provider))
-    return RedirectResponse(url, status_code=302)
+    repo.save_login_state(state, provider, verifier, _safe_next(next), binder, STATE_TTL_S)
+    url = idp.authorization_url(state=state, code_challenge=challenge, redirect_uri=redirect_uri)
+    response = RedirectResponse(url, status_code=302)
+    # Binds this login to this browser (login CSRF defence).
+    response.set_cookie(STATE_COOKIE, binder, max_age=STATE_TTL_S, httponly=True, samesite="lax",
+                        secure=get_settings().session_cookie_secure, path=CALLBACK_PATH)
+    return response
 
 
 @router.get("/auth/callback/{provider}", status_code=302, response_class=RedirectResponse)
@@ -107,9 +128,12 @@ async def callback(
 ):
     """Public: OIDC redirect target. Sets the session and CSRF cookies."""
     idp = _provider(provider, providers)
-    pending = repo.consume_login_state(state or "")
+    _require_cookie_safety()
+    pending = repo.consume_login_state(state or "", request.cookies.get(STATE_COOKIE))
     if pending is None or pending.provider != provider:
-        raise HTTPException(status_code=400, detail="Invalid or expired login state")
+        bad = JSONResponse({"detail": "Invalid or expired login state"}, status_code=400)
+        bad.delete_cookie(STATE_COOKIE, path=CALLBACK_PATH)
+        return bad
     if error or not code:
         raise HTTPException(status_code=400, detail="Login was not completed")
     try:
@@ -132,6 +156,7 @@ async def callback(
     common = {"max_age": settings.session_ttl_s, "secure": settings.session_cookie_secure, "path": "/"}
     response.set_cookie(SESSION_COOKIE, token, httponly=True, samesite="lax", **common)
     response.set_cookie(CSRF_COOKIE, csrf, httponly=False, samesite="strict", **common)
+    response.delete_cookie(STATE_COOKIE, path=CALLBACK_PATH)
     return response
 
 

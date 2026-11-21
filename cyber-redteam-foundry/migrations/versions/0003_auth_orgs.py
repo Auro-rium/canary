@@ -78,6 +78,7 @@ def upgrade() -> None:
         sa.Column("state_hash", sa.String(64), primary_key=True),
         sa.Column("provider", sa.String(32), nullable=False),
         sa.Column("code_verifier", sa.String(128), nullable=False),
+        sa.Column("binder_hash", sa.String(64), nullable=False),
         sa.Column("redirect_to", sa.String(500), nullable=False),
         _ts("expires_at"),
     )

@@ -135,3 +135,36 @@ def test_detail_has_conversations_results_budget_and_last_seq(v2):
     assert detail["budget"]["requests_used"] == 3
     assert detail["last_seq"] == 0 and detail["target_name"] == "agent-a"
     assert v2.client.get(f"/api/v2/campaigns/{cid}", headers=v2.h("admin", "b")).status_code == 404
+
+
+def test_events_stream_closes_when_credential_is_revoked(v2, monkeypatch):
+    """The SSE stream re-validates its credential and ends once it is revoked."""
+    from cyberredteam.auth.repo import AuthRepo
+    from cyberredteam.jobs import api_v2 as control
+
+    monkeypatch.setattr(control, "REVALIDATE_S", 0.0)
+    monkeypatch.setenv("SSE_POLL_INTERVAL_S", "0.05")
+    cid = v2.campaign(v2.target("a"), status="running")
+    viewer = v2.actor("viewer")
+    real = AuthRepo.is_still_valid
+    seen = []
+
+    def revoke_then_check(self, principal):
+        if not seen:
+            self.revoke_api_key(viewer.user_id, principal.api_key_id)  # revoked mid-stream
+        seen.append(real(self, principal))
+        return seen[-1]
+
+    monkeypatch.setattr(AuthRepo, "is_still_valid", revoke_then_check)
+    with v2.client.stream("GET", f"/api/v2/campaigns/{cid}/events", headers=viewer.headers("api_key")) as r:
+        assert r.status_code == 200
+        body = "".join(r.iter_text())
+    assert seen == [False] and "session ended" in body
+
+
+def test_is_still_valid_tracks_session_and_user_state(v2):
+    op = v2.actor("operator")
+    principal = v2.auth.authenticate_session(op.session)
+    assert v2.auth.is_still_valid(principal)
+    v2.auth.set_disabled(op.user_id, True)
+    assert not v2.auth.is_still_valid(principal)

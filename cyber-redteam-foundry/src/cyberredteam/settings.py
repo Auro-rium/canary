@@ -127,6 +127,13 @@ class Settings(BaseSettings):
     # Public origin of the API as the browser sees it (the Vercel/nginx proxy),
     # used to build the OIDC redirect_uri: <base>/api/v2/auth/callback/<provider>.
     public_base_url: Optional[str] = None
+    # Deployment mode. Anything but dev/test is treated as production: OIDC login
+    # then needs PUBLIC_BASE_URL (never derived from the Host header) and Secure
+    # session cookies.
+    canary_env: str = "production"
+    # Platform operators (user ids or emails, comma separated). Only they may flip
+    # the global kill switch, which halts every org.
+    canary_platform_admins: str = ""
     session_ttl_s: int = 12 * 3600
     # Secure cookies need HTTPS; set False only for local http development.
     session_cookie_secure: bool = True
@@ -134,6 +141,14 @@ class Settings(BaseSettings):
     # release, admin-only (legacy data has no org). False -> 410 Gone.
     v1_api_enabled: bool = True
     v1_sunset: str = "2027-03-01"
+
+    @property
+    def is_dev_or_test(self) -> bool:
+        return self.canary_env.strip().lower() in {"dev", "development", "test", "local"}
+
+    @property
+    def platform_admin_set(self) -> frozenset[str]:
+        return frozenset(p.strip().lower() for p in self.canary_platform_admins.split(",") if p.strip())
 
     class Config:
         env_file = ".env"

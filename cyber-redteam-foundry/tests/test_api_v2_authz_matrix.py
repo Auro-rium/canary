@@ -31,6 +31,7 @@ class Route:
     scope: str  # object | list | global | self | public
     build: Callable  # (env, owner_actor, mode) -> (url, kwargs, marker_id or None)
     ok: int = 200
+    platform: bool = False  # also needs CANARY_PLATFORM_ADMINS (only org A's admin is listed)
 
 
 def _target_body():
@@ -104,7 +105,8 @@ ROUTES = [
     Route("GET", "/api/v2/admin/kill-switch", "viewer", "global",
           lambda e, a, m: _url("/api/v2/admin/kill-switch")),
     Route("POST", "/api/v2/admin/kill-switch", "admin", "global",
-          lambda e, a, m: _url("/api/v2/admin/kill-switch", json={"enabled": False})),
+          lambda e, a, m: _url("/api/v2/admin/kill-switch", json={"enabled": False}),
+          platform=True),
     Route("GET", "/api/v2/conversations/{conversation_id}", "viewer", "object",
           lambda e, a, m: _url(f"/api/v2/conversations/{e.chain(a.org)['conversation_id']}")),
     Route("GET", "/api/v2/findings", "viewer", "list",
@@ -146,7 +148,8 @@ def _expected_ok(route: Route, mode: str) -> int:
 
 @pytest.mark.parametrize("mode", ["api_key", "session"])
 @pytest.mark.parametrize("route", ROUTES, ids=lambda r: f"{r.method} {r.path}")
-def test_role_matrix(v2, route, mode):
+def test_role_matrix(v2, route, mode, monkeypatch):
+    monkeypatch.setenv("CANARY_PLATFORM_ADMINS", "admin@a.example")
     env = v2
     viewer_a = env.actor("viewer", "a")
     # anonymous
@@ -174,6 +177,8 @@ def test_role_matrix(v2, route, mode):
         assert resp.status_code == 200
         assert marker and marker not in resp.text
         assert resp.json()["items"] == [] or all(marker not in str(i) for i in resp.json()["items"])
+    elif route.platform:  # org B's admin is not a platform admin
+        assert resp.status_code == 403, (mode, resp.status_code, resp.text)
     else:  # global: acts on B's own data
         assert resp.status_code == _expected_ok(route, mode), resp.text
 
@@ -188,3 +193,16 @@ def test_wrong_role_writes_nothing(v2):
     from cyberredteam.storage.v2.repositories import CampaignRepo
 
     assert CampaignRepo(v2.factory).list_for_target(tid) == []
+
+
+def test_org_admin_is_not_a_platform_admin(v2, monkeypatch):
+    monkeypatch.setenv("CANARY_PLATFORM_ADMINS", "")
+    resp = v2.client.post("/api/v2/admin/kill-switch", json={"enabled": True}, headers=v2.h("admin"))
+    assert resp.status_code == 403
+    assert v2.client.get("/api/v2/admin/kill-switch", headers=v2.h("admin")).json()["enabled"] is False
+    # by user id works too
+    monkeypatch.setenv("CANARY_PLATFORM_ADMINS", v2.actor("admin").user_id)
+    assert v2.client.post("/api/v2/admin/kill-switch", json={"enabled": False},
+                          headers=v2.h("admin")).status_code == 200
+    assert v2.client.post("/api/v2/admin/kill-switch", json={"enabled": False},
+                          headers=v2.h("operator")).status_code == 403

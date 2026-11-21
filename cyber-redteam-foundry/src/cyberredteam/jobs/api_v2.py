@@ -2,7 +2,7 @@
 
 Authz (WP8): cancel needs ``campaigns:cancel`` (operator+), events
 ``campaigns:read`` (viewer+), kill-switch GET ``kill_switch:read`` (everyone),
-POST ``kill_switch:write`` (admin). Campaigns are org-scoped: another org's
+POST ``kill_switch:write`` (admin who is also a platform admin). Campaigns are org-scoped: another org's
 campaign is a 404. Audit rows carry the authenticated principal.
 """
 
@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import time
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
@@ -26,7 +27,9 @@ from cyberredteam.auth.principal import (
     KILL_SWITCH_READ,
     KILL_SWITCH_WRITE,
     Principal,
+    is_platform_admin,
 )
+from cyberredteam.auth.repo import AuthRepo
 from cyberredteam.contracts import CampaignCancelledPayload
 from cyberredteam.jobs.control import ControlStore, DbRunControl, env_kill_switch_active
 from cyberredteam.jobs.events import MAX_SEQ, TERMINAL_EVENT_TYPES, EventLog
@@ -41,6 +44,9 @@ from cyberredteam.storage.v2.repositories import (
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["control"])
+
+# How often a long-lived SSE stream re-checks that its session/API key is still valid.
+REVALIDATE_S = 30.0
 
 
 class ControlPlane:
@@ -116,8 +122,10 @@ def set_kill_switch(
     principal: Principal = Depends(require(KILL_SWITCH_WRITE)),
     plane: ControlPlane = Depends(get_control_plane),
 ):
-    """Set the global DB kill switch (admin only). It is platform-wide: it halts
-    every org's campaigns. The env var CANARY_KILL_SWITCH is independent."""
+    """Set the global DB kill switch (platform admins only: ``CANARY_PLATFORM_ADMINS``).
+    It halts every org's campaigns, so an org admin cannot flip it. The env var CANARY_KILL_SWITCH is independent."""
+    if not is_platform_admin(principal):
+        raise HTTPException(status_code=403, detail="The global kill switch needs a platform admin")
     actor = principal.actor
     plane.store.set_kill_switch(body.enabled, actor)
     plane.control.invalidate()
@@ -157,12 +165,20 @@ async def campaign_events(
     if not await run_in_threadpool(campaign_in_org, plane.factory, campaign_id, principal.org_id):
         raise HTTPException(status_code=404, detail="Campaign not found")
 
+    auth_repo = AuthRepo(plane.factory)
+
     async def stream():
         last = after
         quiet = 0.0
+        next_check = time.monotonic() + REVALIDATE_S
         while True:
             if await request.is_disconnected():
                 return
+            if time.monotonic() >= next_check:
+                next_check = time.monotonic() + REVALIDATE_S
+                if not await run_in_threadpool(auth_repo.is_still_valid, principal):
+                    yield "event: error\ndata: {\"detail\": \"session ended\"}\n\n"
+                    return
             rec = await run_in_threadpool(plane.campaigns.get, campaign_id)
             finished = rec is None or rec.status in TERMINAL_CAMPAIGN_STATUSES
             events = await run_in_threadpool(plane.events.since, campaign_id, last)

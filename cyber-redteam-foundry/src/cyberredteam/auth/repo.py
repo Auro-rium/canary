@@ -270,6 +270,24 @@ class AuthRepo:
                 return None
             return _principal(user, "session", session_hash=token_hash, csrf_hash=row.csrf_hash)
 
+    def is_still_valid(self, principal: Principal) -> bool:
+        """Re-check a long-lived principal (SSE): session/key not revoked or expired, user enabled."""
+        with session_scope(self._factory) as s:
+            if principal.session_hash:
+                row = s.get(AuthSessionRow, principal.session_hash)
+                if row is None or row.revoked_at is not None or _aware(row.expires_at) <= _now():
+                    return False
+            elif principal.api_key_id:
+                krow = s.get(ApiKeyRow, principal.api_key_id)
+                if krow is None or krow.revoked_at is not None or (
+                    krow.expires_at and _aware(krow.expires_at) <= _now()
+                ):
+                    return False
+            else:
+                return False
+            user = s.get(UserRow, principal.user_id)
+            return user is not None and not user.disabled
+
     def revoke_session(self, session_hash: str) -> None:
         with session_scope(self._factory) as s:
             row = s.get(AuthSessionRow, session_hash)
@@ -279,7 +297,8 @@ class AuthRepo:
     # ── OIDC login state ────────────────────────────────────────────────────
 
     def save_login_state(
-        self, state: str, provider: str, code_verifier: str, redirect_to: str, ttl_s: int = 600
+        self, state: str, provider: str, code_verifier: str, redirect_to: str,
+        binder: str, ttl_s: int = 600,
     ) -> None:
         with session_scope(self._factory) as s:
             # Opportunistic cleanup of expired rows.
@@ -289,11 +308,16 @@ class AuthRepo:
                 s.delete(old)
             s.add(OidcLoginStateRow(state_hash=tokens.sha256_hex(state), provider=provider,
                                     code_verifier=code_verifier, redirect_to=redirect_to,
+                                    binder_hash=tokens.sha256_hex(binder),
                                     expires_at=_now() + timedelta(seconds=ttl_s)))
 
-    def consume_login_state(self, state: str) -> LoginState | None:
-        """One-time: the row is deleted whether or not it is still valid."""
-        if not state:
+    def consume_login_state(self, state: str, binder: str | None) -> LoginState | None:
+        """One-time: the row is deleted whether or not it is still valid.
+
+        ``binder`` is the value of the ``canary_oidc_state`` cookie; it must hash
+        to the stored value (constant time) or the login is refused.
+        """
+        if not state or not binder:
             return None
         with session_scope(self._factory) as s:
             row = s.get(OidcLoginStateRow, tokens.sha256_hex(state), with_for_update=True)
@@ -301,5 +325,7 @@ class AuthRepo:
                 return None
             s.delete(row)
             if _aware(row.expires_at) <= _now():
+                return None
+            if not tokens.token_matches(binder, row.binder_hash):
                 return None
             return LoginState(row.provider, row.code_verifier, row.redirect_to)

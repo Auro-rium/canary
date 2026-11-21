@@ -134,3 +134,70 @@ def test_logout_revokes_the_session(v2):
     csrf = v2.client.cookies.get("canary_csrf")
     assert v2.client.post("/api/v2/auth/logout", headers={"X-CSRF-Token": csrf}).status_code == 200
     assert v2.client.get("/api/v2/me").status_code == 401
+
+
+# ── login CSRF: the callback must come from the browser that started the login ──
+
+def _fresh_client(v2):
+    from fastapi.testclient import TestClient
+
+    from cyberredteam.api import app
+
+    return TestClient(app, base_url="https://testserver")
+
+
+def test_login_sets_scoped_state_cookie(v2):
+    resp = v2.client.get("/api/v2/auth/login/fake", follow_redirects=False)
+    cookie = next(c for c in resp.headers.get_list("set-cookie") if c.startswith("canary_oidc_state="))
+    low = cookie.lower()
+    assert "httponly" in low and "secure" in low and "samesite=lax" in low
+    assert "path=/api/v2/auth/callback" in low and "max-age=600" in low
+
+
+def test_callback_without_state_cookie_is_refused(v2):
+    state = _start(v2)
+    code = v2.oidc.issue(_identity(), state)
+    v2.client.cookies.clear()  # attacker-supplied link opened in a different browser
+    resp = v2.client.get(f"/api/v2/auth/callback/fake?code={code}&state={state}", follow_redirects=False)
+    assert resp.status_code == 400
+    assert _sessions(v2) == len(v2.actors)  # no session was minted (fixture sessions only)
+    assert "canary_session" not in "".join(resp.headers.get_list("set-cookie"))
+
+
+def test_callback_with_wrong_state_cookie_is_refused(v2):
+    state = _start(v2)
+    code = v2.oidc.issue(_identity(), state)
+    v2.client.cookies.clear()
+    v2.client.cookies.set("canary_oidc_state", "not-the-binder", path="/api/v2/auth/callback")
+    resp = v2.client.get(f"/api/v2/auth/callback/fake?code={code}&state={state}", follow_redirects=False)
+    assert resp.status_code == 400
+    assert _sessions(v2) == len(v2.actors)
+    assert v2.client.get("/api/v2/me").status_code == 401
+
+
+def test_state_cookie_is_deleted_after_callback(v2):
+    resp = _finish(v2, _start(v2), _identity())
+    assert resp.status_code == 302
+    cookies = resp.headers.get_list("set-cookie")
+    gone = next(c for c in cookies if c.startswith("canary_oidc_state="))
+    assert "max-age=0" in gone.lower() or "1970" in gone
+
+
+def test_oidc_login_refused_in_production_without_public_base_url(v2, monkeypatch):
+    monkeypatch.setenv("CANARY_ENV", "production")
+    monkeypatch.delenv("PUBLIC_BASE_URL", raising=False)
+    resp = v2.client.get("/api/v2/auth/login/fake", follow_redirects=False)
+    assert resp.status_code == 503
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://app.example")
+    resp = v2.client.get("/api/v2/auth/login/fake", follow_redirects=False)
+    assert resp.status_code == 302
+    assert "redirect_uri=https%3A%2F%2Fapp.example%2Fapi%2Fv2%2Fauth%2Fcallback%2Ffake" in resp.headers["location"]
+
+
+def test_insecure_session_cookies_refused_in_production(v2, monkeypatch):
+    monkeypatch.setenv("CANARY_ENV", "production")
+    monkeypatch.setenv("PUBLIC_BASE_URL", "https://app.example")
+    monkeypatch.setenv("SESSION_COOKIE_SECURE", "false")
+    assert v2.client.get("/api/v2/auth/login/fake", follow_redirects=False).status_code == 503
+    monkeypatch.setenv("CANARY_ENV", "dev")
+    assert v2.client.get("/api/v2/auth/login/fake", follow_redirects=False).status_code == 302
