@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 from collections import Counter
 from collections.abc import Callable
 from pathlib import Path
@@ -37,7 +38,13 @@ from cyberredteam.evaluation.pipeline import (
     evaluate_conversation,
 )
 from cyberredteam.evaluation.verdict import EvaluationSettings, JudgeOutcome
-from cyberredteam.monitors import TargetSafetyConfig, load_target_safety_config
+from cyberredteam.monitors import (
+    PresidioAnalyzer,
+    TargetSafetyConfig,
+    build_monitors,
+    load_target_safety_config,
+)
+from cyberredteam.observability.redact import register_target_secrets
 from cyberredteam.storage.v2.repositories import (
     AuditRepo,
     CampaignRepo,
@@ -203,6 +210,52 @@ def make_evaluation(
     return evaluator, make_aggregator(factory)
 
 
+_pii_analyzer: Any = None
+_pii_lock = threading.Lock()
+
+
+def shared_pii_analyzer() -> Any:
+    """One Presidio analyzer per process: it lazy-loads the spaCy model once
+    (or remembers that it is unavailable) instead of once per campaign."""
+    global _pii_analyzer
+    with _pii_lock:
+        if _pii_analyzer is None:
+            _pii_analyzer = PresidioAnalyzer()
+        return _pii_analyzer
+
+
+def wiring_defaults(
+    factory: Any, target: TargetConfig, judge_factory: Callable[[int], Judge] | None = None
+) -> dict[str, Any]:
+    """``EngineDeps`` fields the worker wires for one campaign.
+
+    * ``monitors=build_monitors()``: the WP5 set REPLACES ``BuiltinSafetyMonitor``
+      (same hit names; never stack both). An unavailable PII model makes the PII
+      monitor report ``pii_monitor_unavailable``; it never crashes the worker.
+    * ``canary_values`` / ``forbidden_tools`` from ``load_target_safety_config``
+      (``TARGET_SAFETY_DIR``); an existing but invalid file raises, which fails
+      the campaign instead of running it without its canaries.
+    * ``evaluator`` / ``aggregate_results`` (see :func:`make_evaluation`).
+    * ``register_target_secrets(target)``: masks the target's credentials in
+      every W&B/Weave export for the rest of the process.
+    """
+    from cyberredteam.settings import get_settings
+
+    register_target_secrets(target)
+    safety = safety_config_for(target, get_settings().target_safety_dir)
+    evaluator, aggregate = make_evaluation(
+        factory, target_id=target.target_id, forbidden_tools=safety.forbidden_tools,
+        judge_factory=judge_factory,
+    )
+    return {
+        "monitors": build_monitors(shared_pii_analyzer()),
+        "canary_values": safety.canary_values,
+        "forbidden_tools": safety.forbidden_tools,
+        "evaluator": evaluator,
+        "aggregate_results": aggregate,
+    }
+
+
 __all__ = [
     "CampaignEvaluator",
     "UnavailableJudge",
@@ -210,4 +263,6 @@ __all__ = [
     "make_aggregator",
     "make_evaluation",
     "safety_config_for",
+    "shared_pii_analyzer",
+    "wiring_defaults",
 ]

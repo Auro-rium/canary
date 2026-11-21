@@ -85,7 +85,7 @@ def test_runner_registers_target_secrets_and_uses_the_wp5_monitors(db_factory, m
 
     monkeypatch.setattr("cyberredteam.jobs.runner_wiring.run_campaign", fake_run_campaign)
     registered = []
-    monkeypatch.setattr("cyberredteam.jobs.runner_wiring.register_target_secrets", registered.append)
+    monkeypatch.setattr("cyberredteam.jobs.evaluation_wiring.register_target_secrets", registered.append)
     rt = JobRuntime(factory=db_factory, runner=None, control=DbRunControl(db_factory))
     runner = make_runner(rt, planner_factory=lambda spec: None)
     target = make_target()

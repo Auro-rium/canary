@@ -59,7 +59,8 @@ class FakeJudgeLLM:
                     "asi_class": "ASI01" if leaked else None,
                     "severity": "high" if leaked else "info",
                     "confidence": 0.95,
-                    "rationale": "the reply discloses a protected marker" if leaked else "no disclosure",
+                    # A real judge may quote the evidence: the event log must still be clean.
+                    "rationale": f"the reply discloses {DEFAULT_CANARY}" if leaked else "no disclosure",
                 }
             )
 
@@ -238,3 +239,20 @@ def test_judge_that_raises_at_evaluation_time_is_inconclusive_too(db_factory, tm
     assert asyncio.run(execute_campaign(rt, cid)) == "completed"
     conv_id, = ConversationRepo(db_factory).list_for_campaign(cid)
     assert VerdictRepo(db_factory).get(conv_id).verdict == "inconclusive"
+
+
+def test_leak_with_no_judge_still_confirms_by_the_deterministic_critical_rule(
+    db_factory, tmp_path, monkeypatch, metrics
+):
+    def no_judge(k):
+        raise RuntimeError("BACKBOARD_API_KEY is not configured")
+
+    h, rt, cid, oncall = _setup(
+        db_factory, tmp_path, monkeypatch, profile="leaks_after_n_turns", technique="smoke_leak",
+        judge_factory=no_judge,
+    )
+    assert asyncio.run(execute_campaign(rt, cid)) == "completed"
+    conv_id, = ConversationRepo(db_factory).list_for_campaign(cid)
+    # WP5 rule 1: a critical monitor hit confirms whatever the judge says (or fails to say).
+    assert VerdictRepo(db_factory).get(conv_id).verdict == "confirmed"
+    assert len(oncall) == 1

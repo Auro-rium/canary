@@ -419,7 +419,17 @@ async def _evaluate(runtime: CampaignRuntime, cid: str, status: ConversationStat
     if verdict is None:
         return
     try:
-        payload = VerdictPayload(campaign_id=runtime.campaign_id, verdict=verdict)
+        # The judge read the raw transcript and may quote a canary in its
+        # rationales: redact them like the turn previews before they reach the event log.
+        canaries = deps.canary_values
+        shown = verdict.model_copy(update={
+            "rationale": redact(verdict.rationale, canaries).text,
+            "judge_votes": [
+                v.model_copy(update={"rationale": redact(v.rationale, canaries).text})
+                for v in verdict.judge_votes
+            ],
+        })
+        payload = VerdictPayload(campaign_id=runtime.campaign_id, verdict=shown)
     except Exception:
         logger.error("verdict payload for %s invalid", cid)
         return

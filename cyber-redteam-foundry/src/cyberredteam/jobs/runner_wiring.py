@@ -40,12 +40,9 @@ from pydantic import SecretStr
 
 from cyberredteam.contracts import CampaignPolicy, CampaignRequest, TargetConfig
 from cyberredteam.engine import EngineDeps, EngineRepos, PlannerFactory, run_campaign
-from cyberredteam.jobs.evaluation_wiring import make_evaluation, safety_config_for
+from cyberredteam.jobs.evaluation_wiring import wiring_defaults
 from cyberredteam.jobs.events import EventLogSink
 from cyberredteam.jobs.execution import CampaignRunner
-from cyberredteam.monitors import build_monitors
-from cyberredteam.observability.redact import register_target_secrets
-from cyberredteam.settings import get_settings
 from cyberredteam.storage.v2.repositories import BudgetLedgerRepo, CampaignRepo, ConversationRepo
 
 logger = logging.getLogger(__name__)
@@ -178,35 +175,16 @@ def make_runner(
     limiters: SharedLimiters | None = None,
     judge_factory: Callable[[int], Any] | None = None,
 ) -> CampaignRunner:
-    """``engine_options`` override any default below (tests); ``judge_factory``
-    replaces ``Judge(k=...)`` (tests with a fake judge LLM)."""
     shared = limiters if limiters is not None else SharedLimiters()
 
     async def runner(request: CampaignRequest, campaign_id: str) -> Any:
         if planner_factory is None:
             logger.error("no planner configured: set PLANNER_FACTORY=package.module:callable")
             raise NoPlannerConfigured("no planner configured")
-        target = request.target
-        register_target_secrets(target)  # mask this target's credentials in W&B/Weave exports
-        # Canary values and forbidden tools; an invalid file raises and fails the campaign.
-        safety = safety_config_for(target, get_settings().target_safety_dir)
-        evaluator, aggregate = make_evaluation(
-            runtime.factory,
-            target_id=target.target_id,
-            forbidden_tools=safety.forbidden_tools,
-            judge_factory=judge_factory,
-        )
-        kwargs: dict[str, Any] = {
-            "limiter_factory": shared,
-            # The WP5 monitors REPLACE BuiltinSafetyMonitor (same hit names); never stack both.
-            # An unavailable PII model makes the PII monitor report it; it never crashes the worker.
-            "monitors": build_monitors(),
-            "canary_values": safety.canary_values,
-            "forbidden_tools": safety.forbidden_tools,
-            "evaluator": evaluator,
-            "aggregate_results": aggregate,
-            **(engine_options or {}),
-        }
+        # WP5 monitors, safety inputs, evaluation and secret registration (lead wiring);
+        # engine_options still override every default.
+        defaults = wiring_defaults(runtime.factory, request.target, judge_factory)
+        options = {"limiter_factory": shared, **defaults, **(engine_options or {})}
         deps = EngineDeps(
             repos=EngineRepos(
                 conversations=ConversationRepo(runtime.factory),
@@ -215,8 +193,8 @@ def make_runner(
             ),
             planner_factory=planner_factory,
             run_control=runtime.control,
-            events=EventLogSink(runtime.events, auth_secret_values(target)),
-            **kwargs,
+            events=EventLogSink(runtime.events, auth_secret_values(request.target)),
+            **options,
         )
         return await run_campaign(request, campaign_id, deps)
 

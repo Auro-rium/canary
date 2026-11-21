@@ -23,7 +23,7 @@ import threading
 from collections.abc import Callable
 
 from cyberredteam.engine.types import ConversationSpec, TurnPlanner
-from cyberredteam.planners.errors import PlannerConfigError, PlannerFactoryUnavailable
+from cyberredteam.planners.errors import PlannerFactoryUnavailable
 from cyberredteam.planners.factory import PlannerKind, make_planner_factory
 
 logger = logging.getLogger(__name__)
@@ -52,7 +52,7 @@ class _LazyPlannerFactory:
             if self._factory is None:
                 try:
                     self._factory = make_planner_factory(self.kind)
-                except PlannerConfigError as exc:
+                except Exception as exc:  # config errors, OSError, a missing LLM key...
                     failure = PlannerFactoryUnavailable(
                         f"planner factory {self.kind!r} unavailable ({type(exc).__name__})"
                     )

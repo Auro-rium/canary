@@ -112,3 +112,23 @@ def test_lazy_factory_failure_is_remembered_per_campaign_and_retried_for_the_nex
     with pytest.raises(PlannerFactoryUnavailable):
         lazy(ConversationSpec(campaign_id="camp-b", technique="t", trial_index=0))
     assert builds == ["llm", "llm"]  # a new campaign retries the build
+
+
+def test_lazy_factory_memoizes_any_build_failure_not_only_config_errors(monkeypatch):
+    from cyberredteam.engine import ConversationSpec
+    from cyberredteam.planners.errors import PlannerFactoryUnavailable
+
+    builds = []
+
+    def failing_make(kind, **kw):
+        builds.append(kind)
+        raise RuntimeError("BACKBOARD_API_KEY is not configured")  # e.g. the LLM factory
+
+    monkeypatch.setattr(planner_worker, "make_planner_factory", failing_make)
+    lazy = planner_worker._LazyPlannerFactory("llm")
+    specs = [ConversationSpec(campaign_id="camp-a", technique="t", trial_index=i) for i in range(3)]
+    for spec in specs:
+        with pytest.raises(PlannerFactoryUnavailable) as err:
+            lazy(spec)
+    assert builds == ["llm"]
+    assert "RuntimeError" in str(err.value) and "BACKBOARD" not in str(err.value)  # class name only
