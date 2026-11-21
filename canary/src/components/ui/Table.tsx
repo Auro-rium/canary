@@ -75,7 +75,7 @@ export function Table<T>({ columns, rows, rowKey, caption, sort, onSortChange, p
   const sorted = sortRows(rows, columns, sort ?? null)
   return (
     <div className={className}>
-      <div className="overflow-x-auto rounded-lg border border-line bg-surface">
+      <div tabIndex={0} role="region" aria-label={caption} className="overflow-x-auto rounded-lg border border-line bg-surface">
         <table className="w-full text-left text-sm" data-testid={testId}>
           <caption className="sr-only">{caption}</caption>
           <thead className="bg-raised text-xs text-muted">

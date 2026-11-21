@@ -43,7 +43,7 @@ export function Drawer({ open, onClose, title, subtitle, children, testId }: {
           <span aria-hidden="true">✕</span> <span>Close</span>
         </button>
       </header>
-      <div className="min-h-0 flex-1 overflow-y-auto">{children}</div>
+      <div tabIndex={0} role="region" aria-label={`${title} content`} className="min-h-0 flex-1 overflow-y-auto">{children}</div>
     </aside>
   )
 }
