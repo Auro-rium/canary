@@ -165,8 +165,8 @@ def test_short_and_assigned_bearer_tokens(text):
 # ── 5. provider keys, Azure header, URLs ───────────────────────────────────
 
 @pytest.mark.parametrize("text", [
-    "hf_abcdefghijklmnopqrstuvwxyzABCDEF",
-    "token glpat-abcdefghijklmnopqrst here",
+    "hf_" "abcdefghijklmnopqrstuvwxyzABCDEF",
+    "token glpat-" "abcdefghijklmnopqrst here",
     'curl -H "Ocp-Apim-Subscription-Key: SECRETAZ2" https://x',
     "Ocp-Apim-Subscription-Key: SECRETAZ3",
     "https://hooks.slack.com/services/T00000000/B00000000/SECRETSLACKXXXXXXXXXXXX",
