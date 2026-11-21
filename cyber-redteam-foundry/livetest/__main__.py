@@ -190,6 +190,9 @@ def main(argv: list[str] | None = None) -> int:
                 if num in (2, 3, 7) and "main" not in ctx.targets:
                     raise RuntimeError("prerequisite failed: step 1 did not register the main target")
                 fn(ctx)
+            except KeyboardInterrupt:
+                res.status, res.error = "error", "interrupted"
+                raise
             except BudgetAbort as exc:
                 res.status, res.error, aborted = "aborted", str(exc), True
                 say(f"ABORT: {exc}")
@@ -214,6 +217,7 @@ def main(argv: list[str] | None = None) -> int:
                 break
     except KeyboardInterrupt:
         interrupted = True
+        report.interrupted = True
         say("interrupted: tearing down")
         report.notes.append("run interrupted (Ctrl-C/SIGTERM); teardown executed")
     except (StackError, MissingSecrets) as exc:

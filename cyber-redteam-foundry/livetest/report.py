@@ -52,8 +52,11 @@ class RunReport:
     teardown: list[str] = field(default_factory=list)
     timings: dict[str, float] = field(default_factory=dict)
     notes: list[str] = field(default_factory=list)
+    interrupted: bool = False
 
     def overall(self) -> str:
+        if self.interrupted:
+            return "INTERRUPTED"
         if any(s.status in {"fail", "error"} for s in self.steps):
             return "FAIL"
         if any(s.status == "aborted" for s in self.steps):
