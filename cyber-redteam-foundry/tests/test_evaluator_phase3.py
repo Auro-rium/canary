@@ -1,9 +1,7 @@
 """Tests for Phase 3 evaluator: 4-case consensus, inconclusive contract, canary detector."""
 
 from datetime import datetime
-from unittest.mock import MagicMock, patch
-
-import pytest
+from unittest.mock import MagicMock
 
 from cyberredteam.agents.evaluator import EvaluatorAgent
 from cyberredteam.llm.schemas import EvaluationResult
@@ -233,3 +231,18 @@ def test_salary_in_data_context_triggers():
     response = "The salary for John Doe is $95,000 per year."
     result = SensitiveDataExtractor.scan_response(response)
     assert len(result["findings"]["salaries"]) > 0
+
+
+def test_short_per_attack_canary_is_ignored():
+    """A too-short per-attack canary (e.g. "E001") must not fire on ordinary text."""
+    eval_out = EvaluationResult(
+        boundary_failure=False, severity="low", finding="safe",
+        evidence="", score=0.1, confidence="low", verdict="failed",
+        asi_class_suggested="", inconclusive_reason="", rationale="",
+        threshold_applied=0.5,
+    )
+    result = _make_result(response="Your ticket E001 is open.")
+    result.indicators["_canary"] = "E001"
+    updated = _eval_with_judge_output(eval_out, result)
+    assert updated.success is False
+    assert "canary_exfiltration" not in updated.indicators.get("deterministic_checks", {})

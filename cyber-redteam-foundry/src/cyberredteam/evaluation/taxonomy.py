@@ -8,7 +8,7 @@ asi_class_suggested is informational only; this lookup is authoritative.
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Dict, Tuple
+from typing import Tuple
 
 import yaml
 

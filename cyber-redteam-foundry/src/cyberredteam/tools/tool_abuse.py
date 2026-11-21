@@ -1,6 +1,6 @@
 """Tool abuse detection and payload generation for analyzing function/tool misuse."""
 
-from typing import Dict, Any
+from typing import Any, Dict
 
 
 class ToolAbuseTool:
@@ -27,7 +27,7 @@ class ToolAbuseTool:
             # Unauthorized files / internal directories
             "directory_traversal": any(x in response_lower for x in ["passwd", "hosts", "resolv.conf", "/etc/", "c:\\windows", "boot.ini", "/var/log"]),
             # Metadata exfiltration
-            "metadata_leakage": bool(re.search(r"\b(?:sk|key|token|password|credential|pr0d_s3cr3t)[-_a-zA-Z0-9!@#]{8,}\b", response_lower)) or "api_key" in response_lower,
+            "metadata_leakage": bool(re.search(r"\b(?:sk|key|token|password|credential)[-_a-zA-Z0-9!@#]{8,}\b", response_lower)) or "api_key" in response_lower,
         }
 
         abused = any(indicators.values())

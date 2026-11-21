@@ -1,6 +1,6 @@
 """Jailbreak tool for generating persona/role-play bypass payloads and checking responses."""
 
-from typing import Dict, Any
+from typing import Any, Dict
 
 
 class JailbreakTool:
