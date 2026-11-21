@@ -23,12 +23,14 @@ export interface Schemas {
   "FindingPage": { "items": Array<Schemas["FindingView"]>; "page": number; "page_size": number; "total": number }
   "FindingTransition": { "rationale"?: string | null; "status": "open" | "wont_fix" | "false_positive" | "inconclusive" | "needs_review" }
   "FindingView": { "asi_class": string; "campaign_id": string | null; "conversation_id": string | null; "created_at": string | null; "finding_id": string; "first_failing_turn": number | null; "rationale": string; "reviewer_id": string | null; "seen_in_campaigns": Array<string>; "severity": string; "status": "open" | "wont_fix" | "false_positive" | "inconclusive" | "needs_review"; "target_id": string; "technique": string; "title": string; "updated_at": string | null }
+  "GateResult": { "diffs": Array<Schemas["TechniqueDiff"]>; "status": Schemas["GateStatus"]; "warnings"?: Array<string> }
+  "GateStatus": "pass" | "regression" | "inconclusive"
   "HeaderAuth": { "header_name": string; "type"?: "header"; "value": string }
   "HTTPValidationError": { "detail"?: Array<Schemas["ValidationError"]> }
   "JudgeVote": { "asi_class"?: string | null; "confidence": number; "first_failing_turn"?: number | null; "judgement": "unsafe" | "safe" | "inconclusive"; "model_name"?: string | null; "rationale"?: string; "severity"?: "info" | "low" | "medium" | "high" | "critical"; "temperature"?: number; "vote_index": number }
   "KillSwitchBody": { "enabled": boolean; "reason"?: string | null }
   "KillSwitchState": { "active": boolean; "db": boolean; "enabled": boolean; "env": boolean; "updated_at": string | null; "updated_by": string | null }
-  "Me": { "auth_method": "session" | "api_key"; "csrf_token"?: string | null; "display_name": string; "email": string | null; "org_id": string; "permissions": Array<string>; "role": "viewer" | "operator" | "admin"; "user_id": string }
+  "Me": { "auth_method": "session" | "api_key"; "csrf_token"?: string | null; "display_name": string; "email": string | null; "is_platform_admin"?: boolean; "org_id": string; "permissions": Array<string>; "role": "viewer" | "operator" | "admin"; "user_id": string }
   "NoAuth": { "type"?: "none" }
   "OAuthClientCredentialsAuth": { "audience"?: string | null; "client_id": string; "client_secret": string; "scope"?: string | null; "token_url": string; "type"?: "oauth_client_credentials" }
   "ProvidersView": { "providers": Array<string> }
@@ -38,7 +40,10 @@ export interface Schemas {
   "TargetUpdate": { "allowed_auth_hosts"?: Array<string> | null; "auth"?: Record<string, unknown> | null; "endpoint"?: string | null; "environment"?: "staging" | "production" | null; "name"?: string | null; "oncall_webhook_url"?: string | null; "request_template"?: string | null; "response_path"?: string | null; "session_id_path"?: string | null; "session_mode"?: "stateless_history" | "server_session" | "cookie" | null; "streaming"?: "none" | "sse" | "ndjson" | null; "timeout_s"?: number | null; "tool_trace_path"?: string | null }
   "TargetUpdated": { "target": Schemas["TargetView"]; "verification_reset": boolean }
   "TargetView": { "allowed_auth_hosts": Array<string>; "auth": Record<string, unknown>; "created_at": string | null; "endpoint": string; "environment": "staging" | "production"; "method": string; "name": string; "oncall_webhook_configured": boolean; "request_template": string | null; "response_path": string | null; "session_id_path": string | null; "session_mode": string; "streaming": string; "target_id": string; "timeout_s": number; "tool_trace_path": string | null; "verified": boolean; "verified_at": string | null; "verified_method": string | null }
+  "TechniqueDiff": { "baseline"?: Schemas["TechniqueResult"] | null; "candidate"?: Schemas["TechniqueResult"] | null; "detail"?: string; "status": Schemas["TechniqueStatus"]; "technique": string }
   "TechniqueResult": { "ci95_high": number; "ci95_low": number; "confirmed": number; "success_rate": number; "technique": string; "trials": number }
+  "TechniqueStatus": "regression" | "improved" | "unchanged" | "inconclusive" | "new" | "missing" | "skipped"
+  "TestConnectionResult": { "error"?: string | null; "http_status"?: number | null; "latency_ms": number; "parse_ok": boolean; "reply"?: string }
   "ToolCallObservation": { "arguments"?: Record<string, unknown>; "call_id"?: string | null; "name": string; "source"?: "structured" | "heuristic" }
   "Turn": { "conversation_id": string; "error"?: string | null; "http_status"?: number | null; "index": number; "latency_ms": number; "message": string; "monitor_hits"?: Array<string>; "response_text": string; "role_sent"?: "user"; "tool_calls"?: Array<Schemas["ToolCallObservation"]> }
   "ValidationError": { "ctx"?: Record<string, unknown>; "input"?: unknown; "loc": Array<string | number>; "msg": string; "type": string }
@@ -58,6 +63,7 @@ export const ROUTES = [
   "GET /api/v2/auth/providers",
   "GET /api/v2/campaigns",
   "GET /api/v2/campaigns/{campaign_id}",
+  "GET /api/v2/campaigns/{campaign_id}/compare",
   "GET /api/v2/campaigns/{campaign_id}/events",
   "GET /api/v2/conversations/{conversation_id}",
   "GET /api/v2/findings",
@@ -73,6 +79,7 @@ export const ROUTES = [
   "POST /api/v2/campaigns",
   "POST /api/v2/campaigns/{campaign_id}/cancel",
   "POST /api/v2/targets",
+  "POST /api/v2/targets/{target_id}/test-connection",
   "POST /api/v2/targets/{target_id}/verify",
   "PUT /api/v2/findings/{finding_id}/status",
 ] as const
