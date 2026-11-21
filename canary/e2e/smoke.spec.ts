@@ -23,9 +23,7 @@ test('login, onboard a target, launch, watch the grid, read a transcript, cancel
   await page.getByLabel('Name').fill('New agent')
   await page.getByLabel('Endpoint URL').fill('https://bot.example.com/chat')
   await expectNoA11yViolations(page, 'add target')
-  await page.getByRole('button', { name: 'Next' }).click()
-  await page.getByRole('button', { name: 'Next' }).click()
-  await page.getByRole('button', { name: 'Next' }).click()
+  for (let i = 0; i < 4; i++) await page.getByRole('button', { name: 'Next' }).click() // auth, session, template, review
   await page.getByTestId('create-target').click()
   await expect(page.getByTestId('verify-http_wellknown')).toContainText('tok-123')
   await page.getByTestId('verify-http_wellknown').getByRole('button', { name: 'Check' }).click()

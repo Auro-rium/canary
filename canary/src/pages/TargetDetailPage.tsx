@@ -1,41 +1,43 @@
-import { useEffect, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { ErrorNotice, PageHeader, primaryButtonClass, StatusBadge } from '../components/Console'
-import { can, PERMISSION, useMe } from '../lib/useMe'
+import { Card, Page, PageHeader } from '../components/Console'
 import { VerificationPanel } from '../components/TargetParts'
+import { ErrorState, SkeletonList, StatusBadge, primaryButtonClass } from '../components/ui'
 import { getTarget } from '../lib/api'
-import { gutter, pageClass } from '../lib/presentation'
-import type { TargetView } from '../lib/v2'
+import { formatDate } from '../lib/presentation'
+import { useLoad } from '../lib/useLoad'
+import { can, PERMISSION, useMe } from '../lib/useMe'
 
 export default function TargetDetailPage() {
   const { targetId = '' } = useParams()
   const { me } = useMe()
-  const [target, setTarget] = useState<TargetView | null>(null)
-  const [error, setError] = useState<string | null>(null)
-  useEffect(() => { getTarget(targetId).then(setTarget).catch(e => setError((e as Error).message)) }, [targetId])
-  const canRun = can(me, PERMISSION.targetsWrite)
+  const { data: target, error, loading, reload, setData } = useLoad(() => getTarget(targetId), targetId)
+  const canWrite = can(me, PERMISSION.targetsWrite)
+  const canRun = can(me, PERMISSION.campaignsLaunch)
 
   return (
-    <main className={pageClass}>
+    <Page>
       <PageHeader eyebrow="Target" title={target?.name ?? 'Target'}>
         {target && <StatusBadge status={target.verified ? 'verified' : 'unverified'} />}
         {target?.environment === 'production' && <StatusBadge status="production" />}
         {target?.verified && canRun && <Link to={`/campaigns/new?target=${target.target_id}`} className={primaryButtonClass}>Run a campaign</Link>}
       </PageHeader>
-      <section className={`${gutter} py-8 max-w-3xl space-y-8`}>
-        {error && <ErrorNotice message={error} />}
-        {target && (
-          <>
-            <dl className="grid grid-cols-[10rem_1fr] gap-y-1 text-xs">
-              <dt className="text-white/60">Endpoint</dt><dd className="break-all">{target.endpoint}</dd>
-              <dt className="text-white/60">Auth</dt><dd>{String((target.auth as { type?: unknown }).type ?? 'none')} (secrets are never shown)</dd>
-              <dt className="text-white/60">Session mode</dt><dd>{target.session_mode}</dd>
-              <dt className="text-white/60">Response path</dt><dd>{target.response_path ?? '(whole body)'}</dd>
+      {error && <ErrorState title="Could not load this target" message={error} onRetry={reload} />}
+      {loading && !target && !error && <SkeletonList rows={4} label="Loading target" />}
+      {target && (
+        <div className="max-w-3xl space-y-6">
+          <Card>
+            <dl className="grid grid-cols-1 gap-x-4 gap-y-2 sm:grid-cols-[10rem_1fr]">
+              <dt className="text-muted">Endpoint</dt><dd className="break-all font-mono text-xs">{target.endpoint}</dd>
+              <dt className="text-muted">Environment</dt><dd>{target.environment}</dd>
+              <dt className="text-muted">Auth</dt><dd>{String((target.auth as { type?: unknown }).type ?? 'none')} (secrets are never shown)</dd>
+              <dt className="text-muted">Session mode</dt><dd>{target.session_mode}</dd>
+              <dt className="text-muted">Response path</dt><dd className="font-mono text-xs">{target.response_path ?? '(whole body)'}</dd>
+              <dt className="text-muted">Verified</dt><dd>{target.verified ? `${formatDate(target.verified_at)} via ${target.verified_method ?? 'unknown'}` : 'not yet'}</dd>
             </dl>
-            {canRun && !target.verified && <VerificationPanel targetId={target.target_id} instructions={null} onVerified={setTarget} />}
-          </>
-        )}
-      </section>
-    </main>
+          </Card>
+          {canWrite && !target.verified && <VerificationPanel targetId={target.target_id} instructions={null} onVerified={verified => setData(() => verified)} />}
+        </div>
+      )}
+    </Page>
   )
 }
