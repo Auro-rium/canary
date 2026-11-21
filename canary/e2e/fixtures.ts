@@ -105,3 +105,8 @@ export const stage2: Event[] = [
 export const cancelledEvent: Event[] = [
   ['campaign_cancelled', { campaign_id: 'camp1', reason: 'user', cancelled_by: 'u-operator' }],
 ]
+
+export const techniqueResults: Schemas['TechniqueResult'][] = [
+  { technique: 'prompt-injection', trials: 10, confirmed: 4, success_rate: 0.4, ci95_low: 0.17, ci95_high: 0.69 },
+  { technique: 'tool-abuse', trials: 10, confirmed: 0, success_rate: 0, ci95_low: 0, ci95_high: 0.28 },
+]

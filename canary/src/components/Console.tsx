@@ -1,6 +1,6 @@
 // Page-level layout helpers shared by every page. Colors come from the theme tokens (index.css).
 import type { ReactNode } from 'react'
-import { Badge as UiBadge, ErrorState, cx } from './ui'
+import { ErrorState, cx } from './ui'
 
 export { buttonClass, inputClass, primaryButtonClass } from './ui'
 export { StatusBadge } from './ui'
@@ -50,17 +50,3 @@ export function SectionTitle({ children, id }: { children: ReactNode; id?: strin
   return <h2 id={id} className="mb-3 text-base font-semibold">{children}</h2>
 }
 
-// Compatibility shims for pages not yet moved to the ui kit; removed once the last page is converted.
-export const Badge = UiBadge
-export function EmptyState({ children }: { children: ReactNode }) {
-  return <div className="rounded-lg border border-dashed border-line-strong p-8 text-center text-muted">{children}</div>
-}
-export function Field({ label, hint, children }: { label: string; hint?: string; children: ReactNode }) {
-  return (
-    <label className="block text-xs font-semibold text-muted">
-      {label}
-      <div className="mt-1 font-normal">{children}</div>
-      {hint && <span className="mt-1 block font-normal">{hint}</span>}
-    </label>
-  )
-}

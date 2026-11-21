@@ -147,7 +147,7 @@ export default function CampaignNewPage() {
               {estimate.truncated && <p className="text-xs text-warn"><span aria-hidden="true">! </span>The request budget ({policy.max_total_requests}) ends the campaign before every turn of every trial runs.</p>}
               <p className="text-xs text-muted">Requests assume one per turn. LLM spend is a hard cap, not a prediction: the campaign stops when it is reached.</p>
             </Card>
-            {problems.length > 0 && target && <ul role="alert" className="list-disc space-y-0.5 pl-5 text-warn">{problems.map(problem => <li key={problem}>{problem}</li>)}</ul>}
+            {problems.length > 0 && target && <div role="alert"><ul className="list-disc space-y-0.5 pl-5 text-warn">{problems.map(problem => <li key={problem}>{problem}</li>)}</ul></div>}
             {!target && <p className="text-xs text-muted">Select a target to enable launch.</p>}
             <div className="flex flex-wrap gap-3">
               <button type="button" data-testid="launch" className={primaryButtonClass} disabled={!target || problems.length > 0 || submitting} onClick={launch}>{submitting ? 'Launching…' : 'Launch campaign'}</button>

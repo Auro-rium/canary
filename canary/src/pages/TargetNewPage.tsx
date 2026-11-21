@@ -124,7 +124,7 @@ export default function TargetNewPage() {
                 <dt className="text-muted">Response path</dt><dd className="font-mono text-xs">{form.responsePath || '(whole body)'}</dd>
               </dl>
               <p className="text-xs text-muted">Registering stores the target (secrets encrypted). The next step checks that Canary can reach the endpoint and proves you own it.</p>
-              {problems.length > 0 && <ul role="alert" className="list-disc space-y-0.5 pl-5 text-warn">{problems.map(problem => <li key={problem}>{problem}</li>)}</ul>}
+              {problems.length > 0 && <div role="alert"><ul className="list-disc space-y-0.5 pl-5 text-warn">{problems.map(problem => <li key={problem}>{problem}</li>)}</ul></div>}
             </div>
           )}
 
