@@ -10,7 +10,7 @@ from cyberredteam.llm.schemas import AttackerOutput
 from cyberredteam.logging import setup_logging
 from cyberredteam.schemas import AttackBranch, AttackResult, AttackSeverity, StrategyType
 from cyberredteam.tools.target_adapter import (
-    HttpTargetAdapter,
+    SessionTargetAdapter,
     TargetAdapter,
 )
 
@@ -19,7 +19,7 @@ logger = setup_logging()
 def _extract_tool_calls(response: str) -> list:
     """Heuristically extract tool-call-like patterns from a free-form LLM response.
 
-    HttpTargetAdapter returns plain text, not structured tool call objects.
+    SessionTargetAdapter returns plain text, not structured tool call objects.
     We look for common patterns like "calling lookup_order" or JSON-like
     fragments that suggest the LLM described a tool invocation.
     """
@@ -58,11 +58,13 @@ class AttackerAgent:
             if settings.target_mode != "http" or not settings.target_endpoint:
                 raise RuntimeError(
                     "An HTTP target is required. Set TARGET_MODE=http and "
-                    "TARGET_ENDPOINT to the owned AI agent chat URL."
+                    "TARGET_ENDPOINT to the chat URL (or id) of a registered, "
+                    "ownership-verified target."
                 )
-            self.target_adapter = HttpTargetAdapter(
+            self.target_adapter = SessionTargetAdapter(
                 endpoint=settings.target_endpoint,
                 api_key=settings.target_api_key,
+                share_limiter=True,  # raises V1TargetRefused unless registered and verified
             )
         else:
             self.target_adapter = target_adapter

@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { Metric, Page, PageHeader } from '../components/Console'
+import { Metric, Page, PageHeader } from '../components/layout'
 import { EmptyState, ErrorState, SkeletonList, StatusBadge, Table, primaryButtonClass, type Column, type SortState } from '../components/ui'
 import { listCampaigns } from '../lib/api'
 import { formatDate } from '../lib/presentation'

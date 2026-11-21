@@ -9,11 +9,7 @@ As of 2026-11-19 the full test cannot run on `multiturn`:
   - `PLANNER_FACTORY` fails closed by design, because `prompts/planner.md` belongs to the security owner and is out of scope.
   - The only planner allowed here is WP4's ScriptedPlanner with its benign smoke packs, and WP4 hasn't been built.
 - **Missing work packages.** WP5 (`evaluate_conversation`), WP7 (under review) and WP8 (API v2 + auth) haven't merged.
-- **Lead wiring still to do:**
-  - In the worker: `init_observability`, `register_target_secrets`, and the hook timeout from settings.
-  - The real WP10 `CampaignLauncher`.
-  - `SqlTargetStore` at `api.py:72-73`.
-  - Deleting `HttpTargetAdapter`.
+- **Lead wiring:** done on `multiturn-wiring` (worker observability, `register_target_secrets`, monitors, evaluation, the real WP10 `CampaignLauncher`, `HttpTargetAdapter` deleted). Still open: `SqlTargetStore` at `api.py:72-73` (WP8).
 
 ## Live A: backend (after WP7, WP4, WP5 and the lead wiring)
 

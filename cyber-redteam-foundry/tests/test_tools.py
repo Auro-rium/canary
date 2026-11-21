@@ -1,6 +1,10 @@
+# ruff: noqa: F811  (pytest fixture imported from v1_guard_support)
 """Unit tests for the new cyber-redteam tools."""
 
-from unittest.mock import MagicMock, patch
+import json
+
+import httpx
+from v1_guard_support import LOCAL_OK, register, v1_store  # noqa: F401
 
 from cyberredteam.tools.instruction_hierarchy import InstructionHierarchyTool
 from cyberredteam.tools.jailbreak import JailbreakTool
@@ -8,11 +12,7 @@ from cyberredteam.tools.memory_poisoning import MemoryPoisoningTool
 from cyberredteam.tools.prompt_injection import PromptInjectionTool
 from cyberredteam.tools.rag_probe import RAGProbeTool
 from cyberredteam.tools.sensitive_data import SensitiveDataExtractor
-from cyberredteam.tools.target_adapter import (
-    HttpTargetAdapter,
-    _extract_by_path,
-    _render_request_body,
-)
+from cyberredteam.tools.target_adapter import SessionTargetAdapter
 from cyberredteam.tools.tool_abuse import ToolAbuseTool
 from cyberredteam.tools.workflow_manipulation import WorkflowManipulationTool
 
@@ -168,96 +168,80 @@ def test_workflow_manipulation_tool():
     assert res["dos_score"] == 0.5
 
 
-def test_render_request_body_default_and_custom():
-    # Simple template
-    body = _render_request_body('{"message": "{{PROMPT}}"}', "hello")
-    assert body == {"message": "hello"}
+def _transport(reply: dict, seen: list):
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.append(request)
+        return httpx.Response(200, json=reply)
 
-    # Nested/list template (OpenAI-style), with quotes/newlines in the prompt
-    tricky_prompt = 'say "hi"\nnow'
-    body = _render_request_body(
-        '{"messages": [{"role": "user", "content": "{{PROMPT}}"}]}', tricky_prompt
+    return httpx.MockTransport(handler)
+
+
+def test_session_target_adapter_default_contract(v1_store):
+    """No template/response_path/headers -> the original {"message": ...} contract."""
+    seen: list = []
+    register(v1_store, "http://localhost:9000/chat")
+    adapter = SessionTargetAdapter(
+        endpoint="http://localhost:9000/chat", store=v1_store, ownership_options=LOCAL_OK,
+        transport=_transport({"response": "hello back"}, seen),
     )
-    assert body == {"messages": [{"role": "user", "content": tricky_prompt}]}
-
-
-def test_extract_by_path():
-    data = {"choices": [{"message": {"content": "hi there"}}]}
-    assert _extract_by_path(data, "choices.0.message.content") == "hi there"
-    assert _extract_by_path({"response": "ok"}, "response") == "ok"
-    # Unresolvable paths return None so callers can fall back
-    assert _extract_by_path(data, "choices.5.message.content") is None
-    assert _extract_by_path(data, "nonexistent") is None
-    assert _extract_by_path({"response": {"nested": "obj"}}, "response") is None
-
-
-def test_http_adapter_default_contract_unchanged():
-    """Regression: no template/response_path/headers → original {"message": ...} contract."""
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {"response": "hello back"}
-    mock_resp.raise_for_status.return_value = None
-
-    with patch("cyberredteam.tools.target_adapter.requests.post", return_value=mock_resp) as mock_post:
-        adapter = HttpTargetAdapter(endpoint="http://localhost:9000/chat")
-        text, canary = adapter.execute_attack("hi", label="prompt_injection")
+    text, canary = adapter.execute_attack("hi", label="prompt_injection")
 
     assert text == "hello back"
     assert canary is None
-    _, kwargs = mock_post.call_args
-    assert kwargs["json"] == {"message": "hi"}
-    assert kwargs["headers"]["Content-Type"] == "application/json"
-    assert "Authorization" not in kwargs["headers"]
+    assert json.loads(seen[0].content) == {"message": "hi"}
+    assert seen[0].headers["content-type"] == "application/json"
+    assert "authorization" not in seen[0].headers
+    assert seen[0].headers["x-canary-campaign"]
+    assert adapter.last_observation["status"] == "response"
 
 
-def test_http_adapter_custom_template_and_response_path():
-    """A non-default schema (OpenAI-style) works via request_template + response_path."""
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {"choices": [{"message": {"content": "the answer"}}]}
-    mock_resp.raise_for_status.return_value = None
-
-    with patch("cyberredteam.tools.target_adapter.requests.post", return_value=mock_resp) as mock_post:
-        adapter = HttpTargetAdapter(
-            endpoint="http://example.com/v1/chat/completions",
-            request_template='{"messages": [{"role": "user", "content": "{{PROMPT}}"}]}',
-            response_path="choices.0.message.content",
-        )
-        text, _ = adapter.execute_attack("attack prompt", label="prompt_injection")
+def test_session_target_adapter_custom_template_and_response_path(v1_store):
+    """A non-default schema (OpenAI-style) works; legacy {{PROMPT}} maps to {{MESSAGE}}."""
+    seen: list = []
+    register(v1_store, "http://example.com/v1/chat/completions")
+    adapter = SessionTargetAdapter(
+        endpoint="http://example.com/v1/chat/completions", store=v1_store, ownership_options=LOCAL_OK,
+        request_template='{"messages": [{"role": "user", "content": "{{PROMPT}}"}]}',
+        response_path="choices.0.message.content",
+        transport=_transport({"choices": [{"message": {"content": "the answer"}}]}, seen),
+    )
+    text, _ = adapter.execute_attack("attack prompt", label="prompt_injection")
 
     assert text == "the answer"
-    _, kwargs = mock_post.call_args
-    assert kwargs["json"] == {"messages": [{"role": "user", "content": "attack prompt"}]}
+    assert json.loads(seen[0].content) == {"messages": [{"role": "user", "content": "attack prompt"}]}
 
 
-def test_http_adapter_response_path_fallback_to_heuristic():
+def test_session_target_adapter_response_path_fallback_to_heuristic(v1_store):
     """An unresolvable response_path falls back to the default key-guessing."""
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {"output": "fallback text"}
-    mock_resp.raise_for_status.return_value = None
-
-    with patch("cyberredteam.tools.target_adapter.requests.post", return_value=mock_resp):
-        adapter = HttpTargetAdapter(
-            endpoint="http://localhost:9000/chat",
-            response_path="does.not.exist",
-        )
-        text, _ = adapter.execute_attack("hi", label="prompt_injection")
+    register(v1_store, "http://localhost:9000/chat")
+    adapter = SessionTargetAdapter(
+        endpoint="http://localhost:9000/chat", store=v1_store, ownership_options=LOCAL_OK,
+        response_path="does.not.exist",
+        transport=_transport({"output": "fallback text"}, []),
+    )
+    text, _ = adapter.execute_attack("hi", label="prompt_injection")
 
     assert text == "fallback text"
 
 
-def test_http_adapter_custom_headers_merged_with_defaults():
-    mock_resp = MagicMock()
-    mock_resp.json.return_value = {"response": "ok"}
-    mock_resp.raise_for_status.return_value = None
+def test_session_target_adapter_headers_and_api_key(v1_store):
+    seen: list = []
+    register(v1_store, "http://localhost:9000/chat")
+    adapter = SessionTargetAdapter(
+        endpoint="http://localhost:9000/chat", store=v1_store, ownership_options=LOCAL_OK,
+        api_key="sk-test-key-1234",
+        headers={"X-API-Key": "custom-key"},
+        transport=_transport({"response": "ok"}, seen),
+    )
+    adapter.execute_attack("hi", label="prompt_injection")
+    assert seen[0].headers["authorization"] == "Bearer sk-test-key-1234"
+    assert seen[0].headers["x-api-key"] == "custom-key"
 
-    with patch("cyberredteam.tools.target_adapter.requests.post", return_value=mock_resp) as mock_post:
-        adapter = HttpTargetAdapter(
-            endpoint="http://localhost:9000/chat",
-            api_key="sk-test",
-            headers={"X-API-Key": "custom-key", "Authorization": "Bearer override"},
-        )
-        adapter.execute_attack("hi", label="prompt_injection")
-
-    _, kwargs = mock_post.call_args
-    # Explicit headers win over the default Bearer built from api_key
-    assert kwargs["headers"]["Authorization"] == "Bearer override"
-    assert kwargs["headers"]["X-API-Key"] == "custom-key"
+    seen.clear()
+    adapter = SessionTargetAdapter(
+        endpoint="http://localhost:9000/chat", store=v1_store, ownership_options=LOCAL_OK,
+        headers={"Authorization": "Bearer override-token-1"},
+        transport=_transport({"response": "ok"}, seen),
+    )
+    adapter.execute_attack("hi", label="prompt_injection")
+    assert seen[0].headers["authorization"] == "Bearer override-token-1"

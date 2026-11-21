@@ -62,7 +62,7 @@ Explicit selections are preserved. LangGraph supports up to 12 parallel attacker
 
 ## Target contract
 
-The generic `HttpTargetAdapter` sends a POST request to an authorized target. By default:
+The v2 `SessionAdapter` (v1 flow: `SessionTargetAdapter`) sends a POST request to an authorized target. By default:
 
 ```json
 {"message": "<adversarial prompt>"}

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Card } from '../components/Console'
+import { Card } from '../components/layout'
 import { ErrorState, SkeletonList, primaryButtonClass } from '../components/ui'
 import { listProviders, loginUrl } from '../lib/api'
 

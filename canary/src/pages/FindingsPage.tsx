@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { Metric, Page, PageHeader } from '../components/Console'
+import { Metric, Page, PageHeader } from '../components/layout'
 import { AsiBadge, EmptyState, ErrorState, Field, SeverityBadge, SkeletonList, StatusBadge, buttonClass, cx, inputClass, useToast } from '../components/ui'
 import { PageControls } from '../components/ui/Table'
 import { listFindings, updateFindingStatus } from '../lib/api'

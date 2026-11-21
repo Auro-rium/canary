@@ -164,14 +164,15 @@ def node_attacker_branch(payload: dict) -> dict:
 
     target_adapter = None
     if target_id.startswith("http://") or target_id.startswith("https://"):
-        from cyberredteam.tools.target_adapter import HttpTargetAdapter
         from cyberredteam.settings import get_settings
-        target_adapter = HttpTargetAdapter(
+        from cyberredteam.tools.target_adapter import SessionTargetAdapter
+        target_adapter = SessionTargetAdapter(
             endpoint=target_id,
             api_key=get_settings().target_api_key,
             headers=payload.get("target_headers"),
             request_template=payload.get("target_request_template"),
             response_path=payload.get("target_response_path"),
+            share_limiter=True,  # registered + verified targets only; raises V1TargetRefused otherwise
         )
 
     attacker = _attacker_factory(

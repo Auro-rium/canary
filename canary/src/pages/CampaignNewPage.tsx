@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Link, useNavigate, useSearchParams } from 'react-router-dom'
-import { Card, Notice, Page, PageHeader } from '../components/Console'
+import { Card, Notice, Page, PageHeader } from '../components/layout'
 import { AsiBadge, EmptyState, ErrorState, Field, SkeletonList, buttonClass, cx, inputClass, primaryButtonClass } from '../components/ui'
 import { createCampaign, listTargets } from '../lib/api'
 import type { CampaignPolicy } from '../lib/contracts'

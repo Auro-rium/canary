@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Link } from 'react-router-dom'
-import { Card, Notice, Page, PageHeader } from '../components/Console'
+import { Card, Notice, Page, PageHeader } from '../components/layout'
 import { Stepper } from '../components/Stepper'
 import { VerificationPanel } from '../components/TargetParts'
 import { ErrorState, Field, StatusBadge, buttonClass, inputClass, primaryButtonClass, useToast } from '../components/ui'

@@ -1,11 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams, useSearchParams } from 'react-router-dom'
-import { Metric, Notice, Page, PageHeader } from '../components/Console'
+import { Metric, Notice, Page, PageHeader } from '../components/layout'
 import { KillSwitchControl } from '../components/KillSwitch'
 import { BudgetMeter, ConnectionIndicator, ConversationGrid, type Connection } from '../components/LiveParts'
 import { ResultsTable } from '../components/ResultsTable'
 import { Transcript } from '../components/Transcript'
-import { Drawer, ErrorState, SkeletonList, StatusBadge, buttonClass, cx, useToast } from '../components/ui'
+import { Dialog, Drawer, ErrorState, SkeletonList, StatusBadge, buttonClass, cx, dangerButtonClass, useToast } from '../components/ui'
 import { cancelCampaign, getCampaign, reportUrl, streamCampaignEvents } from '../lib/api'
 import { emptyCampaign, fromDetail, isCampaignTerminal, reduceEvent, type LiveCampaign } from '../lib/liveState'
 import { statusStyle, strategyLabel } from '../lib/presentation'
@@ -24,6 +24,7 @@ export default function CampaignDetailPage() {
   const [attempt, setAttempt] = useState(0)
   const [connection, setConnection] = useState<Connection>('idle')
   const [cancelling, setCancelling] = useState(false)
+  const [confirmCancel, setConfirmCancel] = useState(false)
 
   // Selection lives in the URL (?conversation=&turn=) so a failing turn is a shareable deep link.
   const selected = search.get('conversation')
@@ -60,6 +61,8 @@ export default function CampaignDetailPage() {
     return () => controller.abort()
   }, [campaignId, attempt])
 
+  const closeDrawer = useCallback(() => select(null), [select])
+
   const cells = useMemo(() => Object.values(live.cells), [live.cells])
   const techniques = useMemo(
     () => [...new Set([...(detail?.policy.techniques ?? []), ...cells.map(cell => cell.technique)])],
@@ -70,6 +73,7 @@ export default function CampaignDetailPage() {
   const canControl = can(me, PERMISSION.campaignsCancel)
 
   const cancel = useCallback(async () => {
+    setConfirmCancel(false)
     setCancelling(true)
     try { await cancelCampaign(campaignId) } catch (e) { toast({ title: 'Could not cancel the campaign', description: (e as Error).message, tone: 'danger' }) } finally { setCancelling(false) }
   }, [campaignId, toast])
@@ -84,7 +88,7 @@ export default function CampaignDetailPage() {
           {detail?.environment === 'production' && <StatusBadge status="production" />}
           <ConnectionIndicator connection={connection} finished={terminal} />
           {canControl && !terminal && (
-            <button type="button" data-testid="cancel-campaign" disabled={cancelling} onClick={cancel} className={buttonClass}>Cancel campaign</button>
+            <button type="button" data-testid="cancel-campaign" disabled={cancelling} onClick={() => setConfirmCancel(true)} className={buttonClass}>Cancel campaign</button>
           )}
           {can(me, PERMISSION.killSwitchWrite) && <KillSwitchControl />}
         </PageHeader>
@@ -132,7 +136,15 @@ export default function CampaignDetailPage() {
         )}
       </Page>
 
-      <Drawer open={!!selected} onClose={() => select(null)} testId="transcript-drawer"
+      <Dialog open={confirmCancel} onClose={() => setConfirmCancel(false)} tone="danger" title="Cancel this campaign?" testId="cancel-dialog"
+        footer={<>
+          <button type="button" onClick={() => setConfirmCancel(false)} className={buttonClass}>Keep running</button>
+          <button type="button" data-testid="cancel-confirm" onClick={cancel} className={dangerButtonClass}>Cancel campaign</button>
+        </>}>
+        <p>Running conversations stop and the campaign cannot be resumed. Findings already recorded are kept.</p>
+      </Dialog>
+
+      <Drawer open={!!selected} onClose={closeDrawer} testId="transcript-drawer"
         title={selectedCell ? `${strategyLabel(selectedCell.technique)} · trial ${selectedCell.trial_index + 1}` : 'Transcript'}>
         {selectedCell
           ? <Transcript cell={selectedCell} highlightTurn={highlightTurn} />

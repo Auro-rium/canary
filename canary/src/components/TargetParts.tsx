@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { verifyTarget } from '../lib/api'
 import type { TargetView, VerificationInstructions, VerifyMethod } from '../lib/v2'
-import { Notice } from './Console'
+import { Notice } from './layout'
 import { buttonClass, CodeBlock, ErrorState, useToast } from './ui'
 
 const METHODS: { id: VerifyMethod; title: string; blurb: string }[] = [

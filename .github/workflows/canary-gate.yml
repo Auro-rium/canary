@@ -22,21 +22,13 @@ jobs:
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
       - run: uv sync --all-extras
       - run: uv run ruff check .
-      # These 6 failures predate the multi-turn rebuild and are tracked for the
-      # purge pass. Deselect exactly these node ids and nothing else.
-      - run: |
-          uv run pytest -q \
-            --deselect tests/test_tools.py::test_http_adapter_default_contract_unchanged \
-            --deselect tests/test_tools.py::test_http_adapter_custom_template_and_response_path \
-            --deselect tests/test_tools.py::test_http_adapter_response_path_fallback_to_heuristic \
-            --deselect tests/test_tools.py::test_http_adapter_custom_headers_merged_with_defaults \
-            --deselect tests/test_evaluator_phase3.py::test_canary_in_evaluator_triggers_success \
-            --deselect tests/test_langgraph.py::TestParallelFanOut::test_three_branches_dispatch_and_tag_correctly
+      - run: uv run pytest -q
 
   gate:
     # Self-contained demo: no secrets, no network. It uses SYNTHETIC campaigns
-    # (the real CampaignLauncher is not wired yet). A healthy candidate must pass
-    # and an injected regression must fail the gate.
+    # (a real run needs `cyber-rt gate --target --baseline` against Postgres and a
+    # worker: the QueueCampaignLauncher). A healthy candidate must pass and an
+    # injected regression must fail the gate.
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -58,7 +50,10 @@ jobs:
           fi
 
   calibration:
-    # WP5 judge calibration regression check; runs only once eval/calibrate.py exists.
+    # WP5 judge calibration regression check. Needs a BACKBOARD_API_KEY secret
+    # (unavailable to fork PRs: the step then fails closed, by design). When an
+    # accepted baseline report is committed it is passed via --compare;
+    # without one the run still checks the valid-vote rate and reports metrics.
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -66,17 +61,19 @@ jobs:
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
       - uses: astral-sh/setup-uv@d4b2f3b6ecc6e67c4457f6d3e41ec42d3d0fcb86 # v5.4.2
+      - run: uv sync --all-extras
       - name: Calibration regression check
+        env:
+          BACKBOARD_API_KEY: ${{ secrets.BACKBOARD_API_KEY }}
         run: |
-          if [ -f eval/calibrate.py ]; then
-            uv sync --all-extras
-            uv run python eval/calibrate.py
-          elif [ -f src/cyberredteam/eval/calibrate.py ]; then
-            uv sync --all-extras
-            uv run python -m cyberredteam.eval.calibrate
+          baseline=eval/baselines/calibration_report.json
+          args="--out-dir runs/calibration"
+          if [ -f "$baseline" ]; then
+            args="$args --compare $baseline"
           else
-            echo "eval/calibrate.py not present yet; skipping"
+            echo "no accepted baseline at $baseline; running without --compare"
           fi
+          uv run python -m cyberredteam.eval.calibrate $args
 
   frontend:
     runs-on: ubuntu-latest

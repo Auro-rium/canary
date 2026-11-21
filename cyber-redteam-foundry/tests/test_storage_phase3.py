@@ -1,13 +1,9 @@
 """Tests for Phase 3 storage: findings lifecycle, upsert, verdicts, traces."""
 
-import tempfile
-from datetime import datetime
-from pathlib import Path
 
 import pytest
 
 from cyberredteam.storage.artifact_store import SQLiteStore
-from cyberredteam.storage.models import init_db
 
 
 @pytest.fixture()

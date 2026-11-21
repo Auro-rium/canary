@@ -12,7 +12,7 @@ from pathlib import Path
 
 from cyberredteam.contracts import CampaignPolicy, TargetConfig, TechniqueResult
 from cyberredteam.gate.differential import GatePolicy, GateResult, TechniqueStatus, compare
-from cyberredteam.gate.launcher import CampaignLauncher
+from cyberredteam.gate.launcher import CampaignLauncher, LaunchError
 from cyberredteam.gate.report import to_json, to_markdown
 from cyberredteam.storage.v2.repositories import CampaignRepo
 
@@ -58,7 +58,10 @@ def run_gate(
     if candidate_id is None:
         if launcher is None or target_id is None:
             raise GateError("no --candidate given and no campaign launcher is configured")
-        candidate_id = launcher.launch(target_id, suite)
+        try:
+            candidate_id = launcher.launch(target_id, suite)
+        except LaunchError as exc:
+            raise GateError(str(exc)) from exc
     base = _results(repo, baseline_id, target_id, "baseline")
     cand = _results(repo, candidate_id, target_id, "candidate")
     result = compare(base, cand, policy)

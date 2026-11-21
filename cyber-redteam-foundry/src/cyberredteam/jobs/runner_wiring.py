@@ -40,6 +40,7 @@ from pydantic import SecretStr
 
 from cyberredteam.contracts import CampaignPolicy, CampaignRequest, TargetConfig
 from cyberredteam.engine import EngineDeps, EngineRepos, PlannerFactory, run_campaign
+from cyberredteam.jobs.evaluation_wiring import wiring_defaults
 from cyberredteam.jobs.events import EventLogSink
 from cyberredteam.jobs.execution import CampaignRunner
 from cyberredteam.storage.v2.repositories import BudgetLedgerRepo, CampaignRepo, ConversationRepo
@@ -229,6 +230,7 @@ def make_runner(
     planner_factory: PlannerFactory | None = None,
     engine_options: dict[str, Any] | None = None,
     limiters: SharedLimiters | None = None,
+    judge_factory: Callable[[int], Any] | None = None,
 ) -> CampaignRunner:
     shared = limiters if limiters is not None else SharedLimiters()
 
@@ -236,7 +238,10 @@ def make_runner(
         if planner_factory is None:
             logger.error("no planner configured: set PLANNER_FACTORY=package.module:callable")
             raise NoPlannerConfigured("no planner configured")
-        options = {"limiter_factory": shared, **(engine_options or {})}
+        # WP5 monitors, safety inputs, evaluation and secret registration (lead wiring);
+        # engine_options still override every default.
+        defaults = wiring_defaults(runtime.factory, request.target, judge_factory)
+        options = {"limiter_factory": shared, **defaults, **(engine_options or {})}
         if "on_call" not in options:
             notifier = _target_webhook_notifier(runtime, request.target.target_id)
             if notifier is not None:

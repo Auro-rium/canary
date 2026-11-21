@@ -21,9 +21,11 @@ import asyncio
 import json
 import logging
 import secrets
+import threading
 from pathlib import Path
 from typing import Any, Literal
 
+from langchain_core.runnables import Runnable, RunnableLambda
 from pydantic import BaseModel, ConfigDict, Field, StrictBool, StrictFloat, StrictInt
 
 from cyberredteam.contracts import AsiCode, Conversation, JudgeVote, Severity, normalize_asi_code
@@ -171,12 +173,52 @@ class Judge:
         self.system_prompt = system_prompt if system_prompt is not None else load_judge_prompt()
         self.model_name = model_name or getattr(llm, "deployment", None)
         self._chain = llm.build_structured_chain(self.system_prompt, JudgeVoteOutput)
+        # Provider-reported token usage of all votes since the last take_usage().
+        self._usage_lock = threading.Lock()
+        self._usage_in = 0
+        self._usage_out = 0
+
+    def take_usage(self) -> tuple[int, int]:
+        """``(input_tokens, output_tokens)`` the provider reported since the last call.
+
+        Votes whose provider reports no usage contribute nothing: only reported
+        usage is ever charged (never estimated)."""
+        with self._usage_lock:
+            used = (self._usage_in, self._usage_out)
+            self._usage_in = self._usage_out = 0
+        return used
+
+    def _record_usage(self, raw: Any) -> None:
+        meta = getattr(raw, "usage_metadata", None)
+        if not isinstance(meta, dict):
+            return
+        try:
+            i = max(0, int(meta.get("input_tokens") or 0))
+            o = max(0, int(meta.get("output_tokens") or 0))
+            t = max(0, int(meta.get("total_tokens") or 0))
+        except (TypeError, ValueError):
+            return
+        o += max(0, t - i - o)  # unexplained remainder is billed at the output rate
+        with self._usage_lock:
+            self._usage_in += i
+            self._usage_out += o
 
     def _vote_sync(self, index: int, user_message: str, n_turns: int, run_id: str) -> tuple[JudgeVote, bool]:
+        chain = self._chain
+        captured: dict[str, Any] = {}
+        if isinstance(chain, Runnable):
+            def capture(result: Any) -> Any:
+                captured["result"] = result
+                return result
+
+            chain = chain | RunnableLambda(capture)
         try:
             out = self.llm.invoke_chain(
-                self._chain, user_message, system_context=self.system_prompt, run_id=run_id
+                chain, user_message, system_context=self.system_prompt, run_id=run_id
             )
+            result = captured.get("result")
+            if isinstance(result, dict):
+                self._record_usage(result.get("raw"))
             if isinstance(out, dict):
                 out = JudgeVoteOutput.model_validate(out)
             if not isinstance(out, JudgeVoteOutput):

@@ -122,6 +122,89 @@ test('keyboard: Escape closes the transcript drawer and returns focus to the cel
   await expect(cell).toBeFocused()
 })
 
+test('375px: the transcript drawer is modal and Tab never leaves it', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 800 })
+  await mockApi(page)
+  await page.goto('/campaigns/camp1')
+  const cell = page.getByTestId('cell-prompt-injection-0')
+  await expect(cell).toHaveAttribute('data-status', 'stopped_monitor')
+  await cell.focus()
+  await page.keyboard.press('Enter')
+  const drawer = page.getByTestId('transcript-drawer')
+  await expect(drawer).toBeVisible()
+  await expect(drawer).toHaveAttribute('aria-modal', 'true')
+  const inside = () => page.evaluate(() => !!document.activeElement?.closest('[data-testid="transcript-drawer"]'))
+  for (let i = 0; i < 25; i++) { await page.keyboard.press('Tab'); expect(await inside()).toBe(true) }
+  for (let i = 0; i < 25; i++) { await page.keyboard.press('Shift+Tab'); expect(await inside()).toBe(true) }
+  await page.keyboard.press('Escape')
+  await expect(drawer).toHaveCount(0)
+  await expect(cell).toBeFocused()
+})
+
+test('drawer: #root is inert below xl only, also after resizing across xl while open', async ({ page }) => {
+  await mockApi(page)
+  await page.setViewportSize({ width: 375, height: 800 })
+  await page.goto('/campaigns/camp1')
+  const cell = page.getByTestId('cell-prompt-injection-0')
+  await expect(cell).toHaveAttribute('data-status', 'stopped_monitor')
+  const rootInert = () => page.evaluate(() => (document.getElementById('root') as HTMLElement).inert)
+  await cell.focus()
+  await page.keyboard.press('Enter')
+  const drawer = page.getByTestId('transcript-drawer')
+  await expect(drawer).toBeVisible()
+  expect(await rootInert()).toBe(true)
+  await page.setViewportSize({ width: 1400, height: 800 })
+  await expect(drawer).toHaveAttribute('aria-modal', 'false')
+  expect(await rootInert()).toBe(false)
+  await page.setViewportSize({ width: 375, height: 800 })
+  await expect(drawer).toHaveAttribute('aria-modal', 'true')
+  expect(await rootInert()).toBe(true)
+  await page.keyboard.press('Escape')
+  await expect(drawer).toHaveCount(0)
+  expect(await rootInert()).toBe(false)
+  await page.setViewportSize({ width: 1400, height: 800 })
+  await cell.focus()
+  await page.keyboard.press('Enter')
+  await expect(drawer).toBeVisible()
+  expect(await rootInert()).toBe(false)
+})
+
+test('drawer: live re-renders do not move focus or re-focus the panel', async ({ page }) => {
+  await page.addInitScript(() => {
+    const w = window as unknown as { __panelFocus: number }
+    w.__panelFocus = 0
+    const original = HTMLElement.prototype.focus
+    HTMLElement.prototype.focus = function (...args) {
+      if (this.getAttribute('role') === 'dialog') w.__panelFocus += 1
+      return original.apply(this, args)
+    }
+  })
+  const mock = await mockApi(page)
+  await page.setViewportSize({ width: 375, height: 800 })
+  await page.goto('/campaigns/camp1')
+  const cell = page.getByTestId('cell-prompt-injection-0')
+  await expect(cell).toHaveAttribute('data-status', 'stopped_monitor')
+  await cell.focus()
+  await page.keyboard.press('Enter')
+  const drawer = page.getByTestId('transcript-drawer')
+  await expect(drawer).toBeVisible()
+  await page.keyboard.press('Tab')
+  const focusedId = () => page.evaluate(() => {
+    const el = document.activeElement as HTMLElement | null
+    return { inDrawer: !!el?.closest('[data-testid="transcript-drawer"]'), isPanel: el?.getAttribute('role') === 'dialog', label: el?.getAttribute('aria-label') ?? el?.textContent?.slice(0, 20) ?? '' }
+  })
+  const before = await focusedId()
+  expect(before.inDrawer).toBe(true)
+  expect(before.isPanel).toBe(false)
+  for (const id of ['c3', 'c4', 'c5']) {
+    mock.pushConversation(id)
+    await expect(page.getByTestId(`cell-prompt-injection-${id.slice(1)}`)).toBeAttached()
+    await page.waitForTimeout(150)
+  }
+  expect(await focusedId()).toEqual(before)
+  expect(await page.evaluate(() => (window as unknown as { __panelFocus: number }).__panelFocus)).toBe(1)
+})
+
 test('deep link from a finding opens the failing turn', async ({ page }) => {
   await mockApi(page)
   await page.goto('/findings')
