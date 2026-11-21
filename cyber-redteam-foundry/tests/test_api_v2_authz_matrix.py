@@ -93,11 +93,17 @@ ROUTES = [
     Route("POST", "/api/v2/targets/{target_id}/verify", "operator", "object",
           lambda e, a, m: _url(f"/api/v2/targets/{e.target(a.org, verified=False)}/verify",
                                json={"method": "response_header"})),
+    Route("POST", "/api/v2/targets/{target_id}/test-connection", "operator", "object",
+          lambda e, a, m: _url(f"/api/v2/targets/{e.target(a.org, verified=False)}/test-connection")),
     Route("GET", "/api/v2/campaigns", "viewer", "list",
           lambda e, a, m: (lambda c: _url("/api/v2/campaigns", c))(e.campaign(e.target(a.org)))),
     Route("POST", "/api/v2/campaigns", "operator", "object", _new_campaign, ok=201),
     Route("GET", "/api/v2/campaigns/{campaign_id}", "viewer", "object",
           lambda e, a, m: _url(f"/api/v2/campaigns/{e.campaign(e.target(a.org))}")),
+    Route("GET", "/api/v2/campaigns/{campaign_id}/compare", "viewer", "object",
+          lambda e, a, m: (lambda t: _url(
+              f"/api/v2/campaigns/{e.campaign(t, status='completed')}/compare"
+              f"?baseline={e.campaign(t, status='completed')}"))(e.target(a.org))),
     Route("POST", "/api/v2/campaigns/{campaign_id}/cancel", "operator", "object",
           lambda e, a, m: _url(f"/api/v2/campaigns/{e.campaign(e.target(a.org), status='running')}/cancel")),
     Route("GET", "/api/v2/campaigns/{campaign_id}/events", "viewer", "object",

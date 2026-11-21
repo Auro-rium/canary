@@ -8,11 +8,18 @@
 * Changing the endpoint, the auth type or any non-secret auth field (URLs,
   client id, header name, ...), or ``allowed_auth_hosts`` clears verification.
   Rotating only a secret keeps it.
+* ``POST /{id}/test-connection`` sends ONE fixed benign message ("Hello") through
+  the real SessionAdapter so an operator can check endpoint, auth, template and
+  response path. It may run before the target is verified (that is its purpose);
+  it is operator-only, SSRF-guarded, rate limited per target and audited.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
+import threading
+import time
 import uuid
 from typing import Any
 
@@ -28,12 +35,15 @@ from cyberredteam.api_v2.schemas import (
     TargetUpdate,
     TargetUpdated,
     TargetView,
+    TestConnectionResult,
     VerifyRequest,
     VerifyResult,
 )
 from cyberredteam.auth.deps import require
 from cyberredteam.auth.principal import TARGETS_READ, TARGETS_WRITE, Principal
 from cyberredteam.contracts import TargetAuth, TargetConfig
+from cyberredteam.jobs.events import scrub_secrets
+from cyberredteam.jobs.runner_wiring import auth_secret_values
 from cyberredteam.security.ownership import (
     DNS_TXT_PREFIX,
     VERIFY_HEADER,
@@ -44,7 +54,10 @@ from cyberredteam.security.ownership import (
     verify_ownership,
 )
 from cyberredteam.security.tokens import hash_verification_token, issue_verification_token
+from cyberredteam.storage.v2.redaction import redact
 from cyberredteam.storage.v2.repositories import AuditRepo, SqlTargetStore
+from cyberredteam.transport.rate_limit import InProcessTokenBucket
+from cyberredteam.transport.session_adapter import SessionAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -314,3 +327,95 @@ def verify_target(
     logger.info("[API] ownership check target=%s method=%s verified=%s", target_id, body.method, verified)
     return VerifyResult(target=target_view(target, store), verified=verified, method=body.method,
                         reason=reason)
+
+
+# ── test connection ──────────────────────────────────────────────────────────
+
+# Constant on purpose: nothing about the probe message is user-controlled.
+TEST_CONNECTION_MESSAGE = "Hello"
+TEST_CONNECTION_MIN_INTERVAL_S = 10.0
+TEST_CONNECTION_TIMEOUT_S = 15
+TEST_CONNECTION_MAX_REPLY_CHARS = 1000
+_probe_lock = threading.Lock()
+_last_probe: dict[str, float] = {}  # target_id -> monotonic time of the last accepted probe
+
+
+def _reserve_probe_slot(target_id: str) -> None:
+    """At most one probe per target per 10 s (per API process). 429 otherwise."""
+    with _probe_lock:
+        now = time.monotonic()
+        last = _last_probe.get(target_id)
+        if last is not None and now - last < TEST_CONNECTION_MIN_INTERVAL_S:
+            wait = max(1, int(TEST_CONNECTION_MIN_INTERVAL_S - (now - last) + 0.999))
+            raise HTTPException(
+                status_code=429,
+                detail="Test connection is limited to one request per 10 seconds per target.",
+                headers={"Retry-After": str(wait)},
+            )
+        _last_probe[target_id] = now
+        for tid in [t for t, ts in _last_probe.items() if now - ts > 3600]:
+            del _last_probe[tid]
+
+
+@router.post("/{target_id}/test-connection", response_model=TestConnectionResult)
+async def test_connection(
+    target_id: str,
+    principal: Principal = Depends(require(TARGETS_WRITE)),
+    store: SqlTargetStore = Depends(get_target_store),
+    ownership_options: dict[str, Any] = Depends(get_ownership_options),
+):
+    """Send one fixed benign message ("Hello") to the target and report what came back.
+
+    Allowed before verification (it is how an operator checks the wizard settings),
+    so it sends exactly one constant, harmless request and nothing user-supplied.
+    The endpoint and auth URLs pass the SSRF guard first. The reply is redacted and
+    the target's own credentials are masked. Credentials are never returned.
+    """
+    target = _get_in_org(store, target_id, principal)
+    opts = url_check_options(ownership_options)
+    try:
+        await run_in_threadpool(
+            check_target_urls, str(target.endpoint), target.auth,
+            store.get_allowed_auth_hosts(target_id), **opts,
+        )
+    except TargetRefused as exc:
+        raise HTTPException(status_code=422, detail=f"target refused: {exc}") from None
+    _reserve_probe_slot(target_id)
+
+    secrets = auth_secret_values(target)
+    probe = target.model_copy(
+        update={"timeout_s": min(target.timeout_s, TEST_CONNECTION_TIMEOUT_S)}
+    )
+    reply, status, latency, error = "", None, 0.0, None
+    started = time.perf_counter()
+    try:
+        async with SessionAdapter(
+            probe,
+            campaign_id=f"connection-test:{target_id}",
+            rate_limiter=InProcessTokenBucket(rps=1.0),
+            transport=ownership_options.get("transport"),
+        ) as adapter:
+            result = await asyncio.wait_for(
+                adapter.send(TEST_CONNECTION_MESSAGE), timeout=TEST_CONNECTION_TIMEOUT_S
+            )
+        status, latency = result.http_status, result.latency_ms
+        if result.error is not None:
+            error = result.error.kind.value
+        else:
+            text = scrub_secrets(redact(result.response_text).text, secrets)
+            reply = text[:TEST_CONNECTION_MAX_REPLY_CHARS]
+    except asyncio.TimeoutError:
+        error, latency = "timeout", (time.perf_counter() - started) * 1000.0
+    except Exception as exc:  # noqa: BLE001 - never leak exception text (may hold credentials)
+        error, latency = "error", (time.perf_counter() - started) * 1000.0
+        logger.warning("[API] test-connection target=%s failed (%s)", target_id, type(exc).__name__)
+
+    parse_ok = error is None
+    AuditRepo(store.factory).record(
+        principal.actor, "target.test_connection", f"target:{target_id}",
+        {"parse_ok": parse_ok, "http_status": status, "error": error,
+         "verified": bool(target.verified)},
+    )
+    logger.info("[API] test-connection target=%s parse_ok=%s status=%s", target_id, parse_ok, status)
+    return TestConnectionResult(parse_ok=parse_ok, http_status=status,
+                                latency_ms=round(latency, 1), reply=reply, error=error)

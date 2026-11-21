@@ -40,6 +40,8 @@ class Me(BaseModel):
     role: Literal["viewer", "operator", "admin"]
     permissions: list[str]
     auth_method: Literal["session", "api_key"]
+    # Informational only (CANARY_PLATFORM_ADMINS); the server enforces it on every call.
+    is_platform_admin: bool = False
     # Session logins only: send it back as X-CSRF-Token on POST/PUT/PATCH/DELETE.
     csrf_token: str | None = None
 
@@ -172,6 +174,21 @@ class VerifyResult(BaseModel):
     verified: bool
     method: VerifyMethod
     reason: str
+
+
+class TestConnectionResult(BaseModel):
+    """Outcome of the one fixed benign probe. Never carries credentials."""
+
+    __test__ = False  # not a pytest class
+
+    # True when the target answered 2xx and the reply was parsed to text.
+    parse_ok: bool
+    http_status: int | None = None
+    latency_ms: float
+    # The parsed reply, redacted and truncated. Empty when parsing failed.
+    reply: str = ""
+    # Failure kind only (e.g. "timeout", "http_4xx", "extract_failed"); no detail text.
+    error: str | None = None
 
 
 class TargetUpdated(BaseModel):

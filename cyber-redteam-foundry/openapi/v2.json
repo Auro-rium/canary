@@ -1209,6 +1209,43 @@
         "title": "FindingView",
         "type": "object"
       },
+      "GateResult": {
+        "additionalProperties": false,
+        "properties": {
+          "diffs": {
+            "items": {
+              "$ref": "#/components/schemas/TechniqueDiff"
+            },
+            "title": "Diffs",
+            "type": "array"
+          },
+          "status": {
+            "$ref": "#/components/schemas/GateStatus"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "status",
+          "diffs"
+        ],
+        "title": "GateResult",
+        "type": "object"
+      },
+      "GateStatus": {
+        "enum": [
+          "pass",
+          "regression",
+          "inconclusive"
+        ],
+        "title": "GateStatus",
+        "type": "string"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1454,6 +1491,11 @@
               }
             ],
             "title": "Email"
+          },
+          "is_platform_admin": {
+            "default": false,
+            "title": "Is Platform Admin",
+            "type": "boolean"
           },
           "org_id": {
             "title": "Org Id",
@@ -2154,6 +2196,49 @@
         "title": "TargetView",
         "type": "object"
       },
+      "TechniqueDiff": {
+        "additionalProperties": false,
+        "properties": {
+          "baseline": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TechniqueResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "candidate": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/TechniqueResult"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "detail": {
+            "default": "",
+            "title": "Detail",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/TechniqueStatus"
+          },
+          "technique": {
+            "title": "Technique",
+            "type": "string"
+          }
+        },
+        "required": [
+          "technique",
+          "status"
+        ],
+        "title": "TechniqueDiff",
+        "type": "object"
+      },
       "TechniqueResult": {
         "additionalProperties": false,
         "description": "Aggregate over the independent trials of one technique.",
@@ -2200,6 +2285,65 @@
           "ci95_high"
         ],
         "title": "TechniqueResult",
+        "type": "object"
+      },
+      "TechniqueStatus": {
+        "enum": [
+          "regression",
+          "improved",
+          "unchanged",
+          "inconclusive",
+          "new",
+          "missing",
+          "skipped"
+        ],
+        "title": "TechniqueStatus",
+        "type": "string"
+      },
+      "TestConnectionResult": {
+        "description": "Outcome of the one fixed benign probe. Never carries credentials.",
+        "properties": {
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "http_status": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Http Status"
+          },
+          "latency_ms": {
+            "title": "Latency Ms",
+            "type": "number"
+          },
+          "parse_ok": {
+            "title": "Parse Ok",
+            "type": "boolean"
+          },
+          "reply": {
+            "default": "",
+            "title": "Reply",
+            "type": "string"
+          }
+        },
+        "required": [
+          "parse_ok",
+          "latency_ms"
+        ],
+        "title": "TestConnectionResult",
         "type": "object"
       },
       "ToolCallObservation": {
@@ -3019,6 +3163,61 @@
         ]
       }
     },
+    "/api/v2/campaigns/{campaign_id}/compare": {
+      "get": {
+        "description": "WP10 differential gate of this (candidate) campaign against ``baseline``.\n\nPure read: nothing is launched or stored. Both campaigns must be in the\ncaller's org (404 otherwise). Default gate policy.",
+        "operationId": "compare_campaigns_api_v2_campaigns__campaign_id__compare_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Baseline campaign id",
+            "in": "query",
+            "name": "baseline",
+            "required": true,
+            "schema": {
+              "description": "Baseline campaign id",
+              "minLength": 1,
+              "title": "Baseline",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/GateResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Compare Campaigns",
+        "tags": [
+          "campaigns"
+        ]
+      }
+    },
     "/api/v2/campaigns/{campaign_id}/events": {
       "get": {
         "description": "SSE stream of campaign events. ``Last-Event-ID`` replays events with a larger ``seq``.\n\nEvents come from the persisted log, so a disconnect only ends this\ngenerator; the run (in a worker process) is unaffected.",
@@ -3646,6 +3845,49 @@
           }
         },
         "summary": "Update Target",
+        "tags": [
+          "targets"
+        ]
+      }
+    },
+    "/api/v2/targets/{target_id}/test-connection": {
+      "post": {
+        "description": "Send one fixed benign message (\"Hello\") to the target and report what came back.\n\nAllowed before verification (it is how an operator checks the wizard settings),\nso it sends exactly one constant, harmless request and nothing user-supplied.\nThe endpoint and auth URLs pass the SSRF guard first. The reply is redacted and\nthe target's own credentials are masked. Credentials are never returned.",
+        "operationId": "test_connection_api_v2_targets__target_id__test_connection_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "target_id",
+            "required": true,
+            "schema": {
+              "title": "Target Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TestConnectionResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Test Connection",
         "tags": [
           "targets"
         ]
