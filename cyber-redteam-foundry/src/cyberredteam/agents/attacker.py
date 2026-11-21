@@ -58,11 +58,13 @@ class AttackerAgent:
             if settings.target_mode != "http" or not settings.target_endpoint:
                 raise RuntimeError(
                     "An HTTP target is required. Set TARGET_MODE=http and "
-                    "TARGET_ENDPOINT to the owned AI agent chat URL."
+                    "TARGET_ENDPOINT to the chat URL (or id) of a registered, "
+                    "ownership-verified target."
                 )
             self.target_adapter = SessionTargetAdapter(
                 endpoint=settings.target_endpoint,
                 api_key=settings.target_api_key,
+                share_limiter=True,  # raises V1TargetRefused unless registered and verified
             )
         else:
             self.target_adapter = target_adapter

@@ -5,9 +5,12 @@ no Azure credentials or network calls are required.
 """
 
 import tempfile
+
+import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+from v1_guard_support import register, v1_store  # noqa: F401
 from cyberredteam.langgraph.graph import build_redteam_graph, compile_graph
 from cyberredteam.langgraph.state import RedTeamState
 from cyberredteam.schemas import (
@@ -68,6 +71,14 @@ class TestGraphStructure:
 # Full graph invocation (mocked agents)
 # -------------------------------------------------------------------
 
+@pytest.fixture
+def _registered_v1_target(v1_store, monkeypatch):
+    """The v1 graph only contacts a registered, verified target."""
+    register(v1_store, "https://target.example/chat")
+    monkeypatch.setattr("cyberredteam.tools.target_adapter.default_target_store", lambda: v1_store)
+
+
+@pytest.mark.usefixtures("_registered_v1_target")
 class TestGraphInvocation:
     """Run the full graph with mocked agent calls."""
 
@@ -184,6 +195,7 @@ class TestMaxIterations:
 # Parallel fan-out (real attacker/evaluator, fake LLM fixture)
 # -------------------------------------------------------------------
 
+@pytest.mark.usefixtures("_registered_v1_target")
 class TestParallelFanOut:
     """Exercise the real strategist->attacker_branch fan-out end-to-end."""
 
@@ -239,3 +251,13 @@ class TestParallelFanOut:
         assert len(branch_ids) == 4, "each branch must have a distinct branch_id"
         assert all(r.iteration == 0 for r in results), "results must be tagged with the dispatching iteration"
         assert all(r.technique_id for r in results), "results must carry a resolved ASI technique_id"
+
+
+def test_attacker_branch_refuses_unregistered_http_target(v1_store, monkeypatch):
+    from cyberredteam.langgraph.nodes import node_attacker_branch
+    from cyberredteam.tools.target_adapter import V1TargetRefused
+
+    monkeypatch.setattr("cyberredteam.tools.target_adapter.default_target_store", lambda: v1_store)
+    with pytest.raises(V1TargetRefused, match="not a registered target"):
+        node_attacker_branch({"branch": MagicMock(branch_id="b" * 8, capability_type="x"),
+                              "run_id": "r", "target_id": "http://169.254.169.254/x"})

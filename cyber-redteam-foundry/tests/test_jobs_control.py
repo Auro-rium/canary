@@ -105,11 +105,20 @@ def test_cache_is_short_lived(db_factory):
     asyncio.run(go())
 
 
+async def _wait_until_sent(runner, timeout=10.0):
+    """Event-driven: wait until at least one request has been sent (no fixed sleep)."""
+    async def poll():
+        while not runner.sent:
+            await asyncio.sleep(0.005)
+
+    await asyncio.wait_for(poll(), timeout)
+
+
 async def _run_ten(db_factory, control, trigger):
     cid = seed_campaign(db_factory)
     runner = FakeRunner(db_factory, control, conversations=10, turns=50, delay=0.02)
     task = asyncio.create_task(runner(None, cid))  # request unused by the fake
-    await asyncio.sleep(0.15)
+    await _wait_until_sent(runner)
     before = len(runner.sent)
     per_conv_before = {}
     for conv, _ in runner.sent:
@@ -149,7 +158,7 @@ def test_cancel_stops_ten_conversations_with_production_settings(db_factory):
         cid = seed_campaign(db_factory)
         runner = FakeRunner(db_factory, c, conversations=10, turns=60, delay=0.005)
         task = asyncio.create_task(runner(None, cid))
-        await asyncio.sleep(0.1)
+        await _wait_until_sent(runner)
         before = len(runner.sent)
         c.store.request_cancel(cid, "t")
         await asyncio.wait_for(task, 5)

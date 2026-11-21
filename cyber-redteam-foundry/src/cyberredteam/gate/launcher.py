@@ -4,7 +4,8 @@
 launcher. Without it, :class:`QueueCampaignLauncher` creates a campaign for the
 suite, enqueues it (``JobQueue.enqueue_campaign``), and polls the campaign row
 until a worker has finished it or the timeout expires. A timed-out campaign is
-cancelled (best effort) so it does not run on unattended.
+cancelled so it does not run on unattended; if the cancel fails twice the campaign row is
+marked ``failed`` (reason ``gate timeout``), never left running.
 
 Suites are ScriptedPlanner packs (WP4): suite ``S`` is the set of techniques of
 the packs under ``<packs_dir>/S/``; ``default`` is every pack in the directory.
@@ -116,6 +117,7 @@ class QueueCampaignLauncher:
         self.campaigns = CampaignRepo(factory)
         self.targets = SqlTargetStore(factory)
         self.control = ControlStore(factory)
+        self._factory = factory
 
     def _policy(self, target: Any, suite: str) -> CampaignPolicy:
         fields: dict[str, Any] = {
@@ -140,6 +142,36 @@ class QueueCampaignLauncher:
             close = getattr(self._queue, "close", None)
             if close is not None:
                 await close()
+
+    def _cancel_with_retry(self, campaign_id: str) -> bool:
+        for attempt in (1, 2):  # one retry
+            try:
+                self.control.request_cancel(campaign_id, "gate")
+                return True
+            except Exception as exc:
+                logger.error(
+                    "gate: could not cancel %s (attempt %d, %s)", campaign_id, attempt, type(exc).__name__
+                )
+        return False
+
+    def _mark_timed_out(self, campaign_id: str) -> None:
+        """Cancel failed twice: never leave the campaign running. The row goes to
+        ``failed`` and a ``campaign_failed`` event records the reason ``gate timeout``."""
+        try:
+            self.campaigns.set_status(campaign_id, "failed")
+        except Exception as exc:
+            logger.error("gate: could not mark %s failed (%s)", campaign_id, type(exc).__name__)
+            return
+        try:
+            from cyberredteam.contracts import CampaignFailedPayload
+            from cyberredteam.jobs.events import EventLog
+
+            EventLog(self._factory).append(
+                campaign_id, "campaign_failed",
+                CampaignFailedPayload(campaign_id=campaign_id, message="gate timeout"),
+            )
+        except Exception as exc:
+            logger.error("gate: could not record the gate timeout for %s (%s)", campaign_id, type(exc).__name__)
 
     def launch(self, target_id: str, suite: str) -> str:
         from cyberredteam.storage.v2.repositories import TERMINAL_CAMPAIGN_STATUSES
@@ -167,12 +199,12 @@ class QueueCampaignLauncher:
                     raise LaunchError(f"candidate campaign {campaign_id} ended {rec.status}")
                 return campaign_id
             if self._clock() >= deadline:
-                try:
-                    self.control.request_cancel(campaign_id, "gate")
-                except Exception as exc:
-                    logger.error("gate: could not cancel %s (%s)", campaign_id, type(exc).__name__)
+                cancelled = self._cancel_with_retry(campaign_id)
+                if not cancelled:
+                    self._mark_timed_out(campaign_id)
+                note = "cancel requested" if cancelled else "cancel failed; campaign marked failed"
                 raise LaunchError(
-                    f"candidate campaign {campaign_id} did not finish within {self._timeout_s:.0f}s (cancel requested)"
+                    f"candidate campaign {campaign_id} did not finish within {self._timeout_s:.0f}s ({note})"
                 )
             self._sleep(self._poll_s)
 

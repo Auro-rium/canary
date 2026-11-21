@@ -11,6 +11,7 @@ from cyberredteam.tools.prompt_injection import PromptInjectionTool
 from cyberredteam.tools.rag_probe import RAGProbeTool
 from cyberredteam.tools.sensitive_data import SensitiveDataExtractor
 from cyberredteam.tools.target_adapter import SessionTargetAdapter
+from v1_guard_support import LOCAL_OK, register, v1_store  # noqa: F401
 from cyberredteam.tools.tool_abuse import ToolAbuseTool
 from cyberredteam.tools.workflow_manipulation import WorkflowManipulationTool
 
@@ -174,11 +175,12 @@ def _transport(reply: dict, seen: list):
     return httpx.MockTransport(handler)
 
 
-def test_session_target_adapter_default_contract():
+def test_session_target_adapter_default_contract(v1_store):
     """No template/response_path/headers -> the original {"message": ...} contract."""
     seen: list = []
+    register(v1_store, "http://localhost:9000/chat")
     adapter = SessionTargetAdapter(
-        endpoint="http://localhost:9000/chat",
+        endpoint="http://localhost:9000/chat", store=v1_store, ownership_options=LOCAL_OK,
         transport=_transport({"response": "hello back"}, seen),
     )
     text, canary = adapter.execute_attack("hi", label="prompt_injection")
@@ -192,11 +194,12 @@ def test_session_target_adapter_default_contract():
     assert adapter.last_observation["status"] == "response"
 
 
-def test_session_target_adapter_custom_template_and_response_path():
+def test_session_target_adapter_custom_template_and_response_path(v1_store):
     """A non-default schema (OpenAI-style) works; legacy {{PROMPT}} maps to {{MESSAGE}}."""
     seen: list = []
+    register(v1_store, "http://example.com/v1/chat/completions")
     adapter = SessionTargetAdapter(
-        endpoint="http://example.com/v1/chat/completions",
+        endpoint="http://example.com/v1/chat/completions", store=v1_store, ownership_options=LOCAL_OK,
         request_template='{"messages": [{"role": "user", "content": "{{PROMPT}}"}]}',
         response_path="choices.0.message.content",
         transport=_transport({"choices": [{"message": {"content": "the answer"}}]}, seen),
@@ -207,10 +210,11 @@ def test_session_target_adapter_custom_template_and_response_path():
     assert json.loads(seen[0].content) == {"messages": [{"role": "user", "content": "attack prompt"}]}
 
 
-def test_session_target_adapter_response_path_fallback_to_heuristic():
+def test_session_target_adapter_response_path_fallback_to_heuristic(v1_store):
     """An unresolvable response_path falls back to the default key-guessing."""
+    register(v1_store, "http://localhost:9000/chat")
     adapter = SessionTargetAdapter(
-        endpoint="http://localhost:9000/chat",
+        endpoint="http://localhost:9000/chat", store=v1_store, ownership_options=LOCAL_OK,
         response_path="does.not.exist",
         transport=_transport({"output": "fallback text"}, []),
     )
@@ -219,10 +223,11 @@ def test_session_target_adapter_response_path_fallback_to_heuristic():
     assert text == "fallback text"
 
 
-def test_session_target_adapter_headers_and_api_key():
+def test_session_target_adapter_headers_and_api_key(v1_store):
     seen: list = []
+    register(v1_store, "http://localhost:9000/chat")
     adapter = SessionTargetAdapter(
-        endpoint="http://localhost:9000/chat",
+        endpoint="http://localhost:9000/chat", store=v1_store, ownership_options=LOCAL_OK,
         api_key="sk-test-key-1234",
         headers={"X-API-Key": "custom-key"},
         transport=_transport({"response": "ok"}, seen),
@@ -233,7 +238,7 @@ def test_session_target_adapter_headers_and_api_key():
 
     seen.clear()
     adapter = SessionTargetAdapter(
-        endpoint="http://localhost:9000/chat",
+        endpoint="http://localhost:9000/chat", store=v1_store, ownership_options=LOCAL_OK,
         headers={"Authorization": "Bearer override-token-1"},
         transport=_transport({"response": "ok"}, seen),
     )

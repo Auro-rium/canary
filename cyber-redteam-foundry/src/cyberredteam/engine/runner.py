@@ -394,6 +394,33 @@ async def _monitor(monitor: TurnMonitor, turn: Turn, context: MonitorContext) ->
 _NO_EVALUATION = frozenset({"cancelled", "stopped_killed"})
 
 
+_MIN_SECRET_CHARS = 4  # same floor as EventLogSink: shorter values would mangle ordinary text
+
+
+def _masked_values(runtime: CampaignRuntime) -> tuple[str, ...]:
+    """Exact strings to mask in anything shown to viewers: the target's canaries
+    plus its own auth secrets (>= 4 chars)."""
+    secrets: list[str] = []
+    for _, value in getattr(runtime.request.target, "auth", None) or ():
+        if isinstance(value, SecretStr):
+            revealed = value.get_secret_value()
+            if len(revealed) >= _MIN_SECRET_CHARS:
+                secrets.append(revealed)
+    return (*runtime.deps.canary_values, *secrets)
+
+
+async def _charge_judge(runtime: CampaignRuntime) -> None:
+    """Charge the judge's provider-reported usage (if the evaluator tracks it) to the ledger."""
+    take = getattr(runtime.deps.evaluator, "take_judge_usage", None)
+    if take is None:
+        return
+    try:
+        tokens, usd = take()
+        await runtime.ledger.charge_llm(tokens, usd)
+    except Exception as exc:
+        logger.error("judge usage charge failed (%s)", type(exc).__name__)
+
+
 async def _evaluate(runtime: CampaignRuntime, cid: str, status: ConversationStatus, n_turns: int) -> None:
     """Judge a finished conversation, emit the ``verdict`` event and honour
     ``stop_on_first_confirmed``. Never raises (except a genuine cancellation):
@@ -412,16 +439,19 @@ async def _evaluate(runtime: CampaignRuntime, cid: str, status: ConversationStat
         if _genuinely_cancelled():
             raise
         logger.error("evaluation of %s raised CancelledError", cid)
+        await _charge_judge(runtime)
         return
     except Exception as exc:  # incl. the timeout
         logger.error("evaluation of %s failed: %s", cid, type(exc).__name__)
+        await _charge_judge(runtime)
         return
+    await _charge_judge(runtime)
     if verdict is None:
         return
     try:
         # The judge read the raw transcript and may quote a canary in its
         # rationales: redact them like the turn previews before they reach the event log.
-        canaries = deps.canary_values
+        canaries = _masked_values(runtime)
         shown = verdict.model_copy(update={
             "rationale": redact(verdict.rationale, canaries).text,
             "judge_votes": [
@@ -664,7 +694,7 @@ async def _turn_step(runtime: CampaignRuntime, conv: _Conv) -> ConversationStatu
     runtime.turns_total += 1
     runtime.monitor_hits_total += len(hit_names)
 
-    canaries = deps.canary_values
+    canaries = _masked_values(runtime)
     await _emit(
         deps,
         "turn",

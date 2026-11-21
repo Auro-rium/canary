@@ -154,6 +154,26 @@ class CampaignEvaluator:
             **extra,
         )
 
+    def take_judge_usage(self) -> tuple[int, float]:
+        """``(tokens, usd)`` of judge usage the provider reported since the last call.
+
+        The engine charges this to the campaign ``BudgetLedger`` after each
+        evaluation. Rates: ``JUDGE_USD_PER_1K_INPUT_TOKENS`` / ``_OUTPUT_TOKENS``."""
+        take = getattr(self._judge, "take_usage", None)
+        if take is None:
+            return 0, 0.0
+        try:
+            tokens_in, tokens_out = take()
+        except Exception:
+            return 0, 0.0
+        from cyberredteam.settings import get_settings
+
+        st = get_settings()
+        usd = (
+            tokens_in * st.judge_usd_per_1k_input_tokens + tokens_out * st.judge_usd_per_1k_output_tokens
+        ) / 1000.0
+        return int(tokens_in + tokens_out), usd
+
     async def __call__(self, conversation_id: str) -> ConversationVerdict | None:
         """The new verdict, or ``None`` when one was already stored (a resumed campaign)."""
         try:

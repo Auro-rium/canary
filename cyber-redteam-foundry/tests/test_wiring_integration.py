@@ -15,6 +15,7 @@ import logging
 import pytest
 from engine_support import build, metrics, new_campaign_id  # noqa: F401
 from fixtures.fake_target import DEFAULT_CANARY, DEFAULT_FORBIDDEN_TOOL, FakeTarget
+from langchain_core.messages import AIMessage
 from langchain_core.runnables import RunnableLambda
 
 from cyberredteam.evaluation.judge import Judge
@@ -24,6 +25,7 @@ from cyberredteam.jobs.runner_wiring import load_planner_factory, make_runner
 from cyberredteam.planners import worker as planner_worker
 from cyberredteam.storage.v2.repositories import (
     AuditRepo,
+    BudgetLedgerRepo,
     CampaignRepo,
     ConversationRepo,
     FindingRepo,
@@ -68,6 +70,24 @@ class FakeJudgeLLM:
 
     def invoke_chain(self, chain, user_message, system_context="", run_id=None):
         return chain.invoke(user_message)
+
+
+class UsageJudgeLLM(FakeJudgeLLM):
+    """Like FakeJudgeLLM, but the provider message reports token usage (as Backboard does)."""
+
+    def build_structured_chain(self, system_prompt, schema):
+        inner = super().build_structured_chain(system_prompt, schema)
+
+        def run(user_message):
+            parsed = inner.invoke(user_message)
+            raw = AIMessage(content="x", usage_metadata={
+                "input_tokens": 1000, "output_tokens": 1000, "total_tokens": 2000})
+            return {"raw": raw, "parsed": parsed, "parsing_error": None}
+
+        return RunnableLambda(run)
+
+    def invoke_chain(self, chain, user_message, system_context="", run_id=None):
+        return chain.invoke(user_message)["parsed"]
 
 
 @pytest.fixture(autouse=True)
@@ -256,3 +276,44 @@ def test_leak_with_no_judge_still_confirms_by_the_deterministic_critical_rule(
     # WP5 rule 1: a critical monitor hit confirms whatever the judge says (or fails to say).
     assert VerdictRepo(db_factory).get(conv_id).verdict == "confirmed"
     assert len(oncall) == 1
+
+
+def test_evaluation_error_stores_inconclusive_never_failed(db_factory, tmp_path, monkeypatch):
+    """evaluate_conversation itself raising must end as a stored ``inconclusive`` verdict."""
+    async def boom(conversation_id, deps):
+        raise RuntimeError("backboard 500")
+
+    monkeypatch.setattr("cyberredteam.jobs.evaluation_wiring.evaluate_conversation", boom)
+    h, rt, cid, _ = _setup(
+        db_factory, tmp_path, monkeypatch, profile="always_safe", technique="smoke_safe",
+        judge_factory=lambda k: Judge(FakeJudgeLLM(), k=k),
+    )
+    assert asyncio.run(execute_campaign(rt, cid)) == "completed"
+    conv_id, = ConversationRepo(db_factory).list_for_campaign(cid)
+    stored = VerdictRepo(db_factory).get(conv_id)
+    assert stored.verdict == "inconclusive"
+    assert "not a safety result" in stored.rationale
+    verdict_events = [e for e in rt.events.since(cid) if e.type == "verdict"]
+    assert [e.payload.verdict.verdict for e in verdict_events] == ["inconclusive"]
+
+
+def test_judge_token_usage_is_charged_to_the_budget_ledger(db_factory, tmp_path, monkeypatch):
+    h, rt, cid, _ = _setup(
+        db_factory, tmp_path, monkeypatch, profile="always_safe", technique="smoke_safe",
+        judge_factory=lambda k: Judge(UsageJudgeLLM(), k=k),
+    )
+    assert asyncio.run(execute_campaign(rt, cid)) == "completed"
+    totals = BudgetLedgerRepo(db_factory).totals(cid)
+    # 3 votes x (1000 in, 1000 out) at 0.01 / 0.03 USD per 1k.
+    assert totals["tokens"] == 6000
+    assert totals["usd"] == pytest.approx(3 * (0.01 + 0.03))
+
+
+def test_judge_without_reported_usage_charges_nothing(db_factory, tmp_path, monkeypatch):
+    h, rt, cid, _ = _setup(
+        db_factory, tmp_path, monkeypatch, profile="always_safe", technique="smoke_safe",
+        judge_factory=lambda k: Judge(FakeJudgeLLM(), k=k),
+    )
+    assert asyncio.run(execute_campaign(rt, cid)) == "completed"
+    totals = BudgetLedgerRepo(db_factory).totals(cid)
+    assert totals.get("tokens", 0) == 0 and totals.get("usd", 0) == 0

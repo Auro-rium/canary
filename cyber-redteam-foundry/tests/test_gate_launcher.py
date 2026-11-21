@@ -89,6 +89,51 @@ def test_timeout_cancels_the_run_and_raises(db_factory, tmp_path):
     assert launcher.control.cancel_requested(queue.enqueued[0])
 
 
+def test_timeout_with_failing_cancel_retries_once_then_marks_the_campaign_failed(
+    db_factory, tmp_path, monkeypatch
+):
+    from cyberredteam.jobs.events import EventLog
+
+    target_id = _verified_target(db_factory)
+    queue = FakeQueue(db_factory, never=True)
+    launcher = _launcher(db_factory, queue, tmp_path, timeout_s=0.2)
+    attempts = []
+
+    def broken(campaign_id, actor=None):
+        attempts.append(campaign_id)
+        raise RuntimeError("db down")
+
+    monkeypatch.setattr(launcher.control, "request_cancel", broken)
+    with pytest.raises(LaunchError, match="marked failed"):
+        launcher.launch(target_id, "alpha")
+    cid = queue.enqueued[0]
+    assert len(attempts) == 2  # first try + exactly one retry
+    assert CampaignRepo(db_factory).get(cid).status == "failed"
+    events = EventLog(db_factory).since(cid)
+    assert events[-1].type == "campaign_failed" and events[-1].payload.message == "gate timeout"
+
+
+def test_timeout_cancel_that_succeeds_on_retry_leaves_the_worker_to_finish(
+    db_factory, tmp_path, monkeypatch
+):
+    target_id = _verified_target(db_factory)
+    queue = FakeQueue(db_factory, never=True)
+    launcher = _launcher(db_factory, queue, tmp_path, timeout_s=0.2)
+    real, calls = launcher.control.request_cancel, []
+
+    def flaky(campaign_id, actor=None):
+        calls.append(1)
+        if len(calls) == 1:
+            raise RuntimeError("transient")
+        real(campaign_id, actor)
+
+    monkeypatch.setattr(launcher.control, "request_cancel", flaky)
+    with pytest.raises(LaunchError, match="cancel requested"):
+        launcher.launch(target_id, "alpha")
+    assert launcher.control.cancel_requested(queue.enqueued[0])
+    assert CampaignRepo(db_factory).get(queue.enqueued[0]).status != "failed"
+
+
 def test_unverified_or_unknown_target_is_refused_and_nothing_is_enqueued(db_factory, tmp_path):
     store = SqlTargetStore(db_factory)
     unverified = store.create(make_target())

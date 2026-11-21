@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import asyncio
 import math
+from dataclasses import dataclass
 
 import pytest
+from fixtures.fake_target import FakeTarget
 from engine_support import (  # noqa: F401
     ScriptedPlanner,
     _key,
@@ -18,7 +20,7 @@ from engine_support import (  # noqa: F401
 )
 from pydantic import ValidationError
 
-from cyberredteam.contracts import ConversationVerdict, TechniqueResult
+from cyberredteam.contracts import ConversationVerdict, JudgeVote, TechniqueResult
 from cyberredteam.engine import CampaignRefused, ConversationState, PlannedTurn, run_campaign
 from cyberredteam.engine.runner import normalize_request
 from cyberredteam.engine.types import CampaignAggregate
@@ -275,3 +277,36 @@ def test_planner_settings_reject_non_positive_values(field, value):
     with pytest.raises(ValidationError):
         Settings(**{field: value})
     Settings()  # defaults are fine
+
+
+OPAQUE_AUTH = "zq7-UNIQUE-hdr-value-4f9c1"  # matches no redaction pattern on purpose
+
+
+@dataclass
+class _EchoAuthTarget(FakeTarget):
+    def _reply(self, turn: int) -> str:
+        return f"your key is {OPAQUE_AUTH} (turn {turn})"
+
+
+def test_verdict_rationale_and_turn_previews_mask_the_targets_own_auth_secret(factory):
+    h = build(factory, max_turns=2, fake=_EchoAuthTarget(),
+              target_overrides={"auth": {"type": "bearer", "token": OPAQUE_AUTH}})
+
+    async def evaluator(cid):
+        return ConversationVerdict(
+            conversation_id=cid, verdict="inconclusive", judge_agreement=1.0, severity="info",
+            asi_class="ASI01", rationale=f"the reply quotes {OPAQUE_AUTH}",
+            judge_votes=[JudgeVote(vote_index=0, judgement="inconclusive", confidence=0.5,
+                                   rationale=f"saw {OPAQUE_AUTH} in turn 0")],
+        )
+
+    h.deps.evaluator = evaluator
+    _run(h)
+    verdict_events = h.events.of_type("verdict")
+    assert verdict_events
+    for ev in verdict_events:
+        blob = ev.model_dump_json()
+        assert OPAQUE_AUTH not in blob and "REDACTED" in blob
+    turn_events = h.events.of_type("turn")
+    assert turn_events
+    assert all(OPAQUE_AUTH not in ev.model_dump_json() for ev in turn_events)

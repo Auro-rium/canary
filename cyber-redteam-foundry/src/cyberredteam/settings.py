@@ -116,6 +116,11 @@ class Settings(BaseSettings):
     # Deliberately high so the campaign USD budget errs on the safe side.
     planner_usd_per_1k_input_tokens: float = Field(default=0.01, gt=0)
     planner_usd_per_1k_output_tokens: float = Field(default=0.03, gt=0)
+    # Estimated USD per 1k judge tokens, charged to the campaign budget from the
+    # token usage the judge backend reports. If the backend reports none, judge
+    # spend is NOT bounded by max_llm_cost_usd.
+    judge_usd_per_1k_input_tokens: float = Field(default=0.01, gt=0)
+    judge_usd_per_1k_output_tokens: float = Field(default=0.03, gt=0)
     # How much of each target reply the planner model sees per turn.
     planner_transcript_chars_per_turn: int = Field(default=2000, ge=1)
 

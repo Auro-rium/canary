@@ -172,6 +172,7 @@ def node_attacker_branch(payload: dict) -> dict:
             headers=payload.get("target_headers"),
             request_template=payload.get("target_request_template"),
             response_path=payload.get("target_response_path"),
+            share_limiter=True,  # registered + verified targets only; raises V1TargetRefused otherwise
         )
 
     attacker = _attacker_factory(
