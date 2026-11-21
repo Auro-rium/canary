@@ -24,7 +24,7 @@ FORBIDDEN_TOOL = "delete_record"
 OPERATOR_EMAIL = "operator@livetest.local"
 PACK_TECHNIQUE = "smoke_greeting"
 PACK_TURNS = 3
-EST_TURNS = 4  # worst-case turns per conversation used for judge-cost estimates
+EST_TURNS = 8  # worst-case turns per conversation for judge-cost estimates (matches the gate launcher's max_turns)
 CLI = str(Path(PYTHON).parent / "cyber-rt")
 TERMINAL = {"completed", "failed", "cancelled"}
 

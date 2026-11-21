@@ -28,11 +28,17 @@ from livetest.steps import STEPS
 # Cheap judge candidates, tried in order with `cyber-rt doctor` until one answers.
 # Rates are conservative USD per 1k tokens (input, output); the code exposes no model list and no
 # prices, so these are the harness's own configuration. Override with --judge-model/--rate-in/--rate-out.
+# List prices times RATE_MARGIN, so a Backboard markup or a fallback to a pricier model stays
+# inside the estimate. Explicit --rate-in/--rate-out are used exactly as given.
+RATE_MARGIN = 1.5
 CANDIDATES = [
-    ("openai", "gpt-4o-mini", 0.00015, 0.0006),
-    ("google", "gemini-2.0-flash", 0.0001, 0.0004),
-    ("anthropic", "claude-haiku-4-5", 0.001, 0.005),
-    ("openai", "gpt-4.1-mini", 0.0004, 0.0016),
+    (prov, name, rin * RATE_MARGIN, rout * RATE_MARGIN)
+    for prov, name, rin, rout in [
+        ("openai", "gpt-4o-mini", 0.00015, 0.0006),
+        ("google", "gemini-2.0-flash", 0.0001, 0.0004),
+        ("anthropic", "claude-haiku-4-5", 0.001, 0.005),
+        ("openai", "gpt-4.1-mini", 0.0004, 0.0016),
+    ]
 ]
 
 
