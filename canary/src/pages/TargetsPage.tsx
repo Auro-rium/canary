@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link } from 'react-router-dom'
-import { Metric, Page, PageHeader } from '../components/Console'
+import { Metric, Page, PageHeader } from '../components/layout'
 import { Badge, EmptyState, ErrorState, SkeletonList, StatusBadge, Table, primaryButtonClass, type Column, type SortState } from '../components/ui'
 import { listTargets } from '../lib/api'
 import { formatDate } from '../lib/presentation'

@@ -122,6 +122,25 @@ test('keyboard: Escape closes the transcript drawer and returns focus to the cel
   await expect(cell).toBeFocused()
 })
 
+test('375px: the transcript drawer is modal and Tab never leaves it', async ({ page }) => {
+  await page.setViewportSize({ width: 375, height: 800 })
+  await mockApi(page)
+  await page.goto('/campaigns/camp1')
+  const cell = page.getByTestId('cell-prompt-injection-0')
+  await expect(cell).toHaveAttribute('data-status', 'stopped_monitor')
+  await cell.focus()
+  await page.keyboard.press('Enter')
+  const drawer = page.getByTestId('transcript-drawer')
+  await expect(drawer).toBeVisible()
+  await expect(drawer).toHaveAttribute('aria-modal', 'true')
+  const inside = () => page.evaluate(() => !!document.activeElement?.closest('[data-testid="transcript-drawer"]'))
+  for (let i = 0; i < 25; i++) { await page.keyboard.press('Tab'); expect(await inside()).toBe(true) }
+  for (let i = 0; i < 25; i++) { await page.keyboard.press('Shift+Tab'); expect(await inside()).toBe(true) }
+  await page.keyboard.press('Escape')
+  await expect(drawer).toHaveCount(0)
+  await expect(cell).toBeFocused()
+})
+
 test('deep link from a finding opens the failing turn', async ({ page }) => {
   await mockApi(page)
   await page.goto('/findings')

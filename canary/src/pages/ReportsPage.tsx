@@ -1,4 +1,4 @@
-import { Page, PageHeader } from '../components/Console'
+import { Page, PageHeader } from '../components/layout'
 import { EmptyState, ErrorState, SkeletonList, StatusBadge, Table, buttonClass, type Column } from '../components/ui'
 import { listCampaigns, reportUrl } from '../lib/api'
 import { isCampaignTerminal } from '../lib/liveState'
