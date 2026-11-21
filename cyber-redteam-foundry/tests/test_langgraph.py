@@ -1,3 +1,4 @@
+# ruff: noqa: F811  (pytest fixture imported from v1_guard_support)
 """Dedicated LangGraph integration tests.
 
 These tests exercise the full graph end-to-end using mock agents so
@@ -5,12 +6,12 @@ no Azure credentials or network calls are required.
 """
 
 import tempfile
-
-import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import pytest
 from v1_guard_support import register, v1_store  # noqa: F401
+
 from cyberredteam.langgraph.graph import build_redteam_graph, compile_graph
 from cyberredteam.langgraph.state import RedTeamState
 from cyberredteam.schemas import (

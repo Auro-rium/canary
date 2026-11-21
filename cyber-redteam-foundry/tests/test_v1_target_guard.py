@@ -1,12 +1,13 @@
+# ruff: noqa: F811  (pytest fixture imported from v1_guard_support)
 """The v1 flow (SessionTargetAdapter) is held to the same guards as v2."""
 
 from __future__ import annotations
 
 import pytest
+from v1_guard_support import FakeClock, build, make_transport, register, v1_store  # noqa: F401
 
 from cyberredteam.jobs.control import ControlStore
 from cyberredteam.tools.target_adapter import SessionTargetAdapter, V1TargetRefused
-from v1_guard_support import FakeClock, build, make_transport, register, v1_store  # noqa: F401
 
 
 def test_private_host_refused_before_any_send(v1_store):

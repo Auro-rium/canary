@@ -394,19 +394,28 @@ async def _monitor(monitor: TurnMonitor, turn: Turn, context: MonitorContext) ->
 _NO_EVALUATION = frozenset({"cancelled", "stopped_killed"})
 
 
+_SECRET_MASK = "[REDACTED:secret]"  # == jobs.events.SECRET_MASK
 _MIN_SECRET_CHARS = 4  # same floor as EventLogSink: shorter values would mangle ordinary text
 
 
-def _masked_values(runtime: CampaignRuntime) -> tuple[str, ...]:
-    """Exact strings to mask in anything shown to viewers: the target's canaries
-    plus its own auth secrets (>= 4 chars)."""
+def _target_secrets(runtime: CampaignRuntime) -> tuple[str, ...]:
+    """The target's own auth secrets (>= 4 chars), longest first."""
     secrets: list[str] = []
     for _, value in getattr(runtime.request.target, "auth", None) or ():
         if isinstance(value, SecretStr):
             revealed = value.get_secret_value()
             if len(revealed) >= _MIN_SECRET_CHARS:
                 secrets.append(revealed)
-    return (*runtime.deps.canary_values, *secrets)
+    return tuple(sorted(set(secrets), key=len, reverse=True))
+
+
+def _view(text: str | None, canaries: tuple[str, ...], secrets: tuple[str, ...]) -> str:
+    """Text for viewers: exact target auth secrets masked first (same mask as
+    ``EventLogSink``), then canaries and the generic patterns."""
+    out = text or ""
+    for secret in secrets:
+        out = out.replace(secret, _SECRET_MASK)
+    return redact(out, canaries).text
 
 
 async def _charge_judge(runtime: CampaignRuntime) -> None:
@@ -451,11 +460,11 @@ async def _evaluate(runtime: CampaignRuntime, cid: str, status: ConversationStat
     try:
         # The judge read the raw transcript and may quote a canary in its
         # rationales: redact them like the turn previews before they reach the event log.
-        canaries = _masked_values(runtime)
+        canaries, secrets = deps.canary_values, _target_secrets(runtime)
         shown = verdict.model_copy(update={
-            "rationale": redact(verdict.rationale, canaries).text,
+            "rationale": _view(verdict.rationale, canaries, secrets),
             "judge_votes": [
-                v.model_copy(update={"rationale": redact(v.rationale, canaries).text})
+                v.model_copy(update={"rationale": _view(v.rationale, canaries, secrets)})
                 for v in verdict.judge_votes
             ],
         })
@@ -694,7 +703,7 @@ async def _turn_step(runtime: CampaignRuntime, conv: _Conv) -> ConversationStatu
     runtime.turns_total += 1
     runtime.monitor_hits_total += len(hit_names)
 
-    canaries = _masked_values(runtime)
+    canaries, secrets = deps.canary_values, _target_secrets(runtime)
     await _emit(
         deps,
         "turn",
@@ -702,13 +711,13 @@ async def _turn_step(runtime: CampaignRuntime, conv: _Conv) -> ConversationStatu
             campaign_id=runtime.campaign_id,
             conversation_id=cid,
             index=turn.index,
-            message_preview=redact(turn.message, canaries).text,
-            response_preview=redact(turn.response_text, canaries).text,
+            message_preview=_view(turn.message, canaries, secrets),
+            response_preview=_view(turn.response_text, canaries, secrets),
             tool_call_names=[c.name for c in turn.tool_calls],
             http_status=turn.http_status,
             latency_ms=turn.latency_ms,
             monitor_hits=hit_names,
-            error=redact(turn.error, canaries).text if turn.error else None,
+            error=_view(turn.error, canaries, secrets) if turn.error else None,
         ),
     )
     for hit in verdict.hits:

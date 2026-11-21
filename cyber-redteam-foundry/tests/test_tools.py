@@ -1,8 +1,10 @@
+# ruff: noqa: F811  (pytest fixture imported from v1_guard_support)
 """Unit tests for the new cyber-redteam tools."""
 
 import json
 
 import httpx
+from v1_guard_support import LOCAL_OK, register, v1_store  # noqa: F401
 
 from cyberredteam.tools.instruction_hierarchy import InstructionHierarchyTool
 from cyberredteam.tools.jailbreak import JailbreakTool
@@ -11,7 +13,6 @@ from cyberredteam.tools.prompt_injection import PromptInjectionTool
 from cyberredteam.tools.rag_probe import RAGProbeTool
 from cyberredteam.tools.sensitive_data import SensitiveDataExtractor
 from cyberredteam.tools.target_adapter import SessionTargetAdapter
-from v1_guard_support import LOCAL_OK, register, v1_store  # noqa: F401
 from cyberredteam.tools.tool_abuse import ToolAbuseTool
 from cyberredteam.tools.workflow_manipulation import WorkflowManipulationTool
 

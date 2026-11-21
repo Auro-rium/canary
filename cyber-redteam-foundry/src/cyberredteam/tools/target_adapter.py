@@ -31,9 +31,9 @@ from cyberredteam.contracts import (
     validate_request_template,
 )
 from cyberredteam.jobs.control import ControlStore, env_kill_switch_active
+from cyberredteam.logging import log_event, setup_logging
 from cyberredteam.security.ownership import TargetRefused, check_target_urls
 from cyberredteam.storage.v2.repositories import SqlTargetStore
-from cyberredteam.logging import log_event, setup_logging
 from cyberredteam.transport.rate_limit import RateLimiter
 from cyberredteam.transport.session_adapter import SendAborted, SessionAdapter, TurnResult
 

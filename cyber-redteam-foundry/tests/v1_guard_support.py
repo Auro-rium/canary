@@ -7,13 +7,13 @@ import uuid
 import httpx
 import pytest
 from cryptography.fernet import Fernet
+from storage_v2_support import migrate_up
 
 from cyberredteam.contracts import TargetConfig
-from cyberredteam.storage.v2.encrypted import reset_key_cache
 from cyberredteam.storage.v2.db import make_engine, make_session_factory
+from cyberredteam.storage.v2.encrypted import reset_key_cache
 from cyberredteam.storage.v2.repositories import SqlTargetStore
 from cyberredteam.tools.target_adapter import SessionTargetAdapter
-from storage_v2_support import migrate_up
 
 LOCAL_OK = {"allow_private_targets": True}  # test-only DI, same seam as v2's get_ownership_options
 

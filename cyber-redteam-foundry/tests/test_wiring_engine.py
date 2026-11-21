@@ -9,7 +9,6 @@ import math
 from dataclasses import dataclass
 
 import pytest
-from fixtures.fake_target import FakeTarget
 from engine_support import (  # noqa: F401
     ScriptedPlanner,
     _key,
@@ -18,6 +17,7 @@ from engine_support import (  # noqa: F401
     metrics,
     new_campaign_id,
 )
+from fixtures.fake_target import FakeTarget
 from pydantic import ValidationError
 
 from cyberredteam.contracts import ConversationVerdict, JudgeVote, TechniqueResult
@@ -306,7 +306,7 @@ def test_verdict_rationale_and_turn_previews_mask_the_targets_own_auth_secret(fa
     assert verdict_events
     for ev in verdict_events:
         blob = ev.model_dump_json()
-        assert OPAQUE_AUTH not in blob and "REDACTED" in blob
+        assert OPAQUE_AUTH not in blob and "[REDACTED:secret]" in blob
     turn_events = h.events.of_type("turn")
     assert turn_events
     assert all(OPAQUE_AUTH not in ev.model_dump_json() for ev in turn_events)
