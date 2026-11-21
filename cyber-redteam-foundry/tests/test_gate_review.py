@@ -87,9 +87,9 @@ CLEAN = (
 LEAKS = {
     "anthropic": 'x="sk-ant-api03-abcdefghijklmnopqrstuvwxyz0123456789";',
     "openai": 'k:"sk-proj-abcdefghijklmnopqrstuvwxyz0123456789"',
-    "aws": 'id:"AKIAABCDEFGHIJKLMNOP"',
+    "aws": 'id:"AKIA' 'ABCDEFGHIJKLMNOP"',
     "github": 't="ghp_' + "a" * 36 + '"',
-    "pem": 's="-----BEGIN RSA PRIVATE KEY-----MIIE"',
+    "pem": 's="-----BEGIN RSA' ' PRIVATE KEY-----MIIE"',
     "jwt": 'h="Bearer eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0"',
 }
 

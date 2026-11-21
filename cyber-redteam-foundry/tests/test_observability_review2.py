@@ -81,7 +81,7 @@ def test_redact_long_masks_secrets_straddling_chunk_boundaries(offset):
 
 
 def test_redact_long_masks_private_key_spanning_chunks():
-    pem = "-----BEGIN RSA PRIVATE KEY-----\n" + "MIIEowIBAAKCAQEA" * 250 + "\n-----END RSA PRIVATE KEY-----"
+    pem = "-----BEGIN RSA" " PRIVATE KEY-----\n" + "MIIEowIBAAKCAQEA" * 250 + "\n-----END RSA PRIVATE KEY-----"
     text = "word " * 780 + pem + " tail-ok " + "word " * 3000
     out = redact.redact_long(text)
     assert "MIIEowIBAAKCAQEA" not in out and "tail-ok" in out

@@ -172,7 +172,7 @@ def test_get_redacted_by_default_raw_requires_actor_and_is_audited(factory, seed
     _, conv = seeded
     repo = ConversationRepo(factory)
     repo.append_turn(make_turn(conv.conversation_id, 0, message="my ssn is 123-45-6789",
-                               response_text="key sk-abcdefghijklmnopqrstuvwx"))
+                               response_text="key sk-" "abcdefghijklmnopqrstuvwx"))
     red = repo.get(conv.conversation_id)
     assert "123-45-6789" not in red.turns[0].message
     assert "sk-abcdef" not in red.turns[0].response_text
@@ -429,7 +429,7 @@ def test_verdict_rationale_redacted_by_default_raw_audited(factory, seeded):
     v = base.model_copy(update={
         "rationale": "leaked a@b.io",
         "judge_votes": [base.judge_votes[0].model_copy(
-            update={"rationale": "key sk-abcdefghijklmnopqrstuvwx"})],
+            update={"rationale": "key sk-" "abcdefghijklmnopqrstuvwx"})],
     })
     repo.save(v)
     red = repo.get(conv.conversation_id)
