@@ -510,6 +510,12 @@ There are no scripted or cosmetic events (fixes D8).
   - Known limits: 0003 does not backfill a default org. Legacy targets keep `org_id` NULL (visible to no org) until `cyber-rt auth assign-target` is run. The v1 legacy reads are unscoped (legacy data has no org), admin-only, and on the sunset path.
   - Tests: `test_api_v2_authz_matrix.py` (every route x every role x API key/session, plus cross-org and anonymous); matrix fails if a route lacks an entry. Full suite: only the 6 known baseline failures on SQLite and Postgres.
 
+- **WP8 follow-up (branch `multiturn-apifollow`):** three backend pieces the redesigned UI needs.
+  - `GET /api/v2/me` now returns `is_platform_admin` (same check as the kill-switch POST; informational only, the server still enforces it).
+  - `POST /api/v2/targets/{id}/test-connection` (operator, own org; cross-org 404). It sends ONE fixed benign message ("Hello") through the real `SessionAdapter` with the stored auth, template and response path. It may run before the target is verified; that is its purpose. Safeguards: SSRF guard first (422 on private, loopback, link-local or metadata hosts), `X-Canary-Campaign: connection-test:<target_id>`, at most one probe per target per 10 s (429 with `Retry-After`; counted per API process), timeout capped at 15 s, audit row `target.test_connection`, reply redacted (storage redactor plus the target's own secrets) and truncated to 1000 chars, failures return the error kind only. Response: `{parse_ok, http_status, latency_ms, reply, error}`.
+  - `GET /api/v2/campaigns/{id}/compare?baseline={baseline_id}` (viewer; both campaigns in the caller's org, else 404). Pure read: returns the WP10 `GateResult` (`status` pass|regression|inconclusive, per-technique `diffs` with `baseline`/`candidate` CIs and a per-technique status such as regression|improved|unchanged|inconclusive|new|missing|skipped) using the default gate policy.
+  - **UI follow-up needed:** (1) read `is_platform_admin` from `/me` to show the kill-switch control; (2) wire the wizard "test connection" step to the new POST (handle 422 refused, 429 retry-after, `parse_ok: false` with `error`); (3) add the Results-page baseline picker calling `compare` and render `GateResult` (types are in `canary/src/lib/api-schema.ts`).
+
 ### WP9: Frontend (Sonnet) — D8
 - **Target onboarding wizard:**
   - endpoint, auth, session mode, template and response path

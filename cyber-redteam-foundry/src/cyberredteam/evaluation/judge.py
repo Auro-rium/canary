@@ -196,7 +196,7 @@ class Judge:
             i = max(0, int(meta.get("input_tokens") or 0))
             o = max(0, int(meta.get("output_tokens") or 0))
             t = max(0, int(meta.get("total_tokens") or 0))
-        except (TypeError, ValueError):
+        except (TypeError, ValueError, OverflowError):
             return
         o += max(0, t - i - o)  # unexplained remainder is billed at the output rate
         with self._usage_lock:

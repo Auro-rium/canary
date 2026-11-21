@@ -32,7 +32,7 @@ from cyberredteam.api_v2.schemas import (
 )
 from cyberredteam.auth.deps import SESSION_COOKIE, get_auth_repo, get_principal
 from cyberredteam.auth.oidc import OIDCError, OIDCProvider, configured_providers, new_pkce
-from cyberredteam.auth.principal import Principal
+from cyberredteam.auth.principal import Principal, is_platform_admin
 from cyberredteam.auth.repo import AuthError, AuthRepo
 from cyberredteam.auth.tokens import token_matches
 from cyberredteam.settings import get_settings
@@ -177,6 +177,7 @@ def me(request: Request, principal: Principal = Depends(get_principal)):
         user_id=principal.user_id, org_id=principal.org_id, email=principal.email,
         display_name=principal.display_name, role=principal.role,
         permissions=sorted(principal.permissions), auth_method=principal.auth_method,
+        is_platform_admin=is_platform_admin(principal),
         csrf_token=csrf if token_matches(csrf, principal.csrf_hash) else None,
     )
 

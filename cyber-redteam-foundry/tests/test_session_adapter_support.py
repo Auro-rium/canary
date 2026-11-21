@@ -59,6 +59,7 @@ def make_adapter(
     *,
     clock: FakeClock | None = None,
     limiter: Any = None,
+    **kwargs: Any,
 ) -> SessionAdapter:
     clock = clock or FakeClock()
     return SessionAdapter(
@@ -68,6 +69,7 @@ def make_adapter(
         transport=transport,
         sleep=clock.sleep,
         clock=clock,
+        **kwargs,
     )
 
 

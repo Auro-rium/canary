@@ -39,6 +39,7 @@ from cyberredteam.auth.deps import get_db_factory, require
 from cyberredteam.auth.principal import CAMPAIGNS_LAUNCH, CAMPAIGNS_READ, Principal
 from cyberredteam.contracts import CampaignPolicy, CampaignRequest
 from cyberredteam.engine.runner import CampaignRefused, normalize_request
+from cyberredteam.gate.differential import GateResult, compare
 from cyberredteam.jobs.control import ControlStore, env_kill_switch_active
 from cyberredteam.jobs.queue import JobQueue
 from cyberredteam.jobs.tables import CampaignEventRow
@@ -242,3 +243,30 @@ def get_campaign(
     if detail is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
     return detail
+
+
+@router.get("/{campaign_id}/compare", response_model=GateResult)
+def compare_campaigns(
+    campaign_id: str,
+    baseline: str = Query(..., min_length=1, description="Baseline campaign id"),
+    principal: Principal = Depends(require(CAMPAIGNS_READ)),
+    factory: sessionmaker[Session] = Depends(get_db_factory),
+):
+    """WP10 differential gate of this (candidate) campaign against ``baseline``.
+
+    Pure read: nothing is launched or stored. Both campaigns must be in the
+    caller's org (404 otherwise). Default gate policy.
+    """
+    with session_scope(factory) as s:
+        found = {
+            c.campaign_id
+            for c, _t in s.execute(
+                _scoped(principal.org_id).where(
+                    orm.CampaignRow.campaign_id.in_({campaign_id, baseline})
+                )
+            ).all()
+        }
+    if campaign_id not in found or baseline not in found:
+        raise HTTPException(status_code=404, detail="Campaign not found")
+    repo = CampaignRepo(factory)
+    return compare(repo.technique_results(baseline), repo.technique_results(campaign_id))
