@@ -70,7 +70,9 @@ The WP9 branch is `multiturn-wp9` at 4de82b8. It forked from the old `multiturn`
 - **Operator gates.** Only `operator` can launch, and only against verified targets in their own org. Unverified targets cannot be selected in the builder.
 - **Production safe defaults are enforced in the UI.** The backend still enforces them too (WP3 `normalize_request` and the WP7 refusal path). The UI is never the only guard.
 - **No `dangerouslySetInnerHTML` on target output.** Transcripts render as text, and Markdown reports render through a sanitizer.
-- **Third-party loads.** No third-party scripts. Fonts are self-hosted.
+- **Third-party loads.** No third-party scripts. Fonts are self-hosted and never inlined as `data:` URIs (`build.assetsInlineLimit`).
+- **CSP and headers (defence in depth).** `nginx.conf` and `vercel.json` send `Content-Security-Policy` (`default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'`), `X-Content-Type-Options: nosniff` and `Referrer-Policy: no-referrer`. `style-src` keeps `'unsafe-inline'` because the CI bar and meter set inline `style` widths. If `VITE_API_URL` points at another origin, add it to `connect-src`. `npm run test:csp` runs the whole Playwright suite against `vite preview` with the `vercel.json` headers and fails on any CSP violation (`e2e/csp.spec.ts`).
+- **Drawer.** Below `xl` the transcript drawer is modal (app root inert, `aria-modal`, Tab trapped); from `xl` it is docked and non-modal. Cancel campaign asks for confirmation in a `Dialog`.
 
 ## 3. Sequencing
 
@@ -91,3 +93,15 @@ There is a cap of 2 concurrent agents. Step 3a may run alongside step 1 when a s
 - The bundle grep is clean.
 - A reviewer has approved the security rules in section 2.
 - Screenshots of every page in both themes, and at 375 px for the read-only views, are attached to the review.
+
+## 5. As built: deviations and follow-ups (WP9b review)
+
+**Deviations from the plan above**
+- **Finding statuses.** The board uses the real backend statuses, not new / confirmed / false-positive / fixed: `open`, `needs_review`, `inconclusive`, `wont_fix`, `false_positive`.
+- **Marketing page dropped.** There is no `/about`; `/` redirects to `/campaigns`.
+- **Shared layout helpers** (`Page`, `PageHeader`, `Card`, `Metric`) live in `components/layout.tsx` (formerly `Console.tsx`).
+- **No test-connection step.** The backend has no test-connection endpoint, so the target wizard has no such step; verification is the only check.
+
+**Follow-ups**
+- **Gate comparison (needs a backend endpoint).** Results has no gate comparison against a baseline campaign. It needs an endpoint returning WP10's `GateResult` for two campaigns; then build the UI.
+- **Platform-admin flag in `/me`.** `/me` does not expose a platform-admin flag, so the console cannot tell platform admins from org admins. Add it to `/me`, then use it for the Admin page and the kill-switch scope.

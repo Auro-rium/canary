@@ -1,5 +1,5 @@
 import { Link, useParams } from 'react-router-dom'
-import { Card, Page, PageHeader } from '../components/Console'
+import { Card, Page, PageHeader } from '../components/layout'
 import { VerificationPanel } from '../components/TargetParts'
 import { ErrorState, SkeletonList, StatusBadge, primaryButtonClass } from '../components/ui'
 import { getTarget } from '../lib/api'

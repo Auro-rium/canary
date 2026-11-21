@@ -1,4 +1,4 @@
-import { Card, Notice, Page, PageHeader } from '../components/Console'
+import { Card, Notice, Page, PageHeader } from '../components/layout'
 import { KillSwitchControl } from '../components/KillSwitch'
 import { can, PERMISSION, useMe } from '../lib/useMe'
 

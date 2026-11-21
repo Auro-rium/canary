@@ -61,6 +61,8 @@ test('login, onboard a target, launch, watch the grid, read a transcript, cancel
 
   // 6. Cancel: the server then emits campaign_cancelled on the stream.
   await page.getByTestId('cancel-campaign').click()
+  await expect(page.getByTestId('cancel-dialog')).toBeVisible()
+  await page.getByTestId('cancel-confirm').click()
   await expect(page.getByText('Campaign cancelled')).toBeVisible()
   expect(mock.writes.find(w => w.path === '/campaigns/camp1/cancel')?.csrf).toBe(CSRF)
 

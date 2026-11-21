@@ -1,5 +1,5 @@
 import { Link, useParams } from 'react-router-dom'
-import { Card, Metric, Page, PageHeader } from '../components/Console'
+import { Card, Metric, Page, PageHeader } from '../components/layout'
 import { ResultsTable } from '../components/ResultsTable'
 import { ErrorState, SkeletonList, StatusBadge, buttonClass } from '../components/ui'
 import { getCampaign, reportUrl } from '../lib/api'
