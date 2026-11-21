@@ -5,10 +5,9 @@ Two families:
 * Configuration errors (``PlannerConfigError``) are raised when a planner or a
   planner factory is built. They stop a campaign before any turn is sent.
 * Guard-rail stops (``PlannerGuardrailStop``) are raised from ``next_turn``.
-  The WP3 engine maps any planner exception to the conversation status
-  ``error``. That is deliberate: a guard-rail stop must never look like a
-  clean ``completed`` conversation, so a planner never reports one by
-  returning ``end_conversation=True``.
+  The engine maps them to the conversation status ``stopped_planner_guardrail``
+  (never ``completed``: a planner never reports a guard-rail stop by returning
+  ``end_conversation=True``) and charges the spend carried on the exception.
 
 Exception messages carry reason codes and ids only, never message text.
 """
@@ -25,6 +24,14 @@ class PlannerError(Exception):
 
 class PlannerConfigError(PlannerError):
     """The planner cannot be built as configured."""
+
+
+class PlannerFactoryUnavailable(PlannerConfigError):
+    """The planner factory itself could not be built (bad packs directory,
+    missing prompt, ...). Campaign-fatal: the engine fails the campaign once
+    instead of ending every conversation as ``error``."""
+
+    campaign_fatal = True
 
 
 class PlannerPromptMissing(PlannerConfigError):
@@ -59,8 +66,8 @@ class PlannerGuardrailStop(PlannerError):
 
     ``reason`` is the logged event code. ``llm_tokens`` / ``llm_cost_usd`` is
     what the planner call cost (from provider usage) before it was stopped. The
-    WP3 engine does not charge spend for a raised planner, so these fields let a
-    future engine change charge it (see the WP4 status in the build plan).
+    engine maps this to the conversation status ``stopped_planner_guardrail``
+    and charges these two fields to the budget ledger.
     """
 
     reason: str = "planner_guardrail"
@@ -109,6 +116,7 @@ __all__ = [
     "PlannerConfigError",
     "PlannerDenyCategory",
     "PlannerError",
+    "PlannerFactoryUnavailable",
     "PlannerGuardrailStop",
     "PlannerInvalidOutput",
     "PlannerMessageTooLong",

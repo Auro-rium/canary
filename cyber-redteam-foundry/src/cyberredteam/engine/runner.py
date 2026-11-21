@@ -25,8 +25,21 @@ budget exhausted               ``stopped_budget``
 campaign cancelled             ``cancelled``
 global kill switch             ``stopped_killed``
 3+ target errors in a row      ``stopped_target_error_streak``
+planner guard-rail stop        ``stopped_planner_guardrail``
 planner/monitor exception      ``error``
 =============================  ===============================
+
+A planner guard-rail stop (``PlannerGuardrailStop``) also charges its
+``llm_tokens`` / ``llm_cost_usd`` to the budget. A campaign-fatal planner
+configuration error (``campaign_fatal``) ends that conversation ``error`` and
+then fails the whole campaign once.
+
+Evaluation (WP5): after each conversation reaches a terminal status (except
+``cancelled`` / ``stopped_killed``, or with no turns) ``EngineDeps.evaluator``
+is awaited with the conversation id, the ``verdict`` event is emitted and a
+``confirmed`` verdict sets ``stop_on_first_confirmed``. At campaign end
+``EngineDeps.aggregate_results`` supplies ``campaign_complete.confirmed`` and
+the technique results.
 
 Resume: conversation ids are deterministic (:attr:`ConversationSpec.conversation_id`).
 Re-running a campaign skips conversations in a terminal status and continues a
@@ -78,12 +91,16 @@ from cyberredteam.contracts import (
     TargetConfig,
     Turn,
     TurnPayload,
+    VerdictPayload,
     normalize_technique,
 )
 from cyberredteam.engine.budget import BudgetLedger
 from cyberredteam.engine.control import RunControl
 from cyberredteam.engine.monitors import BuiltinSafetyMonitor
 from cyberredteam.engine.types import (
+    CampaignAggregate,
+    CampaignAggregator,
+    ConversationEvaluator,
     ConversationSpec,
     ConversationState,
     EventSink,
@@ -174,7 +191,9 @@ def _bounded_timing(name: str, value: object) -> float:
     return min(v, MAX_STEP_TIMEOUT_S)
 
 
-_TIMING_FIELDS = frozenset({"hook_timeout_s", "control_poll_s", "planner_timeout_s", "monitor_timeout_s"})
+_TIMING_FIELDS = frozenset(
+    {"hook_timeout_s", "control_poll_s", "planner_timeout_s", "monitor_timeout_s", "evaluation_timeout_s"}
+)
 
 
 def _genuinely_cancelled() -> bool:
@@ -216,6 +235,11 @@ class EngineDeps:
     canary_values: tuple[str, ...] = ()
     forbidden_tools: frozenset[str] = frozenset()
     on_call: OnCallNotifier | None = None
+    # WP5 evaluation (wired by the worker): judge each finished conversation and
+    # aggregate technique results at campaign end. None = no evaluation.
+    evaluator: ConversationEvaluator | None = None
+    aggregate_results: CampaignAggregator | None = None
+    evaluation_timeout_s: float = 300.0
     hook_timeout_s: float = field(default_factory=_default_hook_timeout)
     control_poll_s: float = 1.0
     planner_timeout_s: float = 120.0
@@ -267,6 +291,9 @@ class CampaignRuntime:
     limiter: RateLimiter
     turns_total: int = 0
     monitor_hits_total: int = 0
+    # Set by a confirmed verdict when policy.stop_on_first_confirmed: conversations
+    # not started yet are skipped and running ones end at their next turn.
+    stop_requested: bool = False
 
     @classmethod
     def create(cls, request: CampaignRequest, campaign_id: str, deps: EngineDeps) -> CampaignRuntime:
@@ -360,6 +387,45 @@ async def _plan(planner: TurnPlanner, state: ConversationState) -> PlannedTurn |
 @trace_op("engine.monitor")
 async def _monitor(monitor: TurnMonitor, turn: Turn, context: MonitorContext) -> MonitorResult:
     return await monitor.check(turn, context)
+
+
+# Conversations that never reach the judge: an operator stop must not spend more
+# LLM budget, and a conversation without turns has nothing to judge.
+_NO_EVALUATION = frozenset({"cancelled", "stopped_killed"})
+
+
+async def _evaluate(runtime: CampaignRuntime, cid: str, status: ConversationStatus, n_turns: int) -> None:
+    """Judge a finished conversation, emit the ``verdict`` event and honour
+    ``stop_on_first_confirmed``. Never raises (except a genuine cancellation):
+    the evaluator itself turns judge failures into an ``inconclusive`` verdict,
+    and anything that still escapes is logged (no verdict is stored; a missing
+    verdict is never read as ``safe``)."""
+    deps = runtime.deps
+    if deps.evaluator is None or n_turns == 0 or status in _NO_EVALUATION:
+        return
+    if await _control(deps, runtime.campaign_id):
+        return  # cancelled or killed meanwhile: spend nothing more
+    try:
+        async with asyncio.timeout(deps.evaluation_timeout_s):
+            verdict = await deps.evaluator(cid)
+    except asyncio.CancelledError:
+        if _genuinely_cancelled():
+            raise
+        logger.error("evaluation of %s raised CancelledError", cid)
+        return
+    except Exception as exc:  # incl. the timeout
+        logger.error("evaluation of %s failed: %s", cid, type(exc).__name__)
+        return
+    if verdict is None:
+        return
+    try:
+        payload = VerdictPayload(campaign_id=runtime.campaign_id, verdict=verdict)
+    except Exception:
+        logger.error("verdict payload for %s invalid", cid)
+        return
+    await _emit(deps, "verdict", payload)
+    if verdict.verdict == "confirmed" and runtime.request.policy.stop_on_first_confirmed:
+        runtime.stop_requested = True
 
 
 # ── Conversation ─────────────────────────────────────────────────────────────
@@ -528,6 +594,8 @@ async def _turn_step(runtime: CampaignRuntime, conv: _Conv) -> ConversationStatu
     signal = await _control(deps, runtime.campaign_id)
     if signal:
         return _SIGNAL_STATUS[signal]
+    if runtime.stop_requested:
+        return "completed"
     if runtime.ledger.exhausted():
         return "stopped_budget"
 
@@ -670,6 +738,9 @@ async def run_conversation(spec: ConversationSpec, runtime: CampaignRuntime) -> 
     cid = spec.conversation_id
     existing = repo.get(cid)
     if existing is not None and existing.status in TERMINAL_CONVERSATION_STATUSES:
+        # A crash may have hit between the terminal status and the verdict: the
+        # evaluator is idempotent, so this costs nothing when a verdict exists.
+        await _evaluate(runtime, cid, existing.status, len(existing.turns))
         return ConversationResult(
             conversation_id=cid, technique=spec.technique, trial_index=spec.trial_index,
             status=existing.status, turns=len(existing.turns), skipped=True,
@@ -732,6 +803,7 @@ async def run_conversation(spec: ConversationSpec, runtime: CampaignRuntime) -> 
 
     status: ConversationStatus
     adapter: SessionAdapter | None = None
+    fatal: BaseException | None = None  # a campaign-level planner config error
     try:
         conv.planner = deps.planner_factory(spec)
         if turns and await _recheck_last_turn(runtime, conv):
@@ -752,8 +824,21 @@ async def run_conversation(spec: ConversationSpec, runtime: CampaignRuntime) -> 
             raise  # worker shutdown: stays "running" unless a terminal status was persisted
         # Any other failure, including a CancelledError raised by the planner,
         # planner factory, adapter or a hook on its own, ends the conversation.
-        logger.error("conversation %s failed: %s", cid, type(exc).__name__)
-        status = conv.persisted_status or "error"
+        from cyberredteam.planners.errors import (
+            PlannerGuardrailStop,  # lazy: avoids an import cycle
+        )
+
+        if isinstance(exc, PlannerGuardrailStop):
+            logger.error("conversation %s stopped by a planner guard rail (%s)", cid, exc.reason)
+            status = conv.persisted_status or "stopped_planner_guardrail"
+            # The refused planner call still cost tokens/USD: charge it (an invalid
+            # amount makes the ledger count the budget as exhausted).
+            await runtime.ledger.charge_llm(exc.llm_tokens, exc.llm_cost_usd)
+        else:
+            logger.error("conversation %s failed: %s", cid, type(exc).__name__)
+            status = conv.persisted_status or "error"
+            if getattr(exc, "campaign_fatal", False) is True:
+                fatal = exc
     finally:
         if adapter is not None:
             try:
@@ -770,6 +855,9 @@ async def run_conversation(spec: ConversationSpec, runtime: CampaignRuntime) -> 
             campaign_id=runtime.campaign_id, conversation_id=cid, status=status, turns=len(turns),
         ),
     )
+    if fatal is not None:
+        raise fatal  # fails the campaign once (run_campaign / run_campaign_graph)
+    await _evaluate(runtime, cid, status, len(turns))
     return ConversationResult(
         conversation_id=cid, technique=spec.technique, trial_index=spec.trial_index,
         status=status, turns=len(turns), resumed=resumed,
@@ -853,7 +941,7 @@ def normalize_request(request: Any) -> CampaignRequest:
     try:
         # First layer on the original object: verified must already be exactly True
         # (a forged "true" string must not become True through re-validation).
-        if not isinstance(request, CampaignRequest):
+        if type(request) is not CampaignRequest:  # no subclasses (they can override validation)
             raise TypeError("not a CampaignRequest")
         if getattr(getattr(request, "target", None), "verified", None) is not True:
             raise CampaignRefused("target is not verified")
@@ -920,6 +1008,19 @@ async def begin_campaign(request: CampaignRequest, campaign_id: str, deps: Engin
     return runtime
 
 
+def _aggregate(runtime: CampaignRuntime) -> CampaignAggregate:
+    """Technique results and verdict counts from the evaluation wiring; empty
+    (never a guess) when none is configured or it fails."""
+    fn = runtime.deps.aggregate_results
+    if fn is None:
+        return CampaignAggregate()
+    try:
+        return fn(runtime.campaign_id)
+    except Exception as exc:
+        logger.error("campaign aggregation failed for %s: %s", runtime.campaign_id, type(exc).__name__)
+        return CampaignAggregate()
+
+
 async def finish_campaign(
     runtime: CampaignRuntime, results: list[ConversationResult], started: float
 ) -> CampaignOutcome:
@@ -934,6 +1035,8 @@ async def finish_campaign(
         status = "completed"
     deps.repos.campaigns.set_status(runtime.campaign_id, "completed" if status == "completed" else "cancelled")
     duration = max(0.0, deps.clock() - started)
+    aggregate = _aggregate(runtime)
+    confirmed = sum(r.confirmed for r in aggregate.technique_results)
     outcome = CampaignOutcome(
         campaign_id=runtime.campaign_id,
         status=status,
@@ -947,8 +1050,8 @@ async def finish_campaign(
             deps,
             "campaign_complete",
             CampaignCompletePayload(
-                campaign_id=runtime.campaign_id, conversations=len(results), confirmed=0,
-                duration_seconds=duration,
+                campaign_id=runtime.campaign_id, conversations=len(results), confirmed=confirmed,
+                technique_results=aggregate.technique_results, duration_seconds=duration,
             ),
         )
     else:
@@ -987,6 +1090,17 @@ async def finish_campaign(
                 "llm_cost_usd": runtime.ledger.llm_cost_usd,
                 "monitor_hits": runtime.monitor_hits_total,
                 "duration_seconds": duration,
+                # Documented campaign_finished keys (observability/wandb_metrics.py).
+                "technique_results": [
+                    {
+                        "technique": r.technique, "success_rate": r.success_rate,
+                        "ci_low": r.ci95_low, "ci_high": r.ci95_high,
+                        "trials": r.trials, "successes": r.confirmed,
+                    }
+                    for r in aggregate.technique_results
+                ],
+                "verdict_counts": dict(aggregate.verdict_counts),
+                "headline": {"confirmed": confirmed, "conversations": len(results)},
             },
         )
     )
@@ -1019,8 +1133,10 @@ async def run_campaign(request: CampaignRequest, campaign_id: str, deps: EngineD
     specs = plan_conversations(request, campaign_id)
     sem = asyncio.Semaphore(request.policy.max_parallel_conversations)
 
-    async def guarded(spec: ConversationSpec) -> ConversationResult:
+    async def guarded(spec: ConversationSpec) -> ConversationResult | None:
         async with sem:
+            if runtime.stop_requested:  # stop_on_first_confirmed: not started
+                return None
             return await run_conversation(spec, runtime)
 
     try:
@@ -1034,7 +1150,15 @@ async def run_campaign(request: CampaignRequest, campaign_id: str, deps: EngineD
     except BaseExceptionGroup as group:
         await fail_campaign(runtime, group.exceptions[0])
         raise
-    return await finish_campaign(runtime, [t.result() for t in tasks], started)
+    if any(t.cancelled() for t in tasks):
+        # A child raised CancelledError on its own (a genuine cancel of this task
+        # would have raised out of the TaskGroup above). TaskGroup ignores it, and
+        # t.result() below would raise outside every handler, leaving the campaign
+        # "running": fail it explicitly.
+        await fail_campaign(runtime, asyncio.CancelledError())
+        raise RuntimeError("campaign run cancelled without a cancel request")
+    results = [r for r in (t.result() for t in tasks) if r is not None]
+    return await finish_campaign(runtime, results, started)
 
 
 __all__ = [

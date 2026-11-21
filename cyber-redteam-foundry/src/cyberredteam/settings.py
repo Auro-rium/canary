@@ -4,7 +4,7 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings
 
 # Load .env into the process environment so that code reading os.environ
@@ -106,7 +106,7 @@ class Settings(BaseSettings):
 
     # Turn planners (WP4).
     # Per-message length cap; longer planner output is rejected, not truncated.
-    planner_max_message_chars: int = 4000
+    planner_max_message_chars: int = Field(default=4000, ge=1)
     # LLMPlanner system prompt (owned by the security owner). Unset means
     # <project>/prompts/planner.md. Missing or empty: LLMPlanner fails closed.
     planner_prompt_path: Optional[Path] = None
@@ -114,10 +114,15 @@ class Settings(BaseSettings):
     planner_packs_dir: Optional[Path] = None
     # Estimated USD per 1k planner tokens (Backboard reports tokens, not cost).
     # Deliberately high so the campaign USD budget errs on the safe side.
-    planner_usd_per_1k_input_tokens: float = 0.01
-    planner_usd_per_1k_output_tokens: float = 0.03
+    planner_usd_per_1k_input_tokens: float = Field(default=0.01, gt=0)
+    planner_usd_per_1k_output_tokens: float = Field(default=0.03, gt=0)
     # How much of each target reply the planner model sees per turn.
-    planner_transcript_chars_per_turn: int = 2000
+    planner_transcript_chars_per_turn: int = Field(default=2000, ge=1)
+
+    # Per-target safety config (canary values, forbidden tools) for the worker's
+    # monitors: a directory holding <target_id>.yaml and/or default.yaml in the
+    # format of monitors.config.load_target_safety_config. Unset = none.
+    target_safety_dir: Optional[Path] = None
 
     class Config:
         env_file = ".env"

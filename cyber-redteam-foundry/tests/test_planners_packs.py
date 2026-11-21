@@ -111,3 +111,27 @@ def test_shipped_smoke_packs_are_benign_and_valid():
     # Only smoke packs ship with the code; real packs come from the security owner.
     assert all(p.relative_to(DEFAULT_PACKS_DIR).parts[0] == "smoke"
                for p in DEFAULT_PACKS_DIR.rglob("*.y*ml"))
+
+
+def test_pack_file_over_the_size_cap_is_rejected_unparsed(tmp_path):
+    from cyberredteam.planners.packs import MAX_PACK_FILE_BYTES, load_pack_file
+
+    big = tmp_path / "big.yaml"
+    big.write_text(
+        "name: big\nversion: 1\ntechnique: t\nturns:\n  - message: hi\n# " + "x" * MAX_PACK_FILE_BYTES,
+        encoding="utf-8",
+    )
+    with pytest.raises(PackValidationError, match="exceeds"):
+        load_pack_file(big)
+    with pytest.raises(PackValidationError):
+        PackLoader(tmp_path)
+
+
+def test_pack_file_at_the_cap_still_loads(tmp_path):
+    from cyberredteam.planners.packs import MAX_PACK_FILE_BYTES, load_pack_file
+
+    head = "name: ok\nversion: 1\ntechnique: t\nturns:\n  - message: hi\n# "
+    ok = tmp_path / "ok.yaml"
+    ok.write_text(head + "x" * (MAX_PACK_FILE_BYTES - len(head)), encoding="utf-8")
+    assert ok.stat().st_size == MAX_PACK_FILE_BYTES
+    assert load_pack_file(ok).name == "ok"
