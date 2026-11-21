@@ -157,8 +157,15 @@ class QueueCampaignLauncher:
     def _mark_timed_out(self, campaign_id: str) -> None:
         """Cancel failed twice: never leave the campaign running. The row goes to
         ``failed`` and a ``campaign_failed`` event records the reason ``gate timeout``."""
+        try:  # best effort: stops a worker that is still running from flipping the status back
+            self.control.request_cancel(campaign_id, "gate")
+        except Exception as exc:
+            logger.error("gate: could not set the cancel flag for %s (%s)", campaign_id, type(exc).__name__)
         try:
-            self.campaigns.set_status(campaign_id, "failed")
+            # Compare-and-set: a campaign that just finished stays as it finished.
+            if not self.campaigns.set_status_if_not_terminal(campaign_id, "failed"):
+                logger.info("gate: %s already finished; timeout not recorded", campaign_id)
+                return
         except Exception as exc:
             logger.error("gate: could not mark %s failed (%s)", campaign_id, type(exc).__name__)
             return

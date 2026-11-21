@@ -183,3 +183,31 @@ def test_responses_api_stream_not_duplicated():
 def test_response_path_ignores_fallback_paths():
     body = _sse({"tok": "A", "text": "X"}, {"text": "Y"})
     assert assemble_text(parse_sse(body), "tok") == "A"
+
+
+class _RefreshingAuth:
+    async def headers(self, client):
+        return {}
+
+    async def refresh_after_401(self, client):
+        return True
+
+
+def _count_posts(status, headers=None, **knobs):
+    rec = Recorder(lambda r, n: httpx.Response(status, headers=headers or {}))
+    adapter = make_adapter(make_config(), rec.transport, **knobs)
+    adapter._auth = _RefreshingAuth()
+    res = run(adapter.send("q"))
+    return len(rec.requests), res
+
+
+def test_retry_knobs_default_to_the_documented_policy():
+    assert _count_posts(503)[0] == 3  # first try + MAX_RETRIES
+    assert _count_posts(401)[0] == 2  # one re-auth resend
+
+
+def test_single_send_knobs_disable_every_resend():
+    off = {"max_retries": 0, "max_rate_limit_waits": 0, "reauth_resend": False}
+    for status, headers in ((503, None), (503, {"Retry-After": "1"}), (429, {"Retry-After": "1"}), (401, None)):
+        n, res = _count_posts(status, headers, **off)
+        assert n == 1 and res.error is not None, (status, headers)

@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import asyncio
+import collections
 import logging
 import threading
 import time
@@ -336,23 +337,40 @@ TEST_CONNECTION_MESSAGE = "Hello"
 TEST_CONNECTION_MIN_INTERVAL_S = 10.0
 TEST_CONNECTION_TIMEOUT_S = 15
 TEST_CONNECTION_MAX_REPLY_CHARS = 1000
+TEST_CONNECTION_ORG_LIMIT = 10  # probes per org per window
+TEST_CONNECTION_ORG_WINDOW_S = 60.0
+# Both limits live in this process's memory: each API worker counts on its own.
 _probe_lock = threading.Lock()
 _last_probe: dict[str, float] = {}  # target_id -> monotonic time of the last accepted probe
+_org_probes: dict[str, collections.deque[float]] = {}  # org_id -> accepted probe times
 
 
-def _reserve_probe_slot(target_id: str) -> None:
-    """At most one probe per target per 10 s (per API process). 429 otherwise."""
+def _too_many(detail: str, wait: float) -> HTTPException:
+    return HTTPException(status_code=429, detail=detail,
+                         headers={"Retry-After": str(max(1, int(wait + 0.999)))})
+
+
+def _reserve_probe_slot(target_id: str, org_id: str) -> None:
+    """At most one probe per target per 10 s and 10 per org per minute (per API
+    worker process). 429 otherwise; a refused call consumes nothing."""
     with _probe_lock:
         now = time.monotonic()
         last = _last_probe.get(target_id)
         if last is not None and now - last < TEST_CONNECTION_MIN_INTERVAL_S:
-            wait = max(1, int(TEST_CONNECTION_MIN_INTERVAL_S - (now - last) + 0.999))
-            raise HTTPException(
-                status_code=429,
-                detail="Test connection is limited to one request per 10 seconds per target.",
-                headers={"Retry-After": str(wait)},
+            raise _too_many(
+                "Test connection is limited to one request per 10 seconds per target.",
+                TEST_CONNECTION_MIN_INTERVAL_S - (now - last),
+            )
+        window = _org_probes.setdefault(org_id, collections.deque())
+        while window and now - window[0] >= TEST_CONNECTION_ORG_WINDOW_S:
+            window.popleft()
+        if len(window) >= TEST_CONNECTION_ORG_LIMIT:
+            raise _too_many(
+                "Test connection is limited to 10 requests per minute per organization.",
+                TEST_CONNECTION_ORG_WINDOW_S - (now - window[0]),
             )
         _last_probe[target_id] = now
+        window.append(now)
         for tid in [t for t, ts in _last_probe.items() if now - ts > 3600]:
             del _last_probe[tid]
 
@@ -370,6 +388,14 @@ async def test_connection(
     so it sends exactly one constant, harmless request and nothing user-supplied.
     The endpoint and auth URLs pass the SSRF guard first. The reply is redacted and
     the target's own credentials are masked. Credentials are never returned.
+
+    The message is sent once: the adapter's retries, Retry-After waits and the
+    resend after a 401 re-auth are all disabled, so a 5xx, connect error, 429 or
+    401 yields one request and an error kind. OAuth/cookie auth sub-requests to the
+    (SSRF-checked) auth host are separate from the message and may still happen.
+
+    Limits: one probe per target per 10 s and 10 per organization per minute, both
+    counted in memory per API worker process (429 with ``Retry-After``).
     """
     target = _get_in_org(store, target_id, principal)
     opts = url_check_options(ownership_options)
@@ -380,7 +406,7 @@ async def test_connection(
         )
     except TargetRefused as exc:
         raise HTTPException(status_code=422, detail=f"target refused: {exc}") from None
-    _reserve_probe_slot(target_id)
+    _reserve_probe_slot(target_id, principal.org_id)
 
     secrets = auth_secret_values(target)
     probe = target.model_copy(
@@ -394,6 +420,9 @@ async def test_connection(
             campaign_id=f"connection-test:{target_id}",
             rate_limiter=InProcessTokenBucket(rps=1.0),
             transport=ownership_options.get("transport"),
+            # Exactly one delivery attempt of the message: no retry, no Retry-After
+            # wait, no resend after a 401 re-auth.
+            max_retries=0, max_rate_limit_waits=0, reauth_resend=False,
         ) as adapter:
             result = await asyncio.wait_for(
                 adapter.send(TEST_CONNECTION_MESSAGE), timeout=TEST_CONNECTION_TIMEOUT_S

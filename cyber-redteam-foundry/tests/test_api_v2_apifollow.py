@@ -236,3 +236,37 @@ def test_compare_is_a_pure_read(v2):
     assert _compare(v2, cand, base).status_code == 200
     assert v2.queue.enqueued == []
     assert len(CampaignRepo(v2.factory).list_for_target(tid)) == 2
+
+
+# ── single-send guarantee, org limit ─────────────────────────────────────────
+
+
+@pytest.mark.parametrize("name,handler", [
+    ("503", lambda req: httpx.Response(503)),
+    ("503-retry-after", lambda req: httpx.Response(503, headers={"Retry-After": "1"})),
+    ("429-retry-after", lambda req: httpx.Response(429, headers={"Retry-After": "1"})),
+    ("401", lambda req: httpx.Response(401)),
+    ("connect-error", None),
+])
+def test_test_connection_sends_exactly_one_request(v2, name, handler):
+    calls = []
+
+    def h(req):
+        calls.append(req)
+        if handler is None:
+            raise httpx.ConnectError("boom")
+        return handler(req)
+
+    _use_transport(v2, h)
+    body = _probe(v2, v2.target("a")).json()
+    assert len(calls) == 1, name
+    assert body["parse_ok"] is False and body["error"]
+
+
+def test_test_connection_per_org_limit(v2):
+    _use_transport(v2, lambda req: httpx.Response(200, json={"reply": "hi"}))
+    from cyberredteam.api_v2 import targets as t
+
+    codes = [_probe(v2, v2.target("a")).status_code for _ in range(t.TEST_CONNECTION_ORG_LIMIT + 1)]
+    assert codes[:-1] == [200] * t.TEST_CONNECTION_ORG_LIMIT and codes[-1] == 429
+    assert _probe(v2, v2.target("b"), "admin", "b").status_code == 200  # other org unaffected

@@ -147,3 +147,15 @@ def test_weave_feedback_is_soft(monkeypatch):
 
     monkeypatch.setattr(wt, "log_judge_vote", boom)
     assert run(j, conversation(["a"])).k == 3  # never raises into the judge
+
+
+def test_record_usage_ignores_non_finite_token_counts():
+    """int(float('inf')) raises OverflowError; it must not escape into a vote."""
+    from types import SimpleNamespace
+
+    judge, _ = judge_with(out("safe"))
+    for bad in (float("inf"), float("-inf")):
+        judge._record_usage(SimpleNamespace(usage_metadata={"input_tokens": bad, "output_tokens": 1}))
+    assert judge.take_usage() == (0, 0)
+    judge._record_usage(SimpleNamespace(usage_metadata={"input_tokens": 2, "output_tokens": 3}))
+    assert judge.take_usage() == (2, 3)

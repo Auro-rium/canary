@@ -107,7 +107,7 @@ def test_timeout_with_failing_cancel_retries_once_then_marks_the_campaign_failed
     with pytest.raises(LaunchError, match="marked failed"):
         launcher.launch(target_id, "alpha")
     cid = queue.enqueued[0]
-    assert len(attempts) == 2  # first try + exactly one retry
+    assert len(attempts) == 3  # first try + one retry + the best-effort flag write when marking failed
     assert CampaignRepo(db_factory).get(cid).status == "failed"
     events = EventLog(db_factory).since(cid)
     assert events[-1].type == "campaign_failed" and events[-1].payload.message == "gate timeout"
@@ -162,3 +162,27 @@ def test_run_gate_maps_a_launch_error_to_a_gate_error(db_factory, tmp_path):
         run_gate(CampaignRepo(db_factory), target_id=target_id, suite="alpha", baseline_id="b",
                  candidate_id=None, policy=GatePolicy(), launcher=launcher)
     time.sleep(0.1)
+
+
+def test_timeout_path_never_overwrites_a_campaign_that_just_finished(db_factory, tmp_path):
+    """Race: the worker finishes as completed, then the timeout path runs."""
+    from cyberredteam.jobs.events import EventLog
+
+    target_id = _verified_target(db_factory)
+    queue = FakeQueue(db_factory, never=True)
+    launcher = _launcher(db_factory, queue, tmp_path, timeout_s=5)
+    cid = f"gate-{target_id[:6]}"
+    repo = CampaignRepo(db_factory)
+    from storage_v2_support import make_policy
+
+    repo.create(cid, target_id, make_policy(), created_by="gate")
+    repo.set_status(cid, "completed")
+    launcher._mark_timed_out(cid)
+    assert repo.get(cid).status == "completed"
+    assert EventLog(db_factory).since(cid) == []  # no bogus campaign_failed event
+    assert repo.set_status_if_not_terminal(cid, "failed") is False
+    running = f"{cid}-r"
+    repo.create(running, target_id, make_policy(), created_by="gate")
+    repo.set_status(running, "running")
+    assert repo.set_status_if_not_terminal(running, "failed") is True
+    assert repo.get(running).status == "failed"

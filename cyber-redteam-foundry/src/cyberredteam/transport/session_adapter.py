@@ -212,7 +212,15 @@ class SessionAdapter:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         clock: Callable[[], float] = time.monotonic,
         before_attempt: Callable[[], Awaitable[None]] | None = None,
+        max_retries: int = MAX_RETRIES,
+        max_rate_limit_waits: int = MAX_RATE_LIMIT_WAITS,
+        reauth_resend: bool = True,
     ) -> None:
+        # The three knobs default to the documented retry policy. A probe that must
+        # send its message at most once passes 0, 0, False.
+        self._max_retries = max_retries
+        self._max_rate_limit_waits = max_rate_limit_waits
+        self._reauth_resend = reauth_resend
         self._config = config
         self._before_attempt = before_attempt
         self._cancel_event = asyncio.Event()
@@ -374,7 +382,7 @@ class SessionAdapter:
                 if (
                     not got_response
                     and isinstance(exc, (httpx.ConnectTimeout, httpx.PoolTimeout))
-                    and net_retries < MAX_RETRIES
+                    and net_retries < self._max_retries
                 ):
                     net_retries += 1
                     await self._backoff(net_retries)
@@ -387,7 +395,7 @@ class SessionAdapter:
                 if (
                     not got_response
                     and isinstance(exc, _RETRYABLE_BEFORE_RESPONSE)
-                    and net_retries < MAX_RETRIES
+                    and net_retries < self._max_retries
                 ):
                     net_retries += 1
                     await self._backoff(net_retries)
@@ -406,7 +414,7 @@ class SessionAdapter:
                 self._parse_success(raw, result)
                 return
 
-            if status == 401 and not reauthed:
+            if status == 401 and not reauthed and self._reauth_resend:
                 reauthed = True
                 try:
                     if await self._auth.refresh_after_401(self._client):
@@ -423,7 +431,7 @@ class SessionAdapter:
                         TargetErrorKind.RATE_LIMITED, f"HTTP {status}, Retry-After {wait:.0f}s too long"
                     )
                     return
-                if rate_waits < MAX_RATE_LIMIT_WAITS:
+                if rate_waits < self._max_rate_limit_waits:
                     rate_waits += 1
                     await self._limiter.penalize(self._config.target_id, wait)
                     await self._wait(wait)
@@ -433,7 +441,7 @@ class SessionAdapter:
                 return
 
             if status >= 500:
-                if net_retries < MAX_RETRIES:
+                if net_retries < self._max_retries:
                     net_retries += 1
                     await self._backoff(net_retries)
                     continue

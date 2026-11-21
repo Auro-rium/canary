@@ -3853,7 +3853,7 @@
     },
     "/api/v2/targets/{target_id}/test-connection": {
       "post": {
-        "description": "Send one fixed benign message (\"Hello\") to the target and report what came back.\n\nAllowed before verification (it is how an operator checks the wizard settings),\nso it sends exactly one constant, harmless request and nothing user-supplied.\nThe endpoint and auth URLs pass the SSRF guard first. The reply is redacted and\nthe target's own credentials are masked. Credentials are never returned.",
+        "description": "Send one fixed benign message (\"Hello\") to the target and report what came back.\n\nAllowed before verification (it is how an operator checks the wizard settings),\nso it sends exactly one constant, harmless request and nothing user-supplied.\nThe endpoint and auth URLs pass the SSRF guard first. The reply is redacted and\nthe target's own credentials are masked. Credentials are never returned.\n\nThe message is sent once: the adapter's retries, Retry-After waits and the\nresend after a 401 re-auth are all disabled, so a 5xx, connect error, 429 or\n401 yields one request and an error kind. OAuth/cookie auth sub-requests to the\n(SSRF-checked) auth host are separate from the message and may still happen.\n\nLimits: one probe per target per 10 s and 10 per organization per minute, both\ncounted in memory per API worker process (429 with ``Retry-After``).",
         "operationId": "test_connection_api_v2_targets__target_id__test_connection_post",
         "parameters": [
           {

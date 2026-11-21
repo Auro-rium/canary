@@ -481,6 +481,24 @@ class CampaignRepo:
             if status in TERMINAL_CAMPAIGN_STATUSES:
                 row.finished_at = _utcnow()
 
+    def set_status_if_not_terminal(self, campaign_id: str, status: CampaignStatus) -> bool:
+        """Compare-and-set: move to ``status`` only if the campaign is not already
+        terminal (one ``UPDATE ... WHERE status NOT IN (terminal)``). Returns
+        whether a row changed, so a finished campaign is never overwritten."""
+        if status not in CAMPAIGN_STATUSES:
+            raise ValueError(f"unknown campaign status {status!r}")
+        values: dict[str, Any] = {"status": status}
+        if status in TERMINAL_CAMPAIGN_STATUSES:
+            values["finished_at"] = _utcnow()
+        with session_scope(self._factory) as s:
+            res = s.execute(
+                update(orm.CampaignRow)
+                .where(orm.CampaignRow.campaign_id == campaign_id,
+                       orm.CampaignRow.status.not_in(tuple(TERMINAL_CAMPAIGN_STATUSES)))
+                .values(**values)
+            )
+            return bool(res.rowcount)
+
     def list_for_target(self, target_id: str) -> list[CampaignRecord]:
         with session_scope(self._factory) as s:
             rows = s.scalars(
