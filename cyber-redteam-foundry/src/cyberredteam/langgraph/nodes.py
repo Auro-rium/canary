@@ -164,8 +164,8 @@ def node_attacker_branch(payload: dict) -> dict:
 
     target_adapter = None
     if target_id.startswith("http://") or target_id.startswith("https://"):
-        from cyberredteam.tools.target_adapter import SessionTargetAdapter
         from cyberredteam.settings import get_settings
+        from cyberredteam.tools.target_adapter import SessionTargetAdapter
         target_adapter = SessionTargetAdapter(
             endpoint=target_id,
             api_key=get_settings().target_api_key,
