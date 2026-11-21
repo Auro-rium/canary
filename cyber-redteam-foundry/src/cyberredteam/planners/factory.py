@@ -4,7 +4,9 @@
 misconfigured campaign fails before its first turn instead of producing one
 ``error`` conversation per spec:
 
-* ``"scripted"``: loads and validates every pack (schema, length cap, deny
+* ``"scripted"``: loads the pack set chosen by ``settings.planner_pack_set``
+  (smoke by default; ignored when a packs directory is given explicitly),
+  loads and validates every pack (schema, length cap, deny
   categories); with an explicit ``pack`` name it also checks that pack exists.
 * ``"llm"``: reads ``prompts/planner.md`` (fail closed: PlannerPromptMissing),
   requires a scope classifier (ScopeClassifierMissing) and builds the
@@ -66,7 +68,10 @@ def make_planner_factory(
     deny = deny_checker or default_deny_checker()
 
     if kind == "scripted":
-        loader = pack_loader or PackLoader(packs_dir or settings.planner_packs_dir)
+        explicit_dir = packs_dir or settings.planner_packs_dir
+        loader = pack_loader or PackLoader(
+            explicit_dir, pack_set=None if explicit_dir else settings.planner_pack_set
+        )
         guards = GuardRails(max_message_chars=cap, deny_checker=deny, scope_classifier=scope_classifier)
         for p in loader.packs():
             validate_pack_messages(p, guards)
