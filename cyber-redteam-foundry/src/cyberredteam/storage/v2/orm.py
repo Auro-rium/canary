@@ -69,6 +69,13 @@ class TargetRow(Base):
     environment: Mapped[str] = mapped_column(String(16))
     retention_days: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = _ts()
+    # WP8: owning org (NULL = legacy row, visible to no org), soft delete, and the
+    # per-target on-call webhook (a bearer secret for Slack/Discord, so encrypted).
+    org_id: Mapped[str | None] = mapped_column(
+        String(36), ForeignKey("orgs.org_id"), nullable=True, index=True
+    )
+    archived_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    oncall_webhook: Mapped[str | None] = mapped_column(EncryptedText, nullable=True)
 
 
 class TargetSecretRow(Base):
@@ -293,3 +300,8 @@ class BudgetLedgerRow(Base):
     kind: Mapped[str] = mapped_column(String(16))
     amount: Mapped[float] = mapped_column(Float)
     at: Mapped[datetime] = _ts()
+
+
+# WP8 auth tables live in their own module but share this Base; importing them
+# here keeps the targets.org_id foreign key resolvable wherever the ORM is used.
+from cyberredteam.auth import tables as _auth_tables  # noqa: E402, F401

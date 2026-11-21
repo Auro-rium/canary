@@ -5,12 +5,12 @@ import type {
 
 const env = import.meta.env as Record<string, string | undefined>
 export const API_BASE = env.VITE_API_URL ?? ''
-const localApiToken = env.VITE_API_TOKEN
 
+// No token is ever read from a VITE_* variable (it would ship in the bundle).
+// The browser authenticates with the session cookie the proxy forwards (WP8).
 function requestHeaders(init?: HeadersInit): HeadersInit {
   return {
     'Content-Type': 'application/json',
-    ...(localApiToken ? { Authorization: `Bearer ${localApiToken}` } : {}),
     ...(init ?? {}),
   }
 }

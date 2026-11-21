@@ -25,9 +25,9 @@ class Settings(BaseSettings):
     backboard_llm_provider: str = "openai"
     backboard_model_name: str = "gpt-4o"
 
-    # API authentication — bearer token required on every API request.
-    # Must match the VITE_API_TOKEN configured in the frontend.
-    api_secret_key: Optional[str] = None
+    # API authentication (WP8): OIDC browser sessions or per-user API keys
+    # (``cyber-rt auth ...``). There is no shared master token any more; the old
+    # API_SECRET_KEY is ignored. Tokens never go into VITE_* variables.
 
     # Authorization scope: comma-separated list of target_ids a run may be
     # created against. When set, a run targeting anything else is rejected —
@@ -123,6 +123,37 @@ class Settings(BaseSettings):
     # monitors: a directory holding <target_id>.yaml and/or default.yaml in the
     # format of monitors.config.load_target_safety_config. Unset = none.
     target_safety_dir: Optional[Path] = None
+
+    # WP8 auth. OIDC providers are enabled when both id and secret are set.
+    oidc_github_client_id: Optional[str] = None
+    oidc_github_client_secret: Optional[SecretStr] = None
+    oidc_google_client_id: Optional[str] = None
+    oidc_google_client_secret: Optional[SecretStr] = None
+    # Public origin of the API as the browser sees it (the Vercel/nginx proxy),
+    # used to build the OIDC redirect_uri: <base>/api/v2/auth/callback/<provider>.
+    public_base_url: Optional[str] = None
+    # Deployment mode. Anything but dev/test is treated as production: OIDC login
+    # then needs PUBLIC_BASE_URL (never derived from the Host header) and Secure
+    # session cookies.
+    canary_env: str = "production"
+    # Platform operators (user ids or emails, comma separated). Only they may flip
+    # the global kill switch, which halts every org.
+    canary_platform_admins: str = ""
+    session_ttl_s: int = 12 * 3600
+    # Secure cookies need HTTPS; set False only for local http development.
+    session_cookie_secure: bool = True
+    # Deprecated v1 read routes (/api/runs, /api/findings, ...): kept for one
+    # release, admin-only (legacy data has no org). False -> 410 Gone.
+    v1_api_enabled: bool = True
+    v1_sunset: str = "2027-03-01"
+
+    @property
+    def is_dev_or_test(self) -> bool:
+        return self.canary_env.strip().lower() in {"dev", "development", "test", "local"}
+
+    @property
+    def platform_admin_set(self) -> frozenset[str]:
+        return frozenset(p.strip().lower() for p in self.canary_platform_admins.split(",") if p.strip())
 
     class Config:
         env_file = ".env"

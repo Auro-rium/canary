@@ -144,6 +144,15 @@ def _scrub(value: Any, secrets: tuple[str, ...]) -> Any:
     return value
 
 
+def scrub_secrets(value: Any, secret_values: tuple[str, ...] | list[str]) -> Any:
+    """Mask exact secret values (>= 4 chars, longest first) in every string of a
+    JSON-like value, id fields excepted; also a secret prefix left at a preview cut."""
+    secrets = tuple(
+        sorted({v for v in secret_values if len(v) >= MIN_SECRET_CHARS}, key=len, reverse=True)
+    )
+    return _scrub(value, secrets) if secrets else value
+
+
 class EventLogSink:
     """``engine.types.EventSink`` that persists contract events to the log.
 

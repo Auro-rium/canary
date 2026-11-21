@@ -8,7 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 from jobs_support import FakeRunner, seed_campaign
 
-from cyberredteam.api import app, require_auth, settings
+from cyberredteam.api import app
 from cyberredteam.contracts import (
     BudgetUpdatePayload,
     CampaignCompletePayload,
@@ -31,13 +31,20 @@ def plane(db_factory):
 
 
 @pytest.fixture
-def client(plane):
-    return TestClient(app)
+def client(plane, v2):
+    """Signed in as org A's admin with a real API key."""
+    return TestClient(app, headers=v2.h("admin"))
 
 
-def test_cancel_stops_one_campaign_not_the_other(db_factory, plane, client):
-    a = seed_campaign(db_factory, status="running")
-    b = seed_campaign(db_factory, status="running")
+@pytest.fixture
+def seed(v2, db_factory):
+    """seed_campaign in org A (the signed-in admin's org)."""
+    return lambda **kw: seed_campaign(db_factory, org_id=v2.orgs["a"], **kw)
+
+
+def test_cancel_stops_one_campaign_not_the_other(db_factory, plane, client, seed):
+    a = seed(status="running")
+    b = seed(status="running")
     control = DbRunControl(db_factory, cache_ttl=0)
 
     async def go():
@@ -59,14 +66,14 @@ def test_cancel_stops_one_campaign_not_the_other(db_factory, plane, client):
     assert [e.object for e in audit] == [f"campaign:{a}"]
 
 
-def test_cancel_unknown_and_terminal(db_factory, client):
+def test_cancel_unknown_and_terminal(db_factory, client, seed):
     assert client.post("/api/v2/campaigns/nope/cancel").status_code == 404
-    done = seed_campaign(db_factory, status="completed")
+    done = seed(status="completed")
     assert client.post(f"/api/v2/campaigns/{done}/cancel").status_code == 409
 
 
-def test_cancel_queued_campaign_is_cancelled_immediately(db_factory, client):
-    cid = seed_campaign(db_factory)
+def test_cancel_queued_campaign_is_cancelled_immediately(db_factory, client, seed):
+    cid = seed()
     assert client.post(f"/api/v2/campaigns/{cid}/cancel").json()["status"] == "cancelled"
     assert CampaignRepo(db_factory).get(cid).status == "cancelled"
 
@@ -97,31 +104,33 @@ def test_kill_switch_env_reported(client, monkeypatch):
     assert view["enabled"] is True and view["env"] is True and view["db"] is False
 
 
-def test_control_endpoints_require_auth(db_factory, plane):
-    app.dependency_overrides.pop(require_auth, None)
-    original = settings.api_secret_key
-    settings.api_secret_key = "s3cret"
-    try:
-        c = TestClient(app)
-        cid = seed_campaign(db_factory, status="running")
-        calls = [
-            ("post", f"/api/v2/campaigns/{cid}/cancel", None),
-            ("post", "/api/v2/admin/kill-switch", {"enabled": True}),
-            ("get", "/api/v2/admin/kill-switch", None),
-            ("get", f"/api/v2/campaigns/{cid}/events", None),
-        ]
-        for method, url, body in calls:
-            assert getattr(c, method)(url, **({"json": body} if body else {})).status_code == 401
-            bad = {"Authorization": "Bearer nope"}
-            assert getattr(c, method)(url, headers=bad, **({"json": body} if body else {})).status_code == 401
-        # nothing was written by the rejected calls
-        assert AuditRepo(db_factory).list() == []
-        ok = {"Authorization": "Bearer s3cret"}
-        assert c.post("/api/v2/admin/kill-switch", json={"enabled": False}, headers=ok).status_code == 200
-        assert len(AuditRepo(db_factory).list(action="kill_switch.set")) == 1
-    finally:
-        settings.api_secret_key = original
-        app.dependency_overrides[require_auth] = lambda: None
+def test_control_endpoints_require_auth(db_factory, plane, v2, seed):
+    c = TestClient(app)
+    cid = seed(status="running")
+    calls = [
+        ("post", f"/api/v2/campaigns/{cid}/cancel", None),
+        ("post", "/api/v2/admin/kill-switch", {"enabled": True}),
+        ("get", "/api/v2/admin/kill-switch", None),
+        ("get", f"/api/v2/campaigns/{cid}/events", None),
+    ]
+    for method, url, body in calls:
+        assert getattr(c, method)(url, **({"json": body} if body else {})).status_code == 401
+        bad = {"Authorization": "Bearer nope"}
+        assert getattr(c, method)(url, headers=bad, **({"json": body} if body else {})).status_code == 401
+    # an operator may cancel but not flip the kill switch; a viewer may do neither
+    op = v2.h("operator")
+    assert c.post("/api/v2/admin/kill-switch", json={"enabled": True}, headers=op).status_code == 403
+    assert c.post(f"/api/v2/campaigns/{cid}/cancel", headers=v2.h("viewer")).status_code == 403
+    # another org's admin cannot see or cancel this campaign
+    assert c.post(f"/api/v2/campaigns/{cid}/cancel", headers=v2.h("admin", "b")).status_code == 404
+    assert c.get(f"/api/v2/campaigns/{cid}/events", headers=v2.h("admin", "b")).status_code == 404
+    # nothing was written by the rejected calls
+    assert AuditRepo(db_factory).list(action="kill_switch.set") == []
+    assert AuditRepo(db_factory).list(action="campaign.cancel") == []
+    ok = v2.h("admin")
+    assert c.post("/api/v2/admin/kill-switch", json={"enabled": False}, headers=ok).status_code == 200
+    rows = AuditRepo(db_factory).list(action="kill_switch.set")
+    assert [r.actor for r in rows] == [v2.actor("admin").actor]
 
 
 def _blocks(text: str) -> list[dict]:
@@ -148,8 +157,8 @@ def _complete(cid):
     )
 
 
-def test_sse_last_event_id_replay_and_contract_roundtrip(db_factory, plane, client):
-    cid = seed_campaign(db_factory, status="running")
+def test_sse_last_event_id_replay_and_contract_roundtrip(db_factory, plane, client, seed):
+    cid = seed(status="running")
     for i in range(5):
         plane.events.append(cid, "budget_update", _budget(cid, i))
     plane.events.append(cid, "campaign_complete", _complete(cid))
@@ -173,24 +182,24 @@ def test_sse_last_event_id_replay_and_contract_roundtrip(db_factory, plane, clie
     assert client.get("/api/v2/campaigns/missing/events").status_code == 404
 
 
-def test_only_contract_event_types_are_accepted(db_factory, plane):
-    cid = seed_campaign(db_factory)
+def test_only_contract_event_types_are_accepted(db_factory, plane, seed):
+    cid = seed()
     for bad in ("campaign_completed", "campaign_killed", "campaign_resumed"):
         with pytest.raises(ValueError):
             plane.events.append(cid, bad, {"campaign_id": cid})
 
 
-def test_cancel_route_event_matches_contract(db_factory, plane, client):
-    cid = seed_campaign(db_factory)  # queued -> cancelled immediately
+def test_cancel_route_event_matches_contract(db_factory, plane, client, seed, v2):
+    cid = seed()  # queued -> cancelled immediately
     client.post(f"/api/v2/campaigns/{cid}/cancel")
     (ev,) = _blocks(client.get(f"/api/v2/campaigns/{cid}/events").text)
     assert ev.type == "campaign_cancelled"
     assert ev.payload.campaign_id == cid and ev.payload.reason == "user"
-    assert ev.payload.cancelled_by == "api-token"
+    assert ev.payload.cancelled_by == v2.actor("admin").actor
 
 
-def test_sink_enforces_preview_cap(db_factory, plane):
-    cid = seed_campaign(db_factory)
+def test_sink_enforces_preview_cap(db_factory, plane, seed):
+    cid = seed()
     long = "x" * 5000
     payload = TurnPayload.model_construct(  # bypasses the validator on purpose
         campaign_id=cid, conversation_id="c", index=0, message_preview=long,
@@ -205,8 +214,8 @@ def test_sink_enforces_preview_cap(db_factory, plane):
     assert parse_sse_event(ev.to_sse().split("data: ", 1)[1].strip()).seq == ev.seq
 
 
-def test_sse_streams_live_events_and_disconnect_is_harmless(db_factory, plane, client):
-    cid = seed_campaign(db_factory, status="running")
+def test_sse_streams_live_events_and_disconnect_is_harmless(db_factory, plane, client, seed):
+    cid = seed(status="running")
     plane.events.append(cid, "budget_update", _budget(cid, 0))
     import threading
     import time

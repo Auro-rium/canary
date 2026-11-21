@@ -53,11 +53,13 @@ def db_factory(request, tmp_path, monkeypatch):
         migrate_down(url)
 
 
-def seed_campaign(factory, campaign_id: str | None = None, *, status: str | None = None) -> str:
-    """Create a verified target and a campaign row; returns the campaign id."""
+def seed_campaign(
+    factory, campaign_id: str | None = None, *, status: str | None = None, org_id: str | None = None
+) -> str:
+    """Create a verified target (in ``org_id``, if given) and a campaign row; returns the campaign id."""
     store = SqlTargetStore(factory)
     target = make_target()
-    target_id = store.create(target)
+    target_id = store.create(target, org_id=org_id)
     store.set_verified(target_id, "header")
     cid = campaign_id or f"c-{uuid.uuid4().hex[:8]}"
     repo = CampaignRepo(factory)

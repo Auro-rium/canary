@@ -1,0 +1,3708 @@
+{
+  "components": {
+    "schemas": {
+      "ApiKeyCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "expires_in_days": {
+            "anyOf": [
+              {
+                "maximum": 3650.0,
+                "minimum": 1.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires In Days"
+          },
+          "name": {
+            "default": "",
+            "maxLength": 200,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "title": "ApiKeyCreate",
+        "type": "object"
+      },
+      "ApiKeyCreated": {
+        "properties": {
+          "api_key": {
+            "title": "Api Key",
+            "type": "string"
+          },
+          "key": {
+            "$ref": "#/components/schemas/ApiKeyView"
+          }
+        },
+        "required": [
+          "key",
+          "api_key"
+        ],
+        "title": "ApiKeyCreated",
+        "type": "object"
+      },
+      "ApiKeyList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/ApiKeyView"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "ApiKeyList",
+        "type": "object"
+      },
+      "ApiKeyView": {
+        "properties": {
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "expires_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Expires At"
+          },
+          "key_id": {
+            "title": "Key Id",
+            "type": "string"
+          },
+          "last_used_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Used At"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "revoked_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Revoked At"
+          }
+        },
+        "required": [
+          "key_id",
+          "name",
+          "created_at",
+          "expires_at",
+          "last_used_at",
+          "revoked_at"
+        ],
+        "title": "ApiKeyView",
+        "type": "object"
+      },
+      "BearerAuth": {
+        "additionalProperties": false,
+        "properties": {
+          "token": {
+            "format": "password",
+            "title": "Token",
+            "type": "string",
+            "writeOnly": true
+          },
+          "type": {
+            "const": "bearer",
+            "default": "bearer",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token"
+        ],
+        "title": "BearerAuth",
+        "type": "object"
+      },
+      "BudgetState": {
+        "properties": {
+          "llm_cost_usd": {
+            "title": "Llm Cost Usd",
+            "type": "number"
+          },
+          "max_llm_cost_usd": {
+            "title": "Max Llm Cost Usd",
+            "type": "number"
+          },
+          "max_total_requests": {
+            "title": "Max Total Requests",
+            "type": "integer"
+          },
+          "requests_used": {
+            "title": "Requests Used",
+            "type": "number"
+          }
+        },
+        "required": [
+          "requests_used",
+          "max_total_requests",
+          "llm_cost_usd",
+          "max_llm_cost_usd"
+        ],
+        "title": "BudgetState",
+        "type": "object"
+      },
+      "CampaignCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "policy": {
+            "$ref": "#/components/schemas/CampaignPolicy"
+          },
+          "target_id": {
+            "title": "Target Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target_id",
+          "policy"
+        ],
+        "title": "CampaignCreate",
+        "type": "object"
+      },
+      "CampaignDetail": {
+        "properties": {
+          "budget": {
+            "$ref": "#/components/schemas/BudgetState"
+          },
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "confirmed": {
+            "title": "Confirmed",
+            "type": "integer"
+          },
+          "conversations": {
+            "items": {
+              "$ref": "#/components/schemas/ConversationSummary"
+            },
+            "title": "Conversations",
+            "type": "array"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "environment": {
+            "enum": [
+              "staging",
+              "production"
+            ],
+            "title": "Environment",
+            "type": "string"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "last_seq": {
+            "title": "Last Seq",
+            "type": "integer"
+          },
+          "policy": {
+            "$ref": "#/components/schemas/CampaignPolicy"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "target_id": {
+            "title": "Target Id",
+            "type": "string"
+          },
+          "target_name": {
+            "title": "Target Name",
+            "type": "string"
+          },
+          "technique_results": {
+            "items": {
+              "$ref": "#/components/schemas/TechniqueResult"
+            },
+            "title": "Technique Results",
+            "type": "array"
+          },
+          "total_conversations": {
+            "title": "Total Conversations",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "campaign_id",
+          "target_id",
+          "target_name",
+          "environment",
+          "status",
+          "created_by",
+          "created_at",
+          "finished_at",
+          "total_conversations",
+          "confirmed",
+          "policy",
+          "conversations",
+          "technique_results",
+          "budget",
+          "last_seq"
+        ],
+        "title": "CampaignDetail",
+        "type": "object"
+      },
+      "CampaignPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/CampaignSummary"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "page_size"
+        ],
+        "title": "CampaignPage",
+        "type": "object"
+      },
+      "CampaignPolicy": {
+        "additionalProperties": false,
+        "description": "Budgets and limits for one campaign.\n\nProduction rules need the target's environment, which is not part of the\npolicy, so a bare ``CampaignPolicy`` does NOT enforce them. Campaign\ncreation must validate through :class:`CampaignRequest`, which always does.\nThe context form (``context={\"environment\": ...}``) and\n:func:`validate_policy_for_target` exist for callers that already hold\nboth halves. Violations are rejected, never clamped.",
+        "properties": {
+          "allow_destructive_tools": {
+            "default": false,
+            "title": "Allow Destructive Tools",
+            "type": "boolean"
+          },
+          "max_llm_cost_usd": {
+            "default": 10.0,
+            "maximum": 10000.0,
+            "minimum": 0.0,
+            "title": "Max Llm Cost Usd",
+            "type": "number"
+          },
+          "max_parallel_conversations": {
+            "default": 4,
+            "maximum": 64.0,
+            "minimum": 1.0,
+            "title": "Max Parallel Conversations",
+            "type": "integer"
+          },
+          "max_total_requests": {
+            "default": 500,
+            "maximum": 1000000.0,
+            "minimum": 1.0,
+            "title": "Max Total Requests",
+            "type": "integer"
+          },
+          "max_turns": {
+            "default": 8,
+            "maximum": 100.0,
+            "minimum": 1.0,
+            "title": "Max Turns",
+            "type": "integer"
+          },
+          "rate_limit_rps": {
+            "default": 1.0,
+            "exclusiveMinimum": 0.0,
+            "maximum": 100.0,
+            "title": "Rate Limit Rps",
+            "type": "number"
+          },
+          "stop_on_first_confirmed": {
+            "default": false,
+            "title": "Stop On First Confirmed",
+            "type": "boolean"
+          },
+          "techniques": {
+            "items": {
+              "type": "string"
+            },
+            "maxItems": 100,
+            "minItems": 1,
+            "title": "Techniques",
+            "type": "array"
+          },
+          "trials_per_technique": {
+            "default": 5,
+            "maximum": 1000.0,
+            "minimum": 1.0,
+            "title": "Trials Per Technique",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "techniques"
+        ],
+        "title": "CampaignPolicy",
+        "type": "object"
+      },
+      "CampaignSummary": {
+        "properties": {
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "confirmed": {
+            "title": "Confirmed",
+            "type": "integer"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "created_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created By"
+          },
+          "environment": {
+            "enum": [
+              "staging",
+              "production"
+            ],
+            "title": "Environment",
+            "type": "string"
+          },
+          "finished_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Finished At"
+          },
+          "status": {
+            "enum": [
+              "queued",
+              "running",
+              "completed",
+              "failed",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "target_id": {
+            "title": "Target Id",
+            "type": "string"
+          },
+          "target_name": {
+            "title": "Target Name",
+            "type": "string"
+          },
+          "total_conversations": {
+            "title": "Total Conversations",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "campaign_id",
+          "target_id",
+          "target_name",
+          "environment",
+          "status",
+          "created_by",
+          "created_at",
+          "finished_at",
+          "total_conversations",
+          "confirmed"
+        ],
+        "title": "CampaignSummary",
+        "type": "object"
+      },
+      "CancelResult": {
+        "properties": {
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "cancelling",
+              "cancelled"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "campaign_id",
+          "status"
+        ],
+        "title": "CancelResult",
+        "type": "object"
+      },
+      "Conversation": {
+        "additionalProperties": false,
+        "properties": {
+          "campaign_id": {
+            "title": "Campaign Id",
+            "type": "string"
+          },
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "status": {
+            "default": "running",
+            "enum": [
+              "running",
+              "stopped_budget",
+              "stopped_monitor",
+              "stopped_target_refusal_streak",
+              "stopped_target_error_streak",
+              "stopped_killed",
+              "completed",
+              "cancelled",
+              "error"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "target_session_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Target Session Ref"
+          },
+          "technique": {
+            "title": "Technique",
+            "type": "string"
+          },
+          "trial_index": {
+            "minimum": 0.0,
+            "title": "Trial Index",
+            "type": "integer"
+          },
+          "turns": {
+            "items": {
+              "$ref": "#/components/schemas/Turn"
+            },
+            "title": "Turns",
+            "type": "array"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "campaign_id",
+          "technique",
+          "trial_index"
+        ],
+        "title": "Conversation",
+        "type": "object"
+      },
+      "ConversationDetail": {
+        "properties": {
+          "conversation": {
+            "$ref": "#/components/schemas/Conversation"
+          },
+          "raw": {
+            "title": "Raw",
+            "type": "boolean"
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/ConversationVerdict"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "conversation",
+          "verdict",
+          "raw"
+        ],
+        "title": "ConversationDetail",
+        "type": "object"
+      },
+      "ConversationSummary": {
+        "properties": {
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "technique": {
+            "title": "Technique",
+            "type": "string"
+          },
+          "trial_index": {
+            "title": "Trial Index",
+            "type": "integer"
+          },
+          "turns": {
+            "title": "Turns",
+            "type": "integer"
+          },
+          "verdict": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verdict"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "technique",
+          "trial_index",
+          "status",
+          "turns",
+          "verdict"
+        ],
+        "title": "ConversationSummary",
+        "type": "object"
+      },
+      "ConversationVerdict": {
+        "additionalProperties": false,
+        "properties": {
+          "asi_class": {
+            "pattern": "^ASI(0[1-9]|10)$",
+            "title": "Asi Class",
+            "type": "string"
+          },
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "deterministic_hits": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Deterministic Hits",
+            "type": "array"
+          },
+          "first_failing_turn": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Failing Turn"
+          },
+          "judge_agreement": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Judge Agreement",
+            "type": "number"
+          },
+          "judge_votes": {
+            "items": {
+              "$ref": "#/components/schemas/JudgeVote"
+            },
+            "title": "Judge Votes",
+            "type": "array"
+          },
+          "rationale": {
+            "default": "",
+            "title": "Rationale",
+            "type": "string"
+          },
+          "severity": {
+            "enum": [
+              "info",
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "verdict": {
+            "enum": [
+              "confirmed",
+              "unconfirmed",
+              "inconclusive",
+              "failed"
+            ],
+            "title": "Verdict",
+            "type": "string"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "verdict",
+          "judge_agreement",
+          "severity",
+          "asi_class"
+        ],
+        "title": "ConversationVerdict",
+        "type": "object"
+      },
+      "CookieLoginAuth": {
+        "additionalProperties": false,
+        "description": "Form/JSON login that sets a session cookie, reused for the conversation.",
+        "properties": {
+          "login_url": {
+            "format": "uri",
+            "maxLength": 2083,
+            "minLength": 1,
+            "title": "Login Url",
+            "type": "string"
+          },
+          "password": {
+            "format": "password",
+            "title": "Password",
+            "type": "string",
+            "writeOnly": true
+          },
+          "password_field": {
+            "default": "password",
+            "title": "Password Field",
+            "type": "string"
+          },
+          "type": {
+            "const": "cookie_login",
+            "default": "cookie_login",
+            "title": "Type",
+            "type": "string"
+          },
+          "username": {
+            "minLength": 1,
+            "title": "Username",
+            "type": "string"
+          },
+          "username_field": {
+            "default": "username",
+            "title": "Username Field",
+            "type": "string"
+          }
+        },
+        "required": [
+          "login_url",
+          "username",
+          "password"
+        ],
+        "title": "CookieLoginAuth",
+        "type": "object"
+      },
+      "FindingDetail": {
+        "properties": {
+          "asi_class": {
+            "title": "Asi Class",
+            "type": "string"
+          },
+          "campaign_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Id"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "events": {
+            "items": {
+              "$ref": "#/components/schemas/FindingEventView"
+            },
+            "title": "Events",
+            "type": "array"
+          },
+          "finding_id": {
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "first_failing_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Failing Turn"
+          },
+          "rationale": {
+            "title": "Rationale",
+            "type": "string"
+          },
+          "reviewer_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Id"
+          },
+          "seen_in_campaigns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Seen In Campaigns",
+            "type": "array"
+          },
+          "severity": {
+            "title": "Severity",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "wont_fix",
+              "false_positive",
+              "inconclusive",
+              "needs_review"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "target_id": {
+            "title": "Target Id",
+            "type": "string"
+          },
+          "technique": {
+            "title": "Technique",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "finding_id",
+          "target_id",
+          "campaign_id",
+          "conversation_id",
+          "technique",
+          "asi_class",
+          "severity",
+          "status",
+          "title",
+          "seen_in_campaigns",
+          "first_failing_turn",
+          "rationale",
+          "reviewer_id",
+          "created_at",
+          "updated_at",
+          "events"
+        ],
+        "title": "FindingDetail",
+        "type": "object"
+      },
+      "FindingEventView": {
+        "properties": {
+          "at": {
+            "format": "date-time",
+            "title": "At",
+            "type": "string"
+          },
+          "from_status": {
+            "anyOf": [
+              {
+                "enum": [
+                  "open",
+                  "wont_fix",
+                  "false_positive",
+                  "inconclusive",
+                  "needs_review"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "From Status"
+          },
+          "rationale": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rationale"
+          },
+          "reviewer_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Id"
+          },
+          "to_status": {
+            "enum": [
+              "open",
+              "wont_fix",
+              "false_positive",
+              "inconclusive",
+              "needs_review"
+            ],
+            "title": "To Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "from_status",
+          "to_status",
+          "reviewer_id",
+          "rationale",
+          "at"
+        ],
+        "title": "FindingEventView",
+        "type": "object"
+      },
+      "FindingPage": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/FindingView"
+            },
+            "title": "Items",
+            "type": "array"
+          },
+          "page": {
+            "title": "Page",
+            "type": "integer"
+          },
+          "page_size": {
+            "title": "Page Size",
+            "type": "integer"
+          },
+          "total": {
+            "title": "Total",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "items",
+          "total",
+          "page",
+          "page_size"
+        ],
+        "title": "FindingPage",
+        "type": "object"
+      },
+      "FindingTransition": {
+        "additionalProperties": false,
+        "properties": {
+          "rationale": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rationale"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "wont_fix",
+              "false_positive",
+              "inconclusive",
+              "needs_review"
+            ],
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status"
+        ],
+        "title": "FindingTransition",
+        "type": "object"
+      },
+      "FindingView": {
+        "properties": {
+          "asi_class": {
+            "title": "Asi Class",
+            "type": "string"
+          },
+          "campaign_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Campaign Id"
+          },
+          "conversation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Conversation Id"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "finding_id": {
+            "title": "Finding Id",
+            "type": "string"
+          },
+          "first_failing_turn": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Failing Turn"
+          },
+          "rationale": {
+            "title": "Rationale",
+            "type": "string"
+          },
+          "reviewer_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reviewer Id"
+          },
+          "seen_in_campaigns": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Seen In Campaigns",
+            "type": "array"
+          },
+          "severity": {
+            "title": "Severity",
+            "type": "string"
+          },
+          "status": {
+            "enum": [
+              "open",
+              "wont_fix",
+              "false_positive",
+              "inconclusive",
+              "needs_review"
+            ],
+            "title": "Status",
+            "type": "string"
+          },
+          "target_id": {
+            "title": "Target Id",
+            "type": "string"
+          },
+          "technique": {
+            "title": "Technique",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          }
+        },
+        "required": [
+          "finding_id",
+          "target_id",
+          "campaign_id",
+          "conversation_id",
+          "technique",
+          "asi_class",
+          "severity",
+          "status",
+          "title",
+          "seen_in_campaigns",
+          "first_failing_turn",
+          "rationale",
+          "reviewer_id",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "FindingView",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HeaderAuth": {
+        "additionalProperties": false,
+        "description": "A custom header, e.g. ``X-Api-Key: <value>``.",
+        "properties": {
+          "header_name": {
+            "title": "Header Name",
+            "type": "string"
+          },
+          "type": {
+            "const": "header",
+            "default": "header",
+            "title": "Type",
+            "type": "string"
+          },
+          "value": {
+            "format": "password",
+            "title": "Value",
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "header_name",
+          "value"
+        ],
+        "title": "HeaderAuth",
+        "type": "object"
+      },
+      "JudgeVote": {
+        "additionalProperties": false,
+        "description": "One independent judge sample (temperature 0) over a full transcript.\n\nA vote is a judgement (``unsafe``/``safe``/``inconclusive``); the\nconversation-level ``Verdict`` comes from majority + the deterministic\nconsensus table.",
+        "properties": {
+          "asi_class": {
+            "anyOf": [
+              {
+                "pattern": "^ASI(0[1-9]|10)$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Asi Class"
+          },
+          "confidence": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Confidence",
+            "type": "number"
+          },
+          "first_failing_turn": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "First Failing Turn"
+          },
+          "judgement": {
+            "enum": [
+              "unsafe",
+              "safe",
+              "inconclusive"
+            ],
+            "title": "Judgement",
+            "type": "string"
+          },
+          "model_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model Name"
+          },
+          "rationale": {
+            "default": "",
+            "title": "Rationale",
+            "type": "string"
+          },
+          "severity": {
+            "default": "info",
+            "enum": [
+              "info",
+              "low",
+              "medium",
+              "high",
+              "critical"
+            ],
+            "title": "Severity",
+            "type": "string"
+          },
+          "temperature": {
+            "default": 0.0,
+            "minimum": 0.0,
+            "title": "Temperature",
+            "type": "number"
+          },
+          "vote_index": {
+            "minimum": 0.0,
+            "title": "Vote Index",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "vote_index",
+          "judgement",
+          "confidence"
+        ],
+        "title": "JudgeVote",
+        "type": "object"
+      },
+      "KillSwitchBody": {
+        "additionalProperties": false,
+        "properties": {
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "enabled"
+        ],
+        "title": "KillSwitchBody",
+        "type": "object"
+      },
+      "KillSwitchState": {
+        "properties": {
+          "active": {
+            "title": "Active",
+            "type": "boolean"
+          },
+          "db": {
+            "title": "Db",
+            "type": "boolean"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "env": {
+            "title": "Env",
+            "type": "boolean"
+          },
+          "updated_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated At"
+          },
+          "updated_by": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Updated By"
+          }
+        },
+        "required": [
+          "enabled",
+          "active",
+          "env",
+          "db",
+          "updated_by",
+          "updated_at"
+        ],
+        "title": "KillSwitchState",
+        "type": "object"
+      },
+      "Me": {
+        "properties": {
+          "auth_method": {
+            "enum": [
+              "session",
+              "api_key"
+            ],
+            "title": "Auth Method",
+            "type": "string"
+          },
+          "csrf_token": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Csrf Token"
+          },
+          "display_name": {
+            "title": "Display Name",
+            "type": "string"
+          },
+          "email": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Email"
+          },
+          "org_id": {
+            "title": "Org Id",
+            "type": "string"
+          },
+          "permissions": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Permissions",
+            "type": "array"
+          },
+          "role": {
+            "enum": [
+              "viewer",
+              "operator",
+              "admin"
+            ],
+            "title": "Role",
+            "type": "string"
+          },
+          "user_id": {
+            "title": "User Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "user_id",
+          "org_id",
+          "email",
+          "display_name",
+          "role",
+          "permissions",
+          "auth_method"
+        ],
+        "title": "Me",
+        "type": "object"
+      },
+      "NoAuth": {
+        "additionalProperties": false,
+        "properties": {
+          "type": {
+            "const": "none",
+            "default": "none",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "title": "NoAuth",
+        "type": "object"
+      },
+      "OAuthClientCredentialsAuth": {
+        "additionalProperties": false,
+        "description": "OAuth 2.0 client-credentials grant; the adapter refreshes on expiry.",
+        "properties": {
+          "audience": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Audience"
+          },
+          "client_id": {
+            "minLength": 1,
+            "title": "Client Id",
+            "type": "string"
+          },
+          "client_secret": {
+            "format": "password",
+            "title": "Client Secret",
+            "type": "string",
+            "writeOnly": true
+          },
+          "scope": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Scope"
+          },
+          "token_url": {
+            "format": "uri",
+            "maxLength": 2083,
+            "minLength": 1,
+            "title": "Token Url",
+            "type": "string"
+          },
+          "type": {
+            "const": "oauth_client_credentials",
+            "default": "oauth_client_credentials",
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "token_url",
+          "client_id",
+          "client_secret"
+        ],
+        "title": "OAuthClientCredentialsAuth",
+        "type": "object"
+      },
+      "ProvidersView": {
+        "properties": {
+          "providers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Providers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "providers"
+        ],
+        "title": "ProvidersView",
+        "type": "object"
+      },
+      "TargetCreate": {
+        "additionalProperties": false,
+        "description": "``TargetConfig`` without the server-assigned ``target_id`` and ``verified``.",
+        "properties": {
+          "allowed_auth_hosts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Auth Hosts",
+            "type": "array"
+          },
+          "auth": {
+            "discriminator": {
+              "mapping": {
+                "bearer": "#/components/schemas/BearerAuth",
+                "cookie_login": "#/components/schemas/CookieLoginAuth",
+                "header": "#/components/schemas/HeaderAuth",
+                "none": "#/components/schemas/NoAuth",
+                "oauth_client_credentials": "#/components/schemas/OAuthClientCredentialsAuth"
+              },
+              "propertyName": "type"
+            },
+            "oneOf": [
+              {
+                "$ref": "#/components/schemas/NoAuth"
+              },
+              {
+                "$ref": "#/components/schemas/BearerAuth"
+              },
+              {
+                "$ref": "#/components/schemas/HeaderAuth"
+              },
+              {
+                "$ref": "#/components/schemas/OAuthClientCredentialsAuth"
+              },
+              {
+                "$ref": "#/components/schemas/CookieLoginAuth"
+              }
+            ],
+            "title": "Auth"
+          },
+          "endpoint": {
+            "format": "uri",
+            "maxLength": 2083,
+            "minLength": 1,
+            "title": "Endpoint",
+            "type": "string"
+          },
+          "environment": {
+            "enum": [
+              "staging",
+              "production"
+            ],
+            "title": "Environment",
+            "type": "string"
+          },
+          "method": {
+            "const": "POST",
+            "default": "POST",
+            "title": "Method",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "oncall_webhook_url": {
+            "anyOf": [
+              {
+                "format": "uri",
+                "maxLength": 2083,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oncall Webhook Url"
+          },
+          "request_template": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Template"
+          },
+          "response_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Path"
+          },
+          "session_id_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id Path"
+          },
+          "session_mode": {
+            "enum": [
+              "stateless_history",
+              "server_session",
+              "cookie"
+            ],
+            "title": "Session Mode",
+            "type": "string"
+          },
+          "streaming": {
+            "default": "none",
+            "enum": [
+              "none",
+              "sse",
+              "ndjson"
+            ],
+            "title": "Streaming",
+            "type": "string"
+          },
+          "target_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Ignored (server-assigned).",
+            "title": "Target Id"
+          },
+          "timeout_s": {
+            "default": 60,
+            "title": "Timeout S",
+            "type": "integer"
+          },
+          "tool_trace_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Trace Path"
+          },
+          "verified": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Ignored (set only by verification).",
+            "title": "Verified"
+          }
+        },
+        "required": [
+          "name",
+          "endpoint",
+          "auth",
+          "session_mode",
+          "environment"
+        ],
+        "title": "TargetCreate",
+        "type": "object"
+      },
+      "TargetCreated": {
+        "properties": {
+          "target": {
+            "$ref": "#/components/schemas/TargetView"
+          },
+          "verification": {
+            "$ref": "#/components/schemas/VerificationInstructions"
+          },
+          "verification_token": {
+            "title": "Verification Token",
+            "type": "string"
+          }
+        },
+        "required": [
+          "target",
+          "verification_token",
+          "verification"
+        ],
+        "title": "TargetCreated",
+        "type": "object"
+      },
+      "TargetList": {
+        "properties": {
+          "items": {
+            "items": {
+              "$ref": "#/components/schemas/TargetView"
+            },
+            "title": "Items",
+            "type": "array"
+          }
+        },
+        "required": [
+          "items"
+        ],
+        "title": "TargetList",
+        "type": "object"
+      },
+      "TargetUpdate": {
+        "additionalProperties": false,
+        "description": "Partial update. ``environment`` cannot change (create a new target instead).\n\n``auth``: give the full object; secret fields left out keep their stored\nvalue when the auth ``type`` is unchanged. Changing the endpoint, the auth\ntype or URLs, or ``allowed_auth_hosts`` clears verification.\n``oncall_webhook_url: null`` removes the webhook.",
+        "properties": {
+          "allowed_auth_hosts": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Allowed Auth Hosts"
+          },
+          "auth": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auth"
+          },
+          "endpoint": {
+            "anyOf": [
+              {
+                "format": "uri",
+                "maxLength": 2083,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Endpoint"
+          },
+          "environment": {
+            "anyOf": [
+              {
+                "enum": [
+                  "staging",
+                  "production"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Environment"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          },
+          "oncall_webhook_url": {
+            "anyOf": [
+              {
+                "format": "uri",
+                "maxLength": 2083,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Oncall Webhook Url"
+          },
+          "request_template": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Template"
+          },
+          "response_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Path"
+          },
+          "session_id_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id Path"
+          },
+          "session_mode": {
+            "anyOf": [
+              {
+                "enum": [
+                  "stateless_history",
+                  "server_session",
+                  "cookie"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Mode"
+          },
+          "streaming": {
+            "anyOf": [
+              {
+                "enum": [
+                  "none",
+                  "sse",
+                  "ndjson"
+                ],
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Streaming"
+          },
+          "timeout_s": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Timeout S"
+          },
+          "tool_trace_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Trace Path"
+          }
+        },
+        "title": "TargetUpdate",
+        "type": "object"
+      },
+      "TargetUpdated": {
+        "properties": {
+          "target": {
+            "$ref": "#/components/schemas/TargetView"
+          },
+          "verification_reset": {
+            "title": "Verification Reset",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "target",
+          "verification_reset"
+        ],
+        "title": "TargetUpdated",
+        "type": "object"
+      },
+      "TargetView": {
+        "properties": {
+          "allowed_auth_hosts": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Auth Hosts",
+            "type": "array"
+          },
+          "auth": {
+            "additionalProperties": true,
+            "title": "Auth",
+            "type": "object"
+          },
+          "created_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Created At"
+          },
+          "endpoint": {
+            "title": "Endpoint",
+            "type": "string"
+          },
+          "environment": {
+            "enum": [
+              "staging",
+              "production"
+            ],
+            "title": "Environment",
+            "type": "string"
+          },
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "oncall_webhook_configured": {
+            "title": "Oncall Webhook Configured",
+            "type": "boolean"
+          },
+          "request_template": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Request Template"
+          },
+          "response_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Path"
+          },
+          "session_id_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Session Id Path"
+          },
+          "session_mode": {
+            "title": "Session Mode",
+            "type": "string"
+          },
+          "streaming": {
+            "title": "Streaming",
+            "type": "string"
+          },
+          "target_id": {
+            "title": "Target Id",
+            "type": "string"
+          },
+          "timeout_s": {
+            "title": "Timeout S",
+            "type": "integer"
+          },
+          "tool_trace_path": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Tool Trace Path"
+          },
+          "verified": {
+            "title": "Verified",
+            "type": "boolean"
+          },
+          "verified_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verified At"
+          },
+          "verified_method": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Verified Method"
+          }
+        },
+        "required": [
+          "target_id",
+          "name",
+          "endpoint",
+          "method",
+          "auth",
+          "request_template",
+          "response_path",
+          "session_mode",
+          "session_id_path",
+          "tool_trace_path",
+          "streaming",
+          "timeout_s",
+          "verified",
+          "environment",
+          "allowed_auth_hosts",
+          "verified_method",
+          "verified_at",
+          "oncall_webhook_configured",
+          "created_at"
+        ],
+        "title": "TargetView",
+        "type": "object"
+      },
+      "TechniqueResult": {
+        "additionalProperties": false,
+        "description": "Aggregate over the independent trials of one technique.",
+        "properties": {
+          "ci95_high": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Ci95 High",
+            "type": "number"
+          },
+          "ci95_low": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Ci95 Low",
+            "type": "number"
+          },
+          "confirmed": {
+            "minimum": 0.0,
+            "title": "Confirmed",
+            "type": "integer"
+          },
+          "success_rate": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Success Rate",
+            "type": "number"
+          },
+          "technique": {
+            "title": "Technique",
+            "type": "string"
+          },
+          "trials": {
+            "minimum": 0.0,
+            "title": "Trials",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "technique",
+          "trials",
+          "confirmed",
+          "success_rate",
+          "ci95_low",
+          "ci95_high"
+        ],
+        "title": "TechniqueResult",
+        "type": "object"
+      },
+      "ToolCallObservation": {
+        "additionalProperties": false,
+        "description": "One tool call the target made, as observed from its response.\n\n``source=\"structured\"`` means it was read from ``tool_trace_path``;\n``\"heuristic\"`` means it was guessed from reply text and is weaker evidence.",
+        "properties": {
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "call_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Call Id"
+          },
+          "name": {
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "source": {
+            "default": "structured",
+            "enum": [
+              "structured",
+              "heuristic"
+            ],
+            "title": "Source",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "ToolCallObservation",
+        "type": "object"
+      },
+      "Turn": {
+        "additionalProperties": false,
+        "properties": {
+          "conversation_id": {
+            "title": "Conversation Id",
+            "type": "string"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Error"
+          },
+          "http_status": {
+            "anyOf": [
+              {
+                "maximum": 599.0,
+                "minimum": 100.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Http Status"
+          },
+          "index": {
+            "minimum": 0.0,
+            "title": "Index",
+            "type": "integer"
+          },
+          "latency_ms": {
+            "minimum": 0.0,
+            "title": "Latency Ms",
+            "type": "number"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "monitor_hits": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Monitor Hits",
+            "type": "array"
+          },
+          "response_text": {
+            "title": "Response Text",
+            "type": "string"
+          },
+          "role_sent": {
+            "const": "user",
+            "default": "user",
+            "title": "Role Sent",
+            "type": "string"
+          },
+          "tool_calls": {
+            "items": {
+              "$ref": "#/components/schemas/ToolCallObservation"
+            },
+            "title": "Tool Calls",
+            "type": "array"
+          }
+        },
+        "required": [
+          "conversation_id",
+          "index",
+          "message",
+          "response_text",
+          "latency_ms"
+        ],
+        "title": "Turn",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "VerificationInstructions": {
+        "properties": {
+          "dns_txt": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Dns Txt",
+            "type": "object"
+          },
+          "http_wellknown": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Http Wellknown",
+            "type": "object"
+          },
+          "response_header": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Response Header",
+            "type": "object"
+          }
+        },
+        "required": [
+          "http_wellknown",
+          "dns_txt",
+          "response_header"
+        ],
+        "title": "VerificationInstructions",
+        "type": "object"
+      },
+      "VerifyRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "method": {
+            "enum": [
+              "http_wellknown",
+              "dns_txt",
+              "response_header"
+            ],
+            "title": "Method",
+            "type": "string"
+          }
+        },
+        "required": [
+          "method"
+        ],
+        "title": "VerifyRequest",
+        "type": "object"
+      },
+      "VerifyResult": {
+        "properties": {
+          "method": {
+            "enum": [
+              "http_wellknown",
+              "dns_txt",
+              "response_header"
+            ],
+            "title": "Method",
+            "type": "string"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "target": {
+            "$ref": "#/components/schemas/TargetView"
+          },
+          "verified": {
+            "title": "Verified",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "target",
+          "verified",
+          "method",
+          "reason"
+        ],
+        "title": "VerifyResult",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Canary API",
+    "version": "2.0.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/v2/admin/kill-switch": {
+      "get": {
+        "description": "Kill-switch status; every signed-in role may read it.",
+        "operationId": "get_kill_switch_api_v2_admin_kill_switch_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KillSwitchState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Kill Switch",
+        "tags": [
+          "control"
+        ]
+      },
+      "post": {
+        "description": "Set the global DB kill switch (platform admins only: ``CANARY_PLATFORM_ADMINS``).\nIt halts every org's campaigns, so an org admin cannot flip it. The env var CANARY_KILL_SWITCH is independent.",
+        "operationId": "set_kill_switch_api_v2_admin_kill_switch_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/KillSwitchBody"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KillSwitchState"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Set Kill Switch",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/v2/auth/api-keys": {
+      "get": {
+        "operationId": "list_api_keys_api_v2_auth_api_keys_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Api Keys",
+        "tags": [
+          "auth"
+        ]
+      },
+      "post": {
+        "description": "Create a CI key for yourself (it acts with your role). Browser sessions only.",
+        "operationId": "create_api_key_api_v2_auth_api_keys_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApiKeyCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiKeyCreated"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Api Key",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v2/auth/api-keys/{key_id}": {
+      "delete": {
+        "operationId": "revoke_api_key_api_v2_auth_api_keys__key_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "key_id",
+            "required": true,
+            "schema": {
+              "title": "Key Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Revoke Api Key Api V2 Auth Api Keys  Key Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Api Key",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v2/auth/callback/{provider}": {
+      "get": {
+        "description": "Public: OIDC redirect target. Sets the session and CSRF cookies.",
+        "operationId": "callback_api_v2_auth_callback__provider__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider",
+            "required": true,
+            "schema": {
+              "title": "Provider",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "code",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Code"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "State"
+            }
+          },
+          {
+            "in": "query",
+            "name": "error",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Error"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Callback",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v2/auth/login/{provider}": {
+      "get": {
+        "description": "Public: start an OIDC login (redirects to the identity provider).",
+        "operationId": "login_api_v2_auth_login__provider__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider",
+            "required": true,
+            "schema": {
+              "title": "Provider",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "next",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Next"
+            }
+          }
+        ],
+        "responses": {
+          "302": {
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Login",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v2/auth/logout": {
+      "post": {
+        "operationId": "logout_api_v2_auth_logout_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Logout",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v2/auth/providers": {
+      "get": {
+        "description": "Public: which login buttons to show.",
+        "operationId": "list_providers_api_v2_auth_providers_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProvidersView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Providers",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v2/campaigns": {
+      "get": {
+        "operationId": "list_campaigns_api_v2_campaigns_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "target_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Target Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "queued",
+                    "running",
+                    "completed",
+                    "failed",
+                    "cancelled"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 25,
+              "maximum": 100,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Campaigns",
+        "tags": [
+          "campaigns"
+        ]
+      },
+      "post": {
+        "operationId": "create_campaign_api_v2_campaigns_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CampaignCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Campaign",
+        "tags": [
+          "campaigns"
+        ]
+      }
+    },
+    "/api/v2/campaigns/{campaign_id}": {
+      "get": {
+        "operationId": "get_campaign_api_v2_campaigns__campaign_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CampaignDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Campaign",
+        "tags": [
+          "campaigns"
+        ]
+      }
+    },
+    "/api/v2/campaigns/{campaign_id}/cancel": {
+      "post": {
+        "description": "Flag the campaign; the engine stops before its next turn.",
+        "operationId": "cancel_campaign_api_v2_campaigns__campaign_id__cancel_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CancelResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cancel Campaign",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/v2/campaigns/{campaign_id}/events": {
+      "get": {
+        "description": "SSE stream of campaign events. ``Last-Event-ID`` replays events with a larger ``seq``.\n\nEvents come from the persisted log, so a disconnect only ends this\ngenerator; the run (in a worker process) is unaffected.",
+        "operationId": "campaign_events_api_v2_campaigns__campaign_id__events_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "header",
+            "name": "last-event-id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Last-Event-Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Campaign Events",
+        "tags": [
+          "control"
+        ]
+      }
+    },
+    "/api/v2/conversations/{conversation_id}": {
+      "get": {
+        "operationId": "get_conversation_api_v2_conversations__conversation_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "conversation_id",
+            "required": true,
+            "schema": {
+              "title": "Conversation Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "raw",
+            "required": false,
+            "schema": {
+              "default": false,
+              "title": "Raw",
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConversationDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Conversation",
+        "tags": [
+          "evidence"
+        ]
+      }
+    },
+    "/api/v2/findings": {
+      "get": {
+        "operationId": "list_findings_api_v2_findings_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "target_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Target Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "campaign_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Campaign Id"
+            }
+          },
+          {
+            "in": "query",
+            "name": "status",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "enum": [
+                    "open",
+                    "wont_fix",
+                    "false_positive",
+                    "inconclusive",
+                    "needs_review"
+                  ],
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Status"
+            }
+          },
+          {
+            "in": "query",
+            "name": "severity",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Severity"
+            }
+          },
+          {
+            "in": "query",
+            "name": "asi_class",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Asi Class"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "default": 1,
+              "minimum": 1,
+              "title": "Page",
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "page_size",
+            "required": false,
+            "schema": {
+              "default": 50,
+              "maximum": 200,
+              "minimum": 1,
+              "title": "Page Size",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FindingPage"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Findings",
+        "tags": [
+          "findings"
+        ]
+      }
+    },
+    "/api/v2/findings/{finding_id}": {
+      "get": {
+        "operationId": "get_finding_api_v2_findings__finding_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "finding_id",
+            "required": true,
+            "schema": {
+              "title": "Finding Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FindingDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Finding",
+        "tags": [
+          "findings"
+        ]
+      }
+    },
+    "/api/v2/findings/{finding_id}/status": {
+      "put": {
+        "description": "Move a finding along its lifecycle; the reviewer is the caller. 409 on an\nillegal transition; closing statuses need a rationale (422).",
+        "operationId": "transition_finding_api_v2_findings__finding_id__status_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "finding_id",
+            "required": true,
+            "schema": {
+              "title": "Finding Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/FindingTransition"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FindingDetail"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Transition Finding",
+        "tags": [
+          "findings"
+        ]
+      }
+    },
+    "/api/v2/me": {
+      "get": {
+        "operationId": "me_api_v2_me_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Me"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Me",
+        "tags": [
+          "auth"
+        ]
+      }
+    },
+    "/api/v2/reports/{campaign_id}": {
+      "get": {
+        "operationId": "get_report_api_v2_reports__campaign_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "campaign_id",
+            "required": true,
+            "schema": {
+              "title": "Campaign Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "format",
+            "required": false,
+            "schema": {
+              "default": "json",
+              "enum": [
+                "json",
+                "md",
+                "pdf"
+              ],
+              "title": "Format",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {}
+              },
+              "application/pdf": {
+                "schema": {
+                  "format": "binary",
+                  "type": "string"
+                }
+              },
+              "text/markdown": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "The report"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Report",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
+    "/api/v2/targets": {
+      "get": {
+        "operationId": "list_targets_api_v2_targets_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TargetList"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Targets",
+        "tags": [
+          "targets"
+        ]
+      },
+      "post": {
+        "description": "Register an (unverified) target in the caller's org.\n\nThe plaintext verification token is returned in this response only; just its\nhash is kept.",
+        "operationId": "create_target_api_v2_targets_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TargetCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TargetCreated"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Target",
+        "tags": [
+          "targets"
+        ]
+      }
+    },
+    "/api/v2/targets/{target_id}": {
+      "delete": {
+        "description": "Delete a target. One with campaign history is archived instead (hidden from\nthe org, unverified, credentials dropped). 409 while a campaign is active.",
+        "operationId": "delete_target_api_v2_targets__target_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "target_id",
+            "required": true,
+            "schema": {
+              "title": "Target Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": {
+                    "type": "string"
+                  },
+                  "title": "Response Delete Target Api V2 Targets  Target Id  Delete",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Delete Target",
+        "tags": [
+          "targets"
+        ]
+      },
+      "get": {
+        "operationId": "get_target_api_v2_targets__target_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "target_id",
+            "required": true,
+            "schema": {
+              "title": "Target Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TargetView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Target",
+        "tags": [
+          "targets"
+        ]
+      },
+      "patch": {
+        "operationId": "update_target_api_v2_targets__target_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "target_id",
+            "required": true,
+            "schema": {
+              "title": "Target Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/TargetUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TargetUpdated"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Target",
+        "tags": [
+          "targets"
+        ]
+      }
+    },
+    "/api/v2/targets/{target_id}/verify": {
+      "post": {
+        "description": "Run one ownership check. 200 either way; ``verified`` carries the outcome.",
+        "operationId": "verify_target_api_v2_targets__target_id__verify_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "target_id",
+            "required": true,
+            "schema": {
+              "title": "Target Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/VerifyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerifyResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Verify Target",
+        "tags": [
+          "targets"
+        ]
+      }
+    }
+  }
+}
