@@ -61,6 +61,8 @@ export default function CampaignDetailPage() {
     return () => controller.abort()
   }, [campaignId, attempt])
 
+  const closeDrawer = useCallback(() => select(null), [select])
+
   const cells = useMemo(() => Object.values(live.cells), [live.cells])
   const techniques = useMemo(
     () => [...new Set([...(detail?.policy.techniques ?? []), ...cells.map(cell => cell.technique)])],
@@ -142,7 +144,7 @@ export default function CampaignDetailPage() {
         <p>Running conversations stop and the campaign cannot be resumed. Findings already recorded are kept.</p>
       </Dialog>
 
-      <Drawer open={!!selected} onClose={() => select(null)} testId="transcript-drawer"
+      <Drawer open={!!selected} onClose={closeDrawer} testId="transcript-drawer"
         title={selectedCell ? `${strategyLabel(selectedCell.technique)} · trial ${selectedCell.trial_index + 1}` : 'Transcript'}>
         {selectedCell
           ? <Transcript cell={selectedCell} highlightTurn={highlightTurn} />

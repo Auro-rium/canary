@@ -36,14 +36,31 @@ export function Drawer({ open, onClose, title, subtitle, children, testId }: {
   const opener = useRef<Element | null>(null)
   const modal = useModalViewport()
 
+  // Keep the latest onClose without re-running the effects below: callers usually pass an inline function,
+  // and re-running on every parent render would steal focus back to the panel each time.
+  const onCloseRef = useRef(onClose)
+  onCloseRef.current = onClose
+
+  // Open/close only: remember the opener, move focus in once, and give it back on close.
   useEffect(() => {
     if (!open) return
     opener.current = document.activeElement
+    panel.current?.focus()
+    return () => {
+      const root = document.getElementById('root')
+      if (root) root.inert = false // the opener lives inside it and cannot take focus while inert
+      const previous = opener.current
+      if (previous instanceof HTMLElement && document.contains(previous)) previous.focus()
+    }
+  }, [open])
+
+  // Viewport-dependent behaviour: re-runs when `modal` flips (resize across xl) without touching focus.
+  useEffect(() => {
+    if (!open) return
     const root = document.getElementById('root')
     if (modal && root) root.inert = true
-    panel.current?.focus()
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') { onClose(); return }
+      if (event.key === 'Escape') { onCloseRef.current(); return }
       if (!modal || event.key !== 'Tab' || !panel.current) return
       const items = [...panel.current.querySelectorAll<HTMLElement>(FOCUSABLE)].filter(el => !el.hasAttribute('inert') && el.offsetParent !== null)
       if (items.length === 0) { event.preventDefault(); panel.current.focus(); return }
@@ -57,10 +74,8 @@ export function Drawer({ open, onClose, title, subtitle, children, testId }: {
     return () => {
       document.removeEventListener('keydown', onKey)
       if (root) root.inert = false
-      const previous = opener.current
-      if (previous instanceof HTMLElement && document.contains(previous)) previous.focus()
     }
-  }, [open, onClose, modal])
+  }, [open, modal])
 
   if (!open) return null
   return createPortal(

@@ -21,6 +21,8 @@ export interface Mock {
   writes: Array<{ method: string; path: string; csrf: string | undefined; body: unknown }>
   conversationQueries: string[]
   releaseCancel: () => void
+  /** Make the quiet event stream deliver one more conversation (forces a live-state re-render). */
+  pushConversation: (id: string) => void
 }
 
 const json = (route: Route, body: unknown, status = 200) => route.fulfill({ status, json: body })
@@ -29,10 +31,13 @@ export async function mockApi(page: Page, options: MockOptions = {}): Promise<Mo
   const role = options.role ?? 'operator'
   const total = options.findingsTotal ?? 2
   let releaseCancel = () => {}
+  const pushes: string[] = []
+  let wake = () => {}
   const cancelGate = new Promise<void>(resolve => { releaseCancel = resolve })
   const mock: Mock = {
     state: { signedIn: options.signedIn ?? true, cancelled: false, kill: false },
     writes: [], conversationQueries: [], releaseCancel: () => releaseCancel(),
+    pushConversation: id => { pushes.push(id); wake() },
   }
   const targets = [fx.stagingTarget, fx.prodTarget, fx.unverifiedTarget]
   let eventRequests = 0
@@ -96,7 +101,13 @@ export async function mockApi(page: Page, options: MockOptions = {}): Promise<Mo
       if (lastId === 0) return body(fx.stage1, 1)
       if (lastId === fx.stage1.length) return body(fx.stage2, fx.stage1.length + 1)
       // Quiet until the operator cancels (keeps the campaign "running" for the Cancel button).
-      await cancelGate
+      let cancelled = false
+      void cancelGate.then(() => { cancelled = true; wake() })
+      while (!cancelled && pushes.length === 0) await new Promise<void>(resolve => { wake = resolve })
+      if (!cancelled) {
+        const id = pushes.shift()!
+        return body([['conversation_started', { campaign_id: 'camp1', conversation_id: id, technique: 'prompt-injection', trial_index: Number(id.slice(1)) }]], lastId + 1)
+      }
       return body(fx.cancelledEvent, lastId + 1)
     }
     if (path === '/campaigns/camp1') {
