@@ -12,6 +12,9 @@ COPY pyproject.toml ./
 COPY src ./src
 COPY configs ./configs
 COPY prompts ./prompts
+# Benign ScriptedPlanner smoke packs. prompts/planner.md (security owner) is NOT
+# copied: it is excluded by .dockerignore and mounted at runtime.
+COPY packs ./packs
 COPY alembic.ini ./alembic.ini
 COPY migrations ./migrations
 
