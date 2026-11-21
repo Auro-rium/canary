@@ -46,3 +46,6 @@ htmlcov/
 
 # Security-owner attacker prompt: never commit or bake into images (WP4 review)
 prompts/planner.md
+
+# Live test A harness output (reports, logs, W&B files)
+livetest/out/

@@ -73,6 +73,7 @@ packages = ["src/cyberredteam"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]  # lets tests import the livetest harness package
 python_files = "test_*.py"
 addopts = "-v --cov=src/cyberredteam --cov-report=term-missing"
 
