@@ -187,7 +187,10 @@ class TestMaxIterations:
 class TestParallelFanOut:
     """Exercise the real strategist->attacker_branch fan-out end-to-end."""
 
-    def test_three_branches_dispatch_and_tag_correctly(self):
+    def test_every_selected_branch_dispatches_and_is_tagged_correctly(self):
+        # Root cause of the old failure: the test still asserted the pre-8cc4291
+        # "random sample of at most 3" fan-out. The dispatcher now sends every
+        # selected strategy (up to MAX_PARALLEL_BRANCHES), so 4 strategies = 4 branches.
         compiled = compile_graph()
 
         state: RedTeamState = {
@@ -223,12 +226,16 @@ class TestParallelFanOut:
         }
 
         config = {"configurable": {"thread_id": "fanout1"}}
-        final = compiled.invoke(state, config=config)
+        # No network: the target call is stubbed.
+        with patch(
+            "cyberredteam.tools.target_adapter.SessionTargetAdapter.execute_attack",
+            return_value=("(stubbed target reply)", None),
+        ):
+            final = compiled.invoke(state, config=config)
 
         results = final["attack_results"]
-        # Random sample of up to 3 from 4 candidates -> exactly 3 branches.
-        assert len(results) == 3
+        assert len(results) == 4  # every selected strategy, none silently dropped
         branch_ids = {r.branch_id for r in results}
-        assert len(branch_ids) == 3, "each branch must have a distinct branch_id"
+        assert len(branch_ids) == 4, "each branch must have a distinct branch_id"
         assert all(r.iteration == 0 for r in results), "results must be tagged with the dispatching iteration"
         assert all(r.technique_id for r in results), "results must carry a resolved ASI technique_id"
