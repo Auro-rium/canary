@@ -20,7 +20,7 @@ from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, SecretStr, TypeAdapter
 from sqlalchemy import func, select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, StatementError
 from sqlalchemy.orm import Session, sessionmaker
 
 from cyberredteam.contracts import (
@@ -110,11 +110,37 @@ def _audit_row(
 # ── Targets ──────────────────────────────────────────────────────────────────
 
 
+def _raise_key_error(exc: StatementError) -> None:
+    """A missing encryption key surfaces inside SQLAlchemy as a StatementError;
+    re-raise it as the plain ``RuntimeError`` callers handle (fail closed)."""
+    if isinstance(exc.orig, RuntimeError):
+        raise RuntimeError(str(exc.orig)) from None
+    raise exc
+
+
+class TargetMeta(BaseModel):
+    """Target facts that are not part of the frozen ``TargetConfig`` contract (WP8)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_id: str
+    org_id: str | None
+    archived: bool
+    verified_method: str | None
+    verified_at: datetime | None
+    has_oncall_webhook: bool
+    created_at: datetime | None
+
+
 class SqlTargetStore:
     """Targets, their encrypted secrets and ownership-verification state."""
 
     def __init__(self, factory: sessionmaker[Session]) -> None:
         self._factory = factory
+
+    @property
+    def factory(self) -> sessionmaker[Session]:
+        return self._factory
 
     @staticmethod
     def _split_auth(config: TargetConfig) -> tuple[dict, dict]:
@@ -126,8 +152,16 @@ class SqlTargetStore:
                 public.pop(name, None)
         return public, secrets
 
-    def create(self, config: TargetConfig) -> str:
-        """Store a target. ``verified`` is always stored False: only ``set_verified`` flips it."""
+    def create(
+        self,
+        config: TargetConfig,
+        *,
+        org_id: str | None = None,
+        oncall_webhook: str | None = None,
+    ) -> str:
+        """Store a target. ``verified`` is always stored False: only ``set_verified`` flips it.
+
+        ``org_id`` scopes it to an org (WP8); ``None`` means visible to no org."""
         public, secrets = self._split_auth(config)
         row = orm.TargetRow(
             target_id=config.target_id,
@@ -144,6 +178,8 @@ class SqlTargetStore:
             timeout_s=config.timeout_s,
             verified=False,
             environment=config.environment,
+            org_id=org_id,
+            oncall_webhook=oncall_webhook or None,
         )
         try:
             with session_scope(self._factory) as s:
@@ -153,6 +189,8 @@ class SqlTargetStore:
                     s.add(orm.TargetSecretRow(target_id=config.target_id, secrets=json.dumps(secrets)))
         except IntegrityError as exc:
             raise ValueError(f"target {config.target_id} already exists") from exc
+        except StatementError as exc:
+            _raise_key_error(exc)
         logger.info("target created target_id=%s", config.target_id)
         return config.target_id
 
@@ -233,6 +271,138 @@ class SqlTargetStore:
         with session_scope(self._factory) as s:
             ver = s.get(orm.TargetVerificationRow, target_id)
             return list(ver.allowed_auth_hosts or []) if ver else []
+
+    # ── WP8: org scope, update, archive/delete, on-call webhook ──────────────
+
+    def meta(self, target_id: str) -> TargetMeta | None:
+        with session_scope(self._factory) as s:
+            row = s.get(orm.TargetRow, target_id)
+            if row is None:
+                return None
+            ver = s.get(orm.TargetVerificationRow, target_id)
+            return TargetMeta(
+                target_id=row.target_id,
+                org_id=row.org_id,
+                archived=row.archived_at is not None,
+                verified_method=ver.method if ver else None,
+                verified_at=ver.verified_at if ver else None,
+                has_oncall_webhook=bool(row.oncall_webhook),
+                created_at=row.created_at,
+            )
+
+    def get_in_org(self, target_id: str, org_id: str) -> TargetConfig | None:
+        """The target only if it belongs to ``org_id`` and is not archived."""
+        with session_scope(self._factory) as s:
+            row = s.get(orm.TargetRow, target_id)
+            if row is None or row.org_id is None or row.org_id != org_id or row.archived_at:
+                return None
+            return self._to_config(s, row)
+
+    def list_for_org(self, org_id: str) -> list[TargetConfig]:
+        with session_scope(self._factory) as s:
+            rows = s.scalars(
+                select(orm.TargetRow)
+                .where(orm.TargetRow.org_id == org_id, orm.TargetRow.archived_at.is_(None))
+                .order_by(orm.TargetRow.created_at)
+            ).all()
+            return [self._to_config(s, r) for r in rows]
+
+    def update(self, config: TargetConfig, *, reset_verification: bool) -> None:
+        """Replace a target's stored config (secrets included).
+
+        ``verified`` is never taken from ``config``; ``reset_verification=True``
+        clears it (the caller decides which changes require re-verification)."""
+        public, secrets = self._split_auth(config)
+        try:
+            self._update(config, public, secrets, reset_verification)
+        except StatementError as exc:
+            _raise_key_error(exc)
+        logger.info("target updated target_id=%s reset=%s", config.target_id, reset_verification)
+
+    def _update(self, config: TargetConfig, public: dict, secrets: dict, reset_verification: bool) -> None:
+        with session_scope(self._factory) as s:
+            row = s.get(orm.TargetRow, config.target_id, with_for_update=True)
+            if row is None:
+                raise KeyError(config.target_id)
+            row.name = config.name
+            row.endpoint = str(config.endpoint)
+            row.method = config.method
+            row.auth_public = public
+            row.request_template = config.request_template
+            row.response_path = config.response_path
+            row.session_mode = config.session_mode
+            row.session_id_path = config.session_id_path
+            row.tool_trace_path = config.tool_trace_path
+            row.streaming = config.streaming
+            row.timeout_s = config.timeout_s
+            row.environment = config.environment
+            if reset_verification:
+                row.verified = False
+                ver = s.get(orm.TargetVerificationRow, config.target_id)
+                if ver is not None:
+                    ver.method = None
+                    ver.verified_at = None
+            secret_row = s.get(orm.TargetSecretRow, config.target_id)
+            if secrets:
+                if secret_row is None:
+                    s.add(orm.TargetSecretRow(target_id=config.target_id, secrets=json.dumps(secrets)))
+                else:
+                    secret_row.secrets = json.dumps(secrets)
+                    secret_row.updated_at = _utcnow()
+            elif secret_row is not None:
+                s.delete(secret_row)
+
+    def set_oncall_webhook(self, target_id: str, url: str | None) -> None:
+        with session_scope(self._factory) as s:
+            row = s.get(orm.TargetRow, target_id)
+            if row is None:
+                raise KeyError(target_id)
+            row.oncall_webhook = url or None
+
+    def get_oncall_webhook(self, target_id: str) -> str | None:
+        with session_scope(self._factory) as s:
+            row = s.get(orm.TargetRow, target_id)
+            return row.oncall_webhook if row else None
+
+    def has_campaigns(self, target_id: str, *, active_only: bool = False) -> bool:
+        with session_scope(self._factory) as s:
+            q = select(func.count()).select_from(orm.CampaignRow).where(
+                orm.CampaignRow.target_id == target_id
+            )
+            if active_only:
+                q = q.where(orm.CampaignRow.status.not_in(TERMINAL_CAMPAIGN_STATUSES))
+            return bool(s.scalar(q))
+
+    def archive(self, target_id: str) -> None:
+        """Soft delete: hidden from every org and unverified, so nothing can run on it."""
+        with session_scope(self._factory) as s:
+            row = s.get(orm.TargetRow, target_id)
+            if row is None:
+                raise KeyError(target_id)
+            row.archived_at = row.archived_at or _utcnow()
+            row.verified = False
+            row.oncall_webhook = None
+            secret_row = s.get(orm.TargetSecretRow, target_id)
+            if secret_row is not None:  # credentials are no longer needed
+                s.delete(secret_row)
+                row.auth_public = {"type": "none"}
+
+    def delete(self, target_id: str) -> None:
+        """Hard delete (secrets and verification cascade). Raises ``ValueError``
+        if campaigns or findings still reference the target (use ``archive``)."""
+        try:
+            with session_scope(self._factory) as s:
+                row = s.get(orm.TargetRow, target_id)
+                if row is None:
+                    raise KeyError(target_id)
+                for child in (orm.TargetSecretRow, orm.TargetVerificationRow):
+                    c = s.get(child, target_id)
+                    if c is not None:
+                        s.delete(c)
+                s.flush()
+                s.delete(row)
+        except IntegrityError as exc:
+            raise ValueError("target is still referenced") from exc
 
     def set_retention_days(self, target_id: str, days: int | None) -> None:
         """Per-target evidence retention override (None → global default)."""

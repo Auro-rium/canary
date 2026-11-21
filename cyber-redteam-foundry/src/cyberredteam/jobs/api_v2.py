@@ -1,7 +1,9 @@
 """API v2 control-plane routes (WP7): cancel, kill switch, SSE events with resume.
 
-Included by ``cyberredteam.api`` on the main app, so the app-wide
-``require_auth`` dependency protects every route here.
+Authz (WP8): cancel needs ``campaigns:cancel`` (operator+), events
+``campaigns:read`` (viewer+), kill-switch GET ``kill_switch:read`` (everyone),
+POST ``kill_switch:write`` (admin). Campaigns are org-scoped: another org's
+campaign is a 404. Audit rows carry the authenticated principal.
 """
 
 from __future__ import annotations
@@ -13,15 +15,23 @@ from typing import Annotated
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict
 from sqlalchemy.orm import Session, sessionmaker
 
+from cyberredteam.api_v2.schemas import CancelResult, KillSwitchBody, KillSwitchState
+from cyberredteam.api_v2.scope import campaign_in_org
+from cyberredteam.auth.deps import get_db_factory, require
+from cyberredteam.auth.principal import (
+    CAMPAIGNS_CANCEL,
+    CAMPAIGNS_READ,
+    KILL_SWITCH_READ,
+    KILL_SWITCH_WRITE,
+    Principal,
+)
 from cyberredteam.contracts import CampaignCancelledPayload
 from cyberredteam.jobs.control import ControlStore, DbRunControl, env_kill_switch_active
 from cyberredteam.jobs.events import MAX_SEQ, TERMINAL_EVENT_TYPES, EventLog
 from cyberredteam.observability.hooks import get_metrics
 from cyberredteam.settings import get_settings
-from cyberredteam.storage.v2.db import make_session_factory
 from cyberredteam.storage.v2.repositories import (
     TERMINAL_CAMPAIGN_STATUSES,
     AuditRepo,
@@ -30,12 +40,7 @@ from cyberredteam.storage.v2.repositories import (
 
 logger = logging.getLogger(__name__)
 
-router = APIRouter()
-
-# TODO(WP8): replace with the authenticated principal and require an admin role
-# for the kill switch and an operator role for cancel. Until WP8 the single
-# bearer token has no identity, so audit rows carry this fixed actor.
-API_ACTOR = "api-token"
+router = APIRouter(tags=["control"])
 
 
 class ControlPlane:
@@ -51,68 +56,73 @@ class ControlPlane:
         self.poll_interval_s = poll_interval_s
 
 
-_plane: ControlPlane | None = None
+def get_control_plane(factory: sessionmaker[Session] = Depends(get_db_factory)) -> ControlPlane:
+    return ControlPlane(factory, get_settings().sse_poll_interval_s)
 
 
-def get_control_plane() -> ControlPlane:
-    global _plane
-    if _plane is None:
-        settings = get_settings()
-        _plane = ControlPlane(make_session_factory(), settings.sse_poll_interval_s)
-    return _plane
-
-
-class KillSwitchBody(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    enabled: bool
-
-
-def _kill_view(plane: ControlPlane) -> dict:
+def _kill_view(plane: ControlPlane) -> KillSwitchState:
     db_enabled, by, at = plane.store.kill_switch_state()
     env_enabled = env_kill_switch_active()
-    return {
-        "enabled": db_enabled or env_enabled,
-        "env": env_enabled,
-        "db": db_enabled,
-        "updated_by": by,
-        "updated_at": at.isoformat() if at else None,
-    }
+    return KillSwitchState(
+        enabled=db_enabled or env_enabled,
+        active=db_enabled or env_enabled,
+        env=env_enabled,
+        db=db_enabled,
+        updated_by=by,
+        updated_at=at.isoformat() if at else None,
+    )
 
 
-@router.post("/api/v2/campaigns/{campaign_id}/cancel")
-def cancel_campaign(campaign_id: str, plane: ControlPlane = Depends(get_control_plane)):
+@router.post("/api/v2/campaigns/{campaign_id}/cancel", response_model=CancelResult)
+def cancel_campaign(
+    campaign_id: str,
+    principal: Principal = Depends(require(CAMPAIGNS_CANCEL)),
+    plane: ControlPlane = Depends(get_control_plane),
+):
     """Flag the campaign; the engine stops before its next turn."""
     rec = plane.campaigns.get(campaign_id)
-    if rec is None:
+    if rec is None or not campaign_in_org(plane.factory, campaign_id, principal.org_id):
         raise HTTPException(status_code=404, detail="Campaign not found")
     if rec.status in TERMINAL_CAMPAIGN_STATUSES:
         raise HTTPException(status_code=409, detail=f"Campaign already {rec.status}")
-    plane.store.request_cancel(campaign_id, API_ACTOR)
+    actor = principal.actor
+    plane.store.request_cancel(campaign_id, actor)
     plane.control.invalidate()
     status = "cancelling"
     if rec.status == "queued":  # never started: nothing to wind down
         plane.campaigns.set_status(campaign_id, "cancelled")
         plane.events.append(
             campaign_id, "campaign_cancelled",
-            CampaignCancelledPayload(campaign_id=campaign_id, reason="user", cancelled_by=API_ACTOR),
+            CampaignCancelledPayload(campaign_id=campaign_id, reason="user", cancelled_by=actor),
         )
         status = "cancelled"
-    plane.audit.record(API_ACTOR, "campaign.cancel", f"campaign:{campaign_id}", {"was": rec.status})
+    plane.audit.record(actor, "campaign.cancel", f"campaign:{campaign_id}", {"was": rec.status})
     logger.info("[API] cancel requested campaign=%s", campaign_id)
     return {"campaign_id": campaign_id, "status": status}
 
 
-@router.get("/api/v2/admin/kill-switch")
-def get_kill_switch(plane: ControlPlane = Depends(get_control_plane)):
+@router.get("/api/v2/admin/kill-switch", response_model=KillSwitchState)
+def get_kill_switch(
+    principal: Principal = Depends(require(KILL_SWITCH_READ)),
+    plane: ControlPlane = Depends(get_control_plane),
+):
+    """Kill-switch status; every signed-in role may read it."""
     return _kill_view(plane)
 
 
-@router.post("/api/v2/admin/kill-switch")
-def set_kill_switch(body: KillSwitchBody, plane: ControlPlane = Depends(get_control_plane)):
-    """Set the global DB kill switch (the env var CANARY_KILL_SWITCH is independent)."""
-    plane.store.set_kill_switch(body.enabled, API_ACTOR)
+@router.post("/api/v2/admin/kill-switch", response_model=KillSwitchState)
+def set_kill_switch(
+    body: KillSwitchBody,
+    principal: Principal = Depends(require(KILL_SWITCH_WRITE)),
+    plane: ControlPlane = Depends(get_control_plane),
+):
+    """Set the global DB kill switch (admin only). It is platform-wide: it halts
+    every org's campaigns. The env var CANARY_KILL_SWITCH is independent."""
+    actor = principal.actor
+    plane.store.set_kill_switch(body.enabled, actor)
     plane.control.invalidate()
-    plane.audit.record(API_ACTOR, "kill_switch.set", "kill_switch", {"enabled": body.enabled})
+    plane.audit.record(actor, "kill_switch.set", "kill_switch",
+                       {"enabled": body.enabled, "reason": body.reason, "org_id": principal.org_id})
     if body.enabled:
         get_metrics().alert(
             "Canary kill switch activated",
@@ -128,6 +138,7 @@ async def campaign_events(
     campaign_id: str,
     request: Request,
     last_event_id: Annotated[str | None, Header()] = None,
+    principal: Principal = Depends(require(CAMPAIGNS_READ)),
     plane: ControlPlane = Depends(get_control_plane),
 ):
     """SSE stream of campaign events. ``Last-Event-ID`` replays events with a larger ``seq``.
@@ -143,7 +154,7 @@ async def campaign_events(
             raise HTTPException(status_code=400, detail="Last-Event-ID must be an integer") from None
         if not 0 <= after <= MAX_SEQ:
             raise HTTPException(status_code=400, detail="Last-Event-ID out of range")
-    if await run_in_threadpool(plane.campaigns.get, campaign_id) is None:
+    if not await run_in_threadpool(campaign_in_org, plane.factory, campaign_id, principal.org_id):
         raise HTTPException(status_code=404, detail="Campaign not found")
 
     async def stream():

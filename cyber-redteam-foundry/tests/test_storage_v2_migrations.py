@@ -18,6 +18,8 @@ TABLES = {
     "targets", "target_secrets", "target_verification", "campaigns", "conversations", "turns",
     "judge_votes", "verdicts", "technique_results", "findings", "finding_events", "audit_log",
     "budget_ledger", "run_control", "campaign_heartbeats", "campaign_events",
+    # WP8 revision 0003
+    "orgs", "users", "api_keys", "auth_sessions", "oidc_login_states",
 }
 
 pg_only = pytest.mark.skipif(not pg_url(), reason="CANARY_TEST_DATABASE_URL not set")

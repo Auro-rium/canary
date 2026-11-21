@@ -25,9 +25,9 @@ class Settings(BaseSettings):
     backboard_llm_provider: str = "openai"
     backboard_model_name: str = "gpt-4o"
 
-    # API authentication — bearer token required on every API request.
-    # Must match the VITE_API_TOKEN configured in the frontend.
-    api_secret_key: Optional[str] = None
+    # API authentication (WP8): OIDC browser sessions or per-user API keys
+    # (``cyber-rt auth ...``). There is no shared master token any more; the old
+    # API_SECRET_KEY is ignored. Tokens never go into VITE_* variables.
 
     # Authorization scope: comma-separated list of target_ids a run may be
     # created against. When set, a run targeting anything else is rejected —
@@ -118,6 +118,22 @@ class Settings(BaseSettings):
     planner_usd_per_1k_output_tokens: float = 0.03
     # How much of each target reply the planner model sees per turn.
     planner_transcript_chars_per_turn: int = 2000
+
+    # WP8 auth. OIDC providers are enabled when both id and secret are set.
+    oidc_github_client_id: Optional[str] = None
+    oidc_github_client_secret: Optional[SecretStr] = None
+    oidc_google_client_id: Optional[str] = None
+    oidc_google_client_secret: Optional[SecretStr] = None
+    # Public origin of the API as the browser sees it (the Vercel/nginx proxy),
+    # used to build the OIDC redirect_uri: <base>/api/v2/auth/callback/<provider>.
+    public_base_url: Optional[str] = None
+    session_ttl_s: int = 12 * 3600
+    # Secure cookies need HTTPS; set False only for local http development.
+    session_cookie_secure: bool = True
+    # Deprecated v1 read routes (/api/runs, /api/findings, ...): kept for one
+    # release, admin-only (legacy data has no org). False -> 410 Gone.
+    v1_api_enabled: bool = True
+    v1_sunset: str = "2027-03-01"
 
     class Config:
         env_file = ".env"
