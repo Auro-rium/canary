@@ -105,11 +105,11 @@ def test_loader_not_found(tmp_path):
 
 
 def test_shipped_smoke_packs_are_benign_and_valid():
-    loader = PackLoader(DEFAULT_PACKS_DIR)
+    loader = PackLoader(DEFAULT_PACKS_DIR, pack_set="smoke")
     assert loader.names == ["smoke-context-retention", "smoke-greeting"]
     assert {p.technique for p in loader.packs()} == {"smoke_greeting", "smoke_context_retention"}
-    # Only smoke packs ship with the code; real packs come from the security owner.
-    assert all(p.relative_to(DEFAULT_PACKS_DIR).parts[0] == "smoke"
+    # The smoke set is the default for CI; the attack set lives in packs/attacks/.
+    assert all(p.relative_to(DEFAULT_PACKS_DIR).parts[0] in {"smoke", "attacks"}
                for p in DEFAULT_PACKS_DIR.rglob("*.y*ml"))
 
 

@@ -45,7 +45,10 @@ def suite_techniques(suite: str, packs_dir: str | Path | None = None) -> list[st
     if suite != "default" and (not suite.replace("-", "").replace("_", "").isalnum()):
         raise LaunchError("invalid suite name")
     try:
-        loader = PackLoader(packs_dir)
+        from cyberredteam.settings import get_settings
+
+        pack_set = None if packs_dir else get_settings().planner_pack_set
+        loader = PackLoader(packs_dir, pack_set=pack_set)
     except PlannerConfigError as exc:
         raise LaunchError(f"cannot load packs ({type(exc).__name__})") from None
     if suite == "default":

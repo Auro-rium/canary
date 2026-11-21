@@ -4,7 +4,9 @@ The WP7 worker resolves ``"package.module:callable"`` and uses the callable
 directly as ``EngineDeps.planner_factory`` (``ConversationSpec -> TurnPlanner``):
 
 * ``cyberredteam.planners.worker:scripted`` replays packs from
-  ``settings.planner_packs_dir`` (default ``<project>/packs``).
+  ``settings.planner_packs_dir``. With no directory set, the pack set chosen by
+  ``settings.planner_pack_set`` (``PLANNER_PACK_SET``: ``smoke`` (default),
+  ``attacks`` or ``all``) is loaded from ``<project>/packs``.
 * ``cyberredteam.planners.worker:llm`` uses the LLM planner. It fails closed:
   without ``prompts/planner.md`` (security owner) it raises
   ``PlannerPromptMissing``, and no scope classifier is configurable through

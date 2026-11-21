@@ -5,6 +5,8 @@ A pack is a YAML file with operator-supplied turns for one technique::
     name: greeting                # unique across the packs directory
     version: 1
     technique: smoke_greeting     # must equal the conversation's technique
+    asi_class: ASI01              # optional OWASP ASI code the pack targets
+    success_signal: canary_leak   # optional: what a successful attack looks like
     description: optional text
     turns:                        # sent in order
       - message: "Hello!"
@@ -24,13 +26,17 @@ is deterministic. Only one branch is ever taken.
 End conditions are checked against the most recent turn; a match ends the
 conversation normally (the planner returns ``None``).
 
-Real packs come from the security owner. This repository ships only benign
-smoke packs (``packs/smoke/``).
+Pack sets: ``packs/smoke/`` (benign CI/live-test packs, the default) and
+``packs/attacks/`` (adversarial packs for owner-verified test agents only; see
+its README). ``PackLoader(dir, pack_set=...)`` selects ``smoke``, ``attacks`` or
+``all``. Branch keys are monitor hit names; only non-critical hits can fire a
+branch, because a critical hit already stops the conversation.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Literal
 
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
@@ -77,11 +83,25 @@ class EndConditions(_PackModel):
         return v
 
 
+SuccessSignal = Literal[
+    "canary_leak",
+    "forbidden_tool_call",
+    "system_prompt_disclosure",
+    "cross_user_data",
+    "instruction_override",
+    "policy_violation",
+]
+PackSet = Literal["smoke", "attacks", "all"]
+PACK_SETS: tuple[str, ...] = ("smoke", "attacks", "all")
+
+
 class Pack(_PackModel):
     name: str = Field(min_length=1, pattern=r"^[A-Za-z0-9_.-]+$")
     version: int = Field(ge=1)
     technique: str = Field(min_length=1)
     description: str = ""
+    asi_class: str | None = Field(default=None, pattern=r"^ASI(0[1-9]|10)$")
+    success_signal: SuccessSignal | None = None
     turns: list[ScriptTurn] = Field(min_length=1)
     branches: dict[str, Branch] = Field(default_factory=dict)
     end: EndConditions = Field(default_factory=EndConditions)
@@ -140,12 +160,19 @@ class PackLoader:
     ordered by name and conversation trial ``i`` gets pack ``i % n``.
     """
 
-    def __init__(self, directory: Path | str | None = None) -> None:
+    def __init__(self, directory: Path | str | None = None, pack_set: str | None = None) -> None:
+        """``pack_set`` limits loading to ``<directory>/smoke`` or ``<directory>/attacks``
+        (``all`` and ``None`` load everything under ``directory``)."""
         self.directory = Path(directory) if directory is not None else DEFAULT_PACKS_DIR
         if not self.directory.is_dir():
             raise PackNotFound(f"packs directory not found: {self.directory}")
+        if pack_set is not None and pack_set not in PACK_SETS:
+            raise PackNotFound(f"unknown pack set {pack_set!r} (expected one of {', '.join(PACK_SETS)})")
+        root = self.directory / pack_set if pack_set in ("smoke", "attacks") else self.directory
+        if not root.is_dir():
+            raise PackNotFound(f"pack set directory not found: {root}")
         paths = sorted(
-            (p for p in self.directory.rglob("*") if p.suffix in {".yaml", ".yml"} and p.is_file()),
+            (p for p in root.rglob("*") if p.suffix in {".yaml", ".yml"} and p.is_file()),
             key=lambda p: p.relative_to(self.directory).as_posix(),
         )
         packs: dict[str, Pack] = {}
@@ -182,11 +209,14 @@ class PackLoader:
 __all__ = [
     "DEFAULT_PACKS_DIR",
     "MAX_PACK_FILE_BYTES",
+    "PACK_SETS",
     "Branch",
     "EndConditions",
     "Pack",
     "PackLoader",
+    "PackSet",
     "ScriptTurn",
+    "SuccessSignal",
     "load_pack_file",
     "parse_pack",
 ]

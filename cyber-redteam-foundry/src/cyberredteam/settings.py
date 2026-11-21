@@ -1,7 +1,7 @@
 """Settings and configuration management."""
 
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 from dotenv import load_dotenv
 from pydantic import Field, SecretStr
@@ -112,6 +112,10 @@ class Settings(BaseSettings):
     planner_prompt_path: Optional[Path] = None
     # ScriptedPlanner packs directory. Unset means <project>/packs.
     planner_packs_dir: Optional[Path] = None
+    # Which shipped pack set worker:scripted loads when planner_packs_dir is unset:
+    # "smoke" (default; benign, for CI and the live-test harness), "attacks" or "all".
+    # An explicit planner_packs_dir is always used as-is (every pack in it).
+    planner_pack_set: Literal["smoke", "attacks", "all"] = "smoke"
     # Estimated USD per 1k planner tokens (Backboard reports tokens, not cost).
     # Deliberately high so the campaign USD budget errs on the safe side.
     planner_usd_per_1k_input_tokens: float = Field(default=0.01, gt=0)
