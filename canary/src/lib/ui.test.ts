@@ -91,3 +91,33 @@ describe('theme', () => {
     expect(resolveTheme('light', 'dark')).toBe('light')
   })
 })
+
+import { estimateCampaign, formatSeconds } from './estimate'
+import { TECHNIQUE_GROUPS } from './techniqueGroups'
+import { TECHNIQUE_IDS } from './techniques'
+
+describe('campaign estimate', () => {
+  const base = { techniques: ['a', 'b'], trials_per_technique: 5, max_turns: 8, max_total_requests: 500, rate_limit_rps: 1, max_llm_cost_usd: 10 }
+  it('multiplies techniques, trials and turns', () => {
+    expect(estimateCampaign(base)).toEqual({ conversations: 10, requests: 80, truncated: false, minSeconds: 80, costCapUsd: 10 })
+  })
+  it('caps requests at the budget and says so', () => {
+    const e = estimateCampaign({ ...base, max_total_requests: 300, trials_per_technique: 30 })
+    expect(e).toMatchObject({ conversations: 60, requests: 300, truncated: true, minSeconds: 300 })
+  })
+  it('survives empty, zero and garbage input', () => {
+    expect(estimateCampaign({ ...base, techniques: [] })).toMatchObject({ conversations: 0, requests: 0, minSeconds: 0 })
+    expect(estimateCampaign({ ...base, rate_limit_rps: 0 }).minSeconds).toBeNull()
+    expect(estimateCampaign({ ...base, trials_per_technique: Number.NaN }).requests).toBe(0)
+  })
+  it('formats durations', () => {
+    expect(formatSeconds(45)).toBe('45 s')
+    expect(formatSeconds(125)).toBe('2 min 5 s')
+    expect(formatSeconds(3900)).toBe('1 h 5 min')
+    expect(formatSeconds(null)).toBe('unknown')
+  })
+  it('groups every technique exactly once', () => {
+    const grouped = TECHNIQUE_GROUPS.flatMap(g => g.techniques.map(t => t.id))
+    expect([...grouped].sort()).toEqual([...TECHNIQUE_IDS].sort())
+  })
+})
