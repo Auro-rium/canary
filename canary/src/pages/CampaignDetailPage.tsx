@@ -1,24 +1,107 @@
-import { useCallback, useEffect, useState } from 'react'
-import { Link, useParams } from 'react-router-dom'
-import { EmptyState, ErrorNotice, Metric, PageHeader, StatusBadge } from '../components/Console'
-import { getRun, getRunFindings, getRunReportMarkdown } from '../lib/api'
-import { formatDate, formatDuration, pageClass, strategyLabel } from '../lib/presentation'
-import type { Finding, RunDetail } from '../lib/types'
-
-function Evidence({ detail }: { detail: RunDetail }) {
-  return <div className="space-y-3">{detail.attacks.map((attack, index) => <details key={attack.id} className="border border-white/10 bg-white/[0.015] group"><summary className="cursor-pointer list-none p-4 grid sm:grid-cols-[36px_1fr_auto_auto] gap-3 items-center"><span className="text-white/30 text-xs">{index + 1}</span><span><span className="block text-xs uppercase tracking-wide">{strategyLabel(attack.strategy_type)}</span><span className="block text-[10px] text-white/40 mt-1">Score {attack.score.toFixed(2)} / threshold {attack.score_threshold.toFixed(2)} · HTTP {attack.observation?.http_status ?? '—'}</span></span><StatusBadge status={attack.success ? 'confirmed' : 'blocked'} /><span className="text-[10px] text-white/35">{attack.observation?.latency_ms ? formatDuration(attack.observation.latency_ms) : '—'}</span></summary><div className="border-t border-white/10 p-4 grid lg:grid-cols-2 gap-5 text-xs"><div><h3 className="text-white/35 text-[9px] uppercase tracking-wider">Adversarial prompt</h3><pre className="mt-2 whitespace-pre-wrap break-words bg-black/40 border border-white/[0.06] p-3 text-white/75 text-[11px] leading-relaxed">{attack.prompt || 'No payload was generated.'}</pre></div><div><h3 className="text-white/35 text-[9px] uppercase tracking-wider">Target reply</h3><pre className="mt-2 whitespace-pre-wrap break-words bg-black/40 border border-white/[0.06] p-3 text-white/75 text-[11px] leading-relaxed">{attack.response || attack.error || 'No target response was recorded.'}</pre></div><div><h3 className="text-white/35 text-[9px] uppercase tracking-wider">Target observation</h3><pre className="mt-2 whitespace-pre-wrap break-words text-white/55 text-[10px]">{JSON.stringify(attack.observation ?? { error: attack.error ?? 'not recorded' }, null, 2)}</pre></div><div><h3 className="text-white/35 text-[9px] uppercase tracking-wider">Evaluator evidence</h3><pre className="mt-2 whitespace-pre-wrap break-words text-white/55 text-[10px]">{JSON.stringify(attack.indicators, null, 2)}</pre>{attack.finding_id && <Link className="inline-block mt-3 text-red-400 text-[10px]" to={`/findings?finding=${attack.finding_id}`}>Open finding →</Link>}</div></div></details>)}</div>
-}
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { Link, useParams, useSearchParams } from 'react-router-dom'
+import { Badge, buttonClass, ErrorNotice, Metric, Notice, PageHeader, StatusBadge } from '../components/Console'
+import { BudgetMeter, ConversationGrid, KillSwitchControl, ResultsTable } from '../components/LiveParts'
+import { can, PERMISSION, useMe } from '../lib/useMe'
+import { Transcript } from '../components/Transcript'
+import { cancelCampaign, getCampaign, reportUrl, streamCampaignEvents } from '../lib/api'
+import { emptyCampaign, fromDetail, isCampaignTerminal, reduceEvent, type LiveCampaign } from '../lib/liveState'
+import { gutter, pageClass } from '../lib/presentation'
+import type { CampaignDetail } from '../lib/v2'
 
 export default function CampaignDetailPage() {
-  const { runId = '' } = useParams(); const [run, setRun] = useState<RunDetail | null>(null); const [findings, setFindings] = useState<Finding[]>([]); const [markdown, setMarkdown] = useState<string | null>(null); const [error, setError] = useState<string | null>(null)
-  const load = useCallback(async () => { try { const detail = await getRun(runId); setRun(detail); const [result, report] = await Promise.all([getRunFindings(runId), detail.status === 'completed' ? getRunReportMarkdown(runId).catch(() => null) : Promise.resolve(null)]); setFindings(result); setMarkdown(report?.markdown ?? null); setError(null) } catch (error) { setError(error instanceof Error ? error.message : 'Could not load campaign.') } }, [runId])
-  useEffect(() => { load() }, [load]); useEffect(() => { if (run?.status !== 'running') return; const interval = window.setInterval(load, 5000); return () => window.clearInterval(interval) }, [load, run?.status])
-  return <main className={pageClass}><PageHeader eyebrow="Campaign evidence" title={runId}><Link to="/campaigns" className="text-xs text-white/50 hover:text-white">← All campaigns</Link></PageHeader>
-    {error && <section className="px-6 sm:px-10 md:px-16 lg:px-20 py-8"><ErrorNotice message={error} /></section>}{!run && !error && <section className="px-6 sm:px-10 md:px-16 lg:px-20 py-8"><EmptyState>Loading run evidence</EmptyState></section>}{run && <><section className="px-6 sm:px-10 md:px-16 lg:px-20 py-6 border-b border-white/10 flex flex-wrap gap-3"><Metric label="Target" value={run.target_id} /><Metric label="Status" value={run.status} tone={run.status === 'failed' ? 'danger' : 'default'} /><Metric label="Attacks" value={run.total_attacks} /><Metric label="Confirmed" value={run.successful_attacks} tone="danger" /><Metric label="Tokens" value={run.llm_stats.total_tokens.toLocaleString()} /></section>
-      <section className="px-6 sm:px-10 md:px-16 lg:px-20 py-7 grid lg:grid-cols-3 gap-5 border-b border-white/10"><div><div className="text-white/30 text-[9px] uppercase tracking-wider">Started</div><div className="mt-1 text-xs text-white/70">{formatDate(run.start_time)}</div></div><div><div className="text-white/30 text-[9px] uppercase tracking-wider">Completed</div><div className="mt-1 text-xs text-white/70">{formatDate(run.end_time)}</div></div><div><div className="text-white/30 text-[9px] uppercase tracking-wider">LLM telemetry</div><div className="mt-1 text-xs text-white/70">{run.llm_stats.calls} calls · {run.llm_stats.prompt_tokens.toLocaleString()} input · {run.llm_stats.completion_tokens.toLocaleString()} output</div></div>{run.error && <div className="lg:col-span-3"><ErrorNotice message={run.error} /></div>}</section>
-      <section className="px-6 sm:px-10 md:px-16 lg:px-20 py-10"><h2 className="text-xs uppercase tracking-[0.2em] text-white/50">Attack evidence · {run.attacks.length}</h2><p className="mt-2 text-[10px] text-white/35">Expand an attempt to inspect the raw prompt, target reply, HTTP observation, and evaluator evidence.</p><div className="mt-5"><Evidence detail={run} /></div></section>
-      <section className="px-6 sm:px-10 md:px-16 lg:px-20 py-10 border-t border-white/10"><h2 className="text-xs uppercase tracking-[0.2em] text-white/50">Run findings · {findings.length}</h2>{findings.length ? <div className="mt-4 grid md:grid-cols-2 gap-3">{findings.map(finding => <Link key={finding.finding_id} to={`/findings?finding=${finding.finding_id}`} className="border border-white/10 p-4 hover:border-red-500/60"><div className="text-red-400 text-[10px]">{finding.asi_class} · {finding.severity}</div><div className="mt-2 text-xs uppercase">{strategyLabel(finding.strategy)}</div><div className="mt-2 text-[10px] text-white/45">{finding.status} · {finding.finding_id}</div></Link>)}</div> : <p className="mt-4 text-xs text-white/35">No persisted findings were linked to this run.</p>}</section>
-      <section className="px-6 sm:px-10 md:px-16 lg:px-20 py-10 border-t border-white/10"><h2 className="text-xs uppercase tracking-[0.2em] text-white/50">Reporter output</h2>{markdown ? <pre className="mt-4 max-h-[600px] overflow-auto whitespace-pre-wrap break-words border border-white/10 bg-white/[0.02] p-5 text-[11px] text-white/70 leading-relaxed">{markdown}</pre> : <p className="mt-4 text-xs text-white/35">Reporter Markdown is available after a completed run.</p>}</section>
-      <section className="px-6 sm:px-10 md:px-16 lg:px-20 py-10 border-t border-white/10"><h2 className="text-xs uppercase tracking-[0.2em] text-white/50">LLM call ledger · {run.llm_calls.length}</h2><div className="mt-4 overflow-x-auto border border-white/10"><table className="w-full min-w-[800px] text-left"><thead className="bg-white/[0.03] text-[9px] uppercase tracking-wider text-white/35"><tr>{['Agent', 'Model', 'Input', 'Output', 'Total', 'Latency', 'Timestamp'].map(item => <th className="px-3 py-2 font-normal" key={item}>{item}</th>)}</tr></thead><tbody>{run.llm_calls.map(call => <tr key={call.id} className="border-t border-white/[0.06] text-[10px] text-white/65"><td className="px-3 py-2">{call.agent}</td><td className="px-3 py-2 truncate max-w-[200px]">{call.model}</td><td className="px-3 py-2">{call.prompt_tokens}</td><td className="px-3 py-2">{call.completion_tokens}</td><td className="px-3 py-2">{call.total_tokens}</td><td className="px-3 py-2">{formatDuration(call.latency_ms)}</td><td className="px-3 py-2">{formatDate(call.timestamp)}</td></tr>)}</tbody></table></div></section>
-    </>}</main>
+  const { campaignId = '' } = useParams()
+  const [search] = useSearchParams()
+  const { me } = useMe()
+  const [detail, setDetail] = useState<CampaignDetail | null>(null)
+  const [live, setLive] = useState<LiveCampaign>(() => emptyCampaign(campaignId))
+  const [error, setError] = useState<string | null>(null)
+  const [connection, setConnection] = useState<'connected' | 'reconnecting' | 'idle'>('idle')
+  const [selected, setSelected] = useState<string | null>(search.get('conversation'))
+  const [cancelling, setCancelling] = useState(false)
+  const liveRef = useRef(live)
+  liveRef.current = live
+
+  // Load the snapshot once, then follow the event stream from its seq.
+  useEffect(() => {
+    const controller = new AbortController()
+    setError(null)
+    getCampaign(campaignId)
+      .then(snapshot => {
+        if (controller.signal.aborted) return
+        setDetail(snapshot)
+        const state = fromDetail(snapshot)
+        setLive(state)
+        if (isCampaignTerminal(state.status)) return
+        return streamCampaignEvents(campaignId, {
+          lastSeq: state.lastSeq,
+          signal: controller.signal,
+          onStatus: setConnection,
+          onEvent: event => setLive(previous => reduceEvent(previous, event)),
+        }).then(() => setConnection('idle'))
+      })
+      .catch(e => { if (!controller.signal.aborted) setError((e as Error).message) })
+    return () => controller.abort()
+  }, [campaignId])
+
+  const cells = useMemo(() => Object.values(live.cells), [live.cells])
+  const techniques = useMemo(
+    () => [...new Set([...(detail?.policy.techniques ?? []), ...cells.map(cell => cell.technique)])],
+    [detail, cells],
+  )
+  const selectedCell = selected ? live.cells[selected] : undefined
+  const terminal = isCampaignTerminal(live.status)
+  const canControl = can(me, PERMISSION.campaignsCancel)
+
+  const cancel = useCallback(async () => {
+    setCancelling(true)
+    try { await cancelCampaign(campaignId) } catch (e) { setError((e as Error).message) } finally { setCancelling(false) }
+  }, [campaignId])
+
+  return (
+    <main className={pageClass}>
+      <PageHeader eyebrow="Live campaign" title={detail?.target_name ?? 'Campaign'}>
+        <StatusBadge status={live.status} />
+        {detail?.environment === 'production' && <StatusBadge status="production" />}
+        {canControl && !terminal && (
+          <button type="button" data-testid="cancel-campaign" disabled={cancelling} onClick={cancel} className={buttonClass}>Cancel campaign</button>
+        )}
+        {can(me, PERMISSION.killSwitchWrite) && <KillSwitchControl />}
+      </PageHeader>
+
+      <section className={`${gutter} py-6 space-y-4 border-b border-white/10`}>
+        {error && <ErrorNotice message={error} />}
+        {connection === 'reconnecting' && <Notice>Connection lost; reconnecting and resuming from the last event.</Notice>}
+        {live.status === 'failed' && <ErrorNotice message={`Campaign failed: ${live.message ?? 'unknown error'}`} />}
+        {live.status === 'cancelled' && <Notice>Campaign cancelled{live.cancelledReason ? ` (${live.cancelledReason.replace('_', ' ')})` : ''}.</Notice>}
+        <div className="flex flex-wrap gap-3">
+          <Metric label="Conversations" value={`${cells.length} / ${live.totalConversations || detail?.total_conversations || '—'}`} />
+          <Metric label="Confirmed" value={live.confirmed} tone={live.confirmed > 0 ? 'danger' : 'default'} />
+          <Metric label="Running" value={cells.filter(cell => cell.status === 'running').length} tone="warning" />
+        </div>
+        <BudgetMeter budget={live.budget} />
+      </section>
+
+      <section className={`${gutter} py-8 grid xl:grid-cols-[auto_1fr] gap-8 border-b border-white/10`}>
+        <div>
+          <h2 className="mb-3 text-[10px] uppercase tracking-[0.2em] text-white/60">Conversations (technique × trial)</h2>
+          {techniques.length === 0
+            ? <p className="text-xs text-white/60">Waiting for the first conversation…</p>
+            : <ConversationGrid cells={cells} techniques={techniques} trials={detail?.policy.trials_per_technique ?? 1} selected={selected} onSelect={setSelected} />}
+        </div>
+        <div>{selectedCell ? <Transcript cell={selectedCell} highlightTurn={search.get('turn') !== null ? Number(search.get('turn')) : null} /> : <p className="text-xs text-white/60">Select a cell to read its transcript.</p>}</div>
+      </section>
+
+      <section className={`${gutter} py-8`}>
+        <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+          <h2 className="text-[10px] uppercase tracking-[0.2em] text-white/60">Results by technique</h2>
+          <div className="flex gap-2 items-center">
+            <Link to={`/findings?campaign_id=${encodeURIComponent(campaignId)}`} className={buttonClass}>Findings</Link>
+            {terminal && (['md', 'json', 'pdf'] as const).map(format => <a key={format} href={reportUrl(campaignId, format)} className="text-[10px] uppercase text-white/50 hover:text-white"><Badge>{format}</Badge></a>)}
+          </div>
+        </div>
+        <ResultsTable results={live.results} />
+      </section>
+    </main>
+  )
 }

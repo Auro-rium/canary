@@ -1,8 +1,38 @@
 import { useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { EmptyState, ErrorNotice, PageHeader, StatusBadge } from '../components/Console'
-import { getTargets } from '../lib/api'
-import { formatDate, pageClass } from '../lib/presentation'
-import type { TargetSummary } from '../lib/types'
+import { can, PERMISSION, useMe } from '../lib/useMe'
+import { listTargets } from '../lib/api'
+import { gutter, pageClass } from '../lib/presentation'
+import type { TargetView } from '../lib/v2'
 
-export default function TargetsPage() { const [targets, setTargets] = useState<TargetSummary[]>([]); const [error, setError] = useState<string | null>(null); useEffect(() => { getTargets().then(result => setTargets(result.items)).catch(error => setError(error.message)) }, []); return <main className={pageClass}><PageHeader eyebrow="Target portfolio" title="Targets" /><section className="px-6 sm:px-10 md:px-16 lg:px-20 py-8">{error && <ErrorNotice message={error} />}{!error && !targets.length && <EmptyState>No target history has been recorded</EmptyState>}<div className="grid lg:grid-cols-2 gap-4">{targets.map(target => <Link to={`/targets/${encodeURIComponent(target.target_id)}`} key={target.target_id} className="border border-white/10 p-5 hover:border-red-500/60"><div className="text-xs text-white break-all">{target.target_id}</div><div className="mt-5 grid grid-cols-3 gap-3 text-[10px]"><div><div className="text-white/30 uppercase">Campaigns</div><div className="mt-1 text-white">{target.campaign_count}</div></div><div><div className="text-white/30 uppercase">Open findings</div><div className="mt-1 text-red-400">{target.open_findings}</div></div><div><div className="text-white/30 uppercase">Latest</div>{target.latest_run ? <div className="mt-1"><StatusBadge status={target.latest_run.status} /></div> : '—'}</div></div>{target.latest_run && <div className="mt-4 text-[10px] text-white/35">Last run: {formatDate(target.latest_run.start_time)}</div>}</Link>)}</div></section></main> }
+export default function TargetsPage() {
+  const { me } = useMe()
+  const [targets, setTargets] = useState<TargetView[] | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  useEffect(() => { listTargets().then(result => setTargets(result.items)).catch(e => setError((e as Error).message)) }, [])
+
+  return (
+    <main className={pageClass}>
+      <PageHeader eyebrow="Authorized targets" title="Targets">
+        {can(me, PERMISSION.targetsWrite) && <Link to="/targets/new" className="px-4 py-2 bg-red-600 text-xs uppercase tracking-wider hover:bg-red-500">Add target</Link>}
+      </PageHeader>
+      <section className={`${gutter} py-8`}>
+        {error && <ErrorNotice message={error} />}
+        {!targets && !error && <EmptyState>Loading targets</EmptyState>}
+        {targets?.length === 0 && <EmptyState>No targets registered</EmptyState>}
+        {targets && targets.length > 0 && (
+          <ul className="grid md:grid-cols-2 gap-3">
+            {targets.map(target => (
+              <li key={target.target_id} className="border border-white/10 p-4">
+                <Link to={`/targets/${target.target_id}`} className="text-sm hover:underline">{target.name}</Link>
+                <p className="mt-1 text-[10px] text-white/60 break-all">{target.endpoint}</p>
+                <div className="mt-3 flex gap-2"><StatusBadge status={target.verified ? 'verified' : 'unverified'} />{target.environment === 'production' && <StatusBadge status="production" />}</div>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </main>
+  )
+}

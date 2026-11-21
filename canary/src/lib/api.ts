@@ -1,86 +1,111 @@
+// API client for /api/v2. Auth is the session cookie only (credentials:
+// 'include'); no token is read from the environment or sent from here.
+import type { SseEvent } from './contracts'
+import { ApiError, detailMessage } from './errors'
+import { followEvents } from './sse'
 import type {
-  CampaignRunPayload, DashboardOverview, Finding, FindingAttempt, PaginatedRuns,
-  RunDetail, TargetCoverage, TargetTrend, TargetsResponse, SseEvent,
-} from './types'
+  CampaignCreateBody, CampaignDetail, CampaignSummary, CancelResult, ConversationDetail, FindingDetail,
+  FindingTransitionBody, FindingV2, KillSwitchBody, KillSwitchState, Me, Paged, ProvidersView,
+  TargetCreateBody, TargetCreated, TargetView, VerifyMethod, VerifyResult,
+} from './v2'
 
-const env = import.meta.env as Record<string, string | undefined>
-export const API_BASE = env.VITE_API_URL ?? ''
+export { ApiError } from './errors'
 
-// No token is ever read from a VITE_* variable (it would ship in the bundle).
-// The browser authenticates with the session cookie the proxy forwards (WP8).
-function requestHeaders(init?: HeadersInit): HeadersInit {
-  return {
-    'Content-Type': 'application/json',
-    ...(init ?? {}),
-  }
+export const API_BASE = (import.meta.env as Record<string, string | undefined>).VITE_API_URL ?? ''
+
+/** WP8 double-submit CSRF: the readable `canary_csrf` cookie is echoed in `X-CSRF-Token`. */
+export const CSRF_COOKIE = 'canary_csrf'
+export const CSRF_HEADER = 'X-CSRF-Token'
+const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+
+// /api/v2/me also returns the token (session logins); used when the cookie is not readable.
+let csrfFallback: string | null = null
+export function setCsrfFallback(token: string | null | undefined) { csrfFallback = token ?? null }
+
+export function readCsrfToken(): string | null {
+  try {
+    for (const part of document.cookie.split(';')) {
+      const [name, ...rest] = part.trim().split('=')
+      if (name === CSRF_COOKIE) return decodeURIComponent(rest.join('='))
+    }
+  } catch { /* no document (tests) */ }
+  return csrfFallback
 }
 
-export class ApiError extends Error {
-  readonly status?: number
-  constructor(message: string, status?: number) {
-    super(message)
-    this.name = 'ApiError'
-    this.status = status
+async function apiFetch<T>(path: string, init: RequestInit = {}): Promise<T> {
+  const headers: Record<string, string> = { Accept: 'application/json' }
+  if (init.body !== undefined) headers['Content-Type'] = 'application/json'
+  if (!SAFE_METHODS.has((init.method ?? 'GET').toUpperCase())) {
+    const csrf = readCsrfToken()
+    if (csrf) headers[CSRF_HEADER] = csrf
   }
-}
-
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(`${API_BASE}${path}`, {
     ...init,
-    headers: requestHeaders(init?.headers),
+    credentials: 'include',
+    headers: { ...headers, ...(init.headers as Record<string, string> | undefined) },
   })
   if (!response.ok) {
-    let detail = ''
-    try { detail = (await response.json() as { detail?: string }).detail ?? '' } catch { /* non-JSON upstream response */ }
-    throw new ApiError(detail || `Backend responded ${response.status}`, response.status)
+    let detail: unknown
+    try { detail = (await response.json() as { detail?: unknown }).detail } catch { /* non-JSON body */ }
+    throw new ApiError(detailMessage(detail, `Backend responded ${response.status}`), response.status)
   }
+  if (response.status === 204) return undefined as T
   return response.json() as Promise<T>
 }
 
-export const getOverview = () => apiFetch<DashboardOverview>('/api/dashboard/overview')
-export const getTargets = () => apiFetch<TargetsResponse>('/api/targets')
-export const getRuns = (query: URLSearchParams) => apiFetch<PaginatedRuns>(`/api/runs?${query}`)
-export const getRun = (runId: string) => apiFetch<RunDetail>(`/api/runs/${encodeURIComponent(runId)}`)
-export const getRunReportMarkdown = (runId: string) => apiFetch<{ run_id: string; markdown: string }>(`/api/runs/${encodeURIComponent(runId)}/report-markdown`)
-export const getRunFindings = (runId: string) => apiFetch<Finding[]>(`/api/runs/${encodeURIComponent(runId)}/findings`)
-export const getTargetCoverage = (target: string) => apiFetch<TargetCoverage>(`/api/targets/${encodeURIComponent(target)}/coverage`)
-export const getTargetTrends = (target: string) => apiFetch<TargetTrend[]>(`/api/targets/${encodeURIComponent(target)}/trends`)
-export const getFindings = (query: URLSearchParams) => apiFetch<Finding[]>(`/api/findings?${query}`)
-export const getFinding = (id: string) => apiFetch<Finding>(`/api/findings/${encodeURIComponent(id)}`)
-export const getFindingAttempts = (id: string) => apiFetch<FindingAttempt[]>(`/api/findings/${encodeURIComponent(id)}/attempts`)
-export const updateFindingStatus = (id: string, body: { status: string; reviewer_id?: string; rationale?: string }) =>
-  apiFetch<{ status: string }>(`/api/findings/${encodeURIComponent(id)}/status`, { method: 'PUT', body: JSON.stringify(body) })
+const enc = encodeURIComponent
+const json = (body: unknown) => JSON.stringify(body)
 
-export async function runCampaignSSE(
-  payload: CampaignRunPayload,
-  onEvent: (event: SseEvent) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  const response = await fetch(`${API_BASE}/api/campaigns/run`, {
-    method: 'POST',
-    headers: requestHeaders(),
-    body: JSON.stringify(payload),
-    signal,
-  })
-  if (!response.ok) {
-    let detail = ''
-    try { detail = (await response.json() as { detail?: string }).detail ?? '' } catch { /* non-JSON upstream response */ }
-    throw new ApiError(detail || `Backend responded ${response.status}`, response.status)
-  }
-  if (!response.body) throw new ApiError('No SSE stream body')
+export const getMe = () => apiFetch<Me>('/api/v2/me')
 
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buffer += decoder.decode(value, { stream: true })
-    const lines = buffer.split('\n')
-    buffer = lines.pop() ?? ''
-    for (const line of lines) {
-      if (!line.startsWith('data: ')) continue
-      try { onEvent(JSON.parse(line.slice(6)) as SseEvent) } catch { /* ignore malformed frame, preserve stream */ }
-    }
-  }
+// Auth (OIDC): the browser is redirected to the provider and back; the session
+// and CSRF cookies are set by the callback.
+export const listProviders = () => apiFetch<ProvidersView>('/api/v2/auth/providers')
+export const loginUrl = (provider: string, next = '/') =>
+  `${API_BASE}/api/v2/auth/login/${enc(provider)}?next=${enc(next)}`
+export const logout = () => apiFetch<unknown>('/api/v2/auth/logout', { method: 'POST', body: json({}) })
+
+// Targets
+export const listTargets = () => apiFetch<{ items: TargetView[] }>('/api/v2/targets')
+export const getTarget = (id: string) => apiFetch<TargetView>(`/api/v2/targets/${enc(id)}`)
+export const createTarget = (body: TargetCreateBody) =>
+  apiFetch<TargetCreated>('/api/v2/targets', { method: 'POST', body: json(body) })
+export const verifyTarget = (id: string, method: VerifyMethod) =>
+  apiFetch<VerifyResult>(`/api/v2/targets/${enc(id)}/verify`, { method: 'POST', body: json({ method }) })
+
+// Campaigns
+export const createCampaign = (body: CampaignCreateBody) =>
+  apiFetch<CampaignDetail>('/api/v2/campaigns', { method: 'POST', body: json(body) })
+export const listCampaigns = (query: URLSearchParams) =>
+  apiFetch<Paged<CampaignSummary>>(`/api/v2/campaigns?${query}`)
+export const getCampaign = (id: string) => apiFetch<CampaignDetail>(`/api/v2/campaigns/${enc(id)}`)
+export const cancelCampaign = (id: string) =>
+  apiFetch<CancelResult>(`/api/v2/campaigns/${enc(id)}/cancel`, { method: 'POST', body: json({}) })
+/** Redacted by default. `raw` needs `evidence:read_raw` (403 otherwise) and is written to the audit log. */
+export const getConversation = (id: string, raw = false) =>
+  apiFetch<ConversationDetail>(`/api/v2/conversations/${enc(id)}${raw ? '?raw=true' : ''}`)
+export const reportUrl = (campaignId: string, format: 'json' | 'md' | 'pdf') =>
+  `${API_BASE}/api/v2/reports/${enc(campaignId)}?format=${format}`
+
+/** Follow a campaign's events with Last-Event-ID resume (see ./sse). */
+export function streamCampaignEvents(
+  campaignId: string,
+  options: {
+    onEvent: (event: SseEvent) => void
+    lastSeq?: number
+    signal?: AbortSignal
+    onStatus?: (status: 'connected' | 'reconnecting') => void
+  },
+): Promise<number> {
+  return followEvents({ url: `${API_BASE}/api/v2/campaigns/${enc(campaignId)}/events`, ...options })
 }
+
+// Findings
+export const listFindings = (query: URLSearchParams) => apiFetch<Paged<FindingV2>>(`/api/v2/findings?${query}`)
+export const updateFindingStatus = (id: string, body: FindingTransitionBody) =>
+  apiFetch<FindingDetail>(`/api/v2/findings/${enc(id)}/status`, { method: 'PUT', body: json(body) })
+
+// Admin (kill switch: read for every role, write for platform admins only; the backend answers 403 otherwise)
+export const getKillSwitch = () => apiFetch<KillSwitchState>('/api/v2/admin/kill-switch')
+export const setKillSwitch = (body: KillSwitchBody) =>
+  apiFetch<KillSwitchState>('/api/v2/admin/kill-switch', { method: 'POST', body: json(body) })
