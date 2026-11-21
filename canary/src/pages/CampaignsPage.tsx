@@ -1,68 +1,45 @@
-import { useEffect, useState } from 'react'
+import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { EmptyState, ErrorNotice, Metric, PageHeader, StatusBadge } from '../components/Console'
-import { can, PERMISSION, useMe } from '../lib/useMe'
+import { Metric, Page, PageHeader } from '../components/Console'
+import { EmptyState, ErrorState, SkeletonList, StatusBadge, Table, primaryButtonClass, type Column, type SortState } from '../components/ui'
 import { listCampaigns } from '../lib/api'
-import { formatDate, gutter, pageClass } from '../lib/presentation'
-import type { CampaignSummary, Paged } from '../lib/v2'
+import { formatDate } from '../lib/presentation'
+import { can, PERMISSION, useMe } from '../lib/useMe'
+import { useLoad } from '../lib/useLoad'
+import type { CampaignSummary } from '../lib/v2'
 
 const PAGE_SIZE = 25
+
+const columns: Column<CampaignSummary>[] = [
+  { key: 'target', header: 'Target', sortValue: c => (c.target_name ?? c.target_id).toLowerCase(), cell: c => <Link className="font-medium hover:underline" to={`/campaigns/${c.campaign_id}`}>{c.target_name ?? c.target_id}</Link> },
+  { key: 'status', header: 'Status', sortValue: c => c.status, cell: c => <span className="flex flex-wrap gap-1"><StatusBadge status={c.status} />{c.environment === 'production' && <StatusBadge status="production" />}</span> },
+  { key: 'confirmed', header: 'Confirmed / conversations', sortValue: c => c.confirmed, cell: c => <span className="font-mono">{c.confirmed} / {c.total_conversations}</span> },
+  { key: 'created', header: 'Started', sortValue: c => c.created_at, cell: c => <span className="whitespace-nowrap text-muted">{formatDate(c.created_at)}</span> },
+  { key: 'results', header: 'Results', cell: c => <Link className="text-xs underline" to={`/campaigns/${c.campaign_id}/results`} aria-label={`Results for ${c.target_name ?? c.target_id}`}>Results</Link> },
+]
 
 export default function CampaignsPage() {
   const [search, setSearch] = useSearchParams()
   const { me } = useMe()
-  const [data, setData] = useState<Paged<CampaignSummary> | null>(null)
-  const [error, setError] = useState<string | null>(null)
   const page = Number(search.get('page') ?? '1') || 1
-
-  useEffect(() => {
-    const query = new URLSearchParams({ page: String(page), page_size: String(PAGE_SIZE) })
-    let live = true
-    listCampaigns(query)
-      .then(result => { if (live) { setData(result); setError(null) } })
-      .catch(e => { if (live) setError((e as Error).message) })
-    return () => { live = false }
-  }, [page])
-
-  const totalPages = data ? Math.max(1, Math.ceil(data.total / data.page_size)) : 1
+  const { data, error, loading, reload } = useLoad(() => listCampaigns(new URLSearchParams({ page: String(page), page_size: String(PAGE_SIZE) })), `p${page}`)
+  const [sort, setSort] = useState<SortState | null>(null)
   const goto = (next: number) => { const params = new URLSearchParams(search); params.set('page', String(next)); setSearch(params) }
+  const launch = <Link to="/campaigns/new" className={primaryButtonClass}>New campaign</Link>
+  const canLaunch = can(me, PERMISSION.campaignsLaunch)
 
   return (
-    <main className={pageClass}>
-      <PageHeader eyebrow="Campaign operations" title="Campaigns">
-        {can(me, PERMISSION.campaignsLaunch) && <Link to="/campaigns/new" className="px-4 py-2 bg-red-600 text-xs uppercase tracking-wider hover:bg-red-500">New campaign</Link>}
-      </PageHeader>
-      <section className={`${gutter} py-6 border-b border-white/10 flex flex-wrap gap-3`}>
-        <Metric label="Campaigns" value={data?.total ?? '—'} />
-        <Metric label="Page" value={`${page} / ${totalPages}`} />
-      </section>
-      <section className={`${gutter} py-8`}>
-        {error && <ErrorNotice message={error} />}
-        {!data && !error && <EmptyState>Loading campaigns</EmptyState>}
-        {data?.items.length === 0 && <EmptyState>No campaigns yet</EmptyState>}
-        {data && data.items.length > 0 && (
-          <table className="w-full text-xs">
-            <thead><tr className="text-left text-[9px] uppercase tracking-wider text-white/60"><th className="py-2 font-normal">Target</th><th className="font-normal">Status</th><th className="font-normal">Confirmed</th><th className="font-normal">Started</th></tr></thead>
-            <tbody>
-              {data.items.map(campaign => (
-                <tr key={campaign.campaign_id} className="border-t border-white/10">
-                  <td className="py-3"><Link className="hover:underline" to={`/campaigns/${campaign.campaign_id}`}>{campaign.target_name ?? campaign.target_id}</Link></td>
-                  <td><StatusBadge status={campaign.status} /> {campaign.environment === 'production' && <StatusBadge status="production" />}</td>
-                  <td>{campaign.confirmed} / {campaign.total_conversations}</td>
-                  <td className="text-white/50">{formatDate(campaign.created_at)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        )}
-        {data && (
-          <div className="mt-5 flex items-center justify-between text-xs">
-            <button disabled={page <= 1} onClick={() => goto(page - 1)} className="border border-white/20 px-3 py-2 disabled:opacity-30">Previous</button>
-            <span className="text-white/60">{data.total} total</span>
-            <button disabled={page >= totalPages} onClick={() => goto(page + 1)} className="border border-white/20 px-3 py-2 disabled:opacity-30">Next</button>
-          </div>
-        )}
-      </section>
-    </main>
+    <Page>
+      <PageHeader title="Campaigns" description="Adversarial multi-turn runs against your verified targets.">{canLaunch && launch}</PageHeader>
+      {error && <ErrorState title="Could not load campaigns" message={error} onRetry={reload} />}
+      {loading && !data && !error && <SkeletonList rows={5} label="Loading campaigns" />}
+      {data && data.items.length === 0 && <EmptyState title="No campaigns yet" description="Launch a campaign against a verified target to see live results here." action={canLaunch ? launch : undefined} />}
+      {data && data.items.length > 0 && (
+        <>
+          <div className="mb-4 flex flex-wrap gap-3"><Metric label="Campaigns" value={data.total} /></div>
+          <Table caption="Campaigns" columns={columns} rows={data.items} rowKey={c => c.campaign_id} sort={sort} onSortChange={setSort} paging={{ page, pageSize: data.page_size, total: data.total, onPageChange: goto }} testId="campaigns-table" />
+        </>
+      )}
+    </Page>
   )
 }

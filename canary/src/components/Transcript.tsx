@@ -1,12 +1,32 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { ApiError, getConversation } from '../lib/api'
-import { can, PERMISSION, useMe } from '../lib/useMe'
-import { formatDuration, SEVERITY_STYLE, strategyLabel, VERDICT_STYLE } from '../lib/presentation'
 import type { LiveCell } from '../lib/liveState'
+import { formatDuration, statusStyle, VERDICT_STYLE } from '../lib/presentation'
+import { can, PERMISSION, useMe } from '../lib/useMe'
 import type { ConversationDetail } from '../lib/v2'
-import { Badge, ErrorNotice } from './Console'
+import { AsiBadge, Badge, CodeBlock, ErrorState, SeverityBadge, SkeletonList, buttonClass, cx } from './ui'
 
-/** Chat transcript for one conversation, turn by turn, with monitor hits and the first failing turn highlighted. */
+/**
+ * The reason a conversation ended, in words. Prefers the monitor hit that stopped it (live events),
+ * falling back to the first turn that carries a hit when the snapshot came from the API.
+ */
+export function StopReason({ cell, detail }: { cell: LiveCell; detail: ConversationDetail | null }) {
+  const style = statusStyle(cell.status)
+  if (!style.reason) return null
+  const stopper = cell.hits.find(hit => hit.stops_conversation)
+  const turnWithHit = detail?.conversation.turns.find(turn => turn.monitor_hits.length > 0)
+  const detailText = stopper
+    ? `Monitor "${stopper.hit}" (${stopper.severity}) fired on turn ${stopper.turn_index + 1}.`
+    : cell.status === 'stopped_monitor' && turnWithHit ? `Monitor "${turnWithHit.monitor_hits[0]}" fired on turn ${turnWithHit.index + 1}.` : null
+  return (
+    <div data-testid="stop-reason" className="border-b border-line bg-danger-soft px-4 py-2.5 text-danger">
+      <p className="font-semibold"><span aria-hidden="true">■ </span>{style.label}</p>
+      <p className="text-xs">{style.reason}{detailText ? ` ${detailText}` : ''}</p>
+    </div>
+  )
+}
+
+/** Chat transcript for one conversation, turn by turn, with monitor hits and the first failing turn highlighted. Text only: never parsed as markup. */
 export function Transcript({ cell, highlightTurn }: { cell: LiveCell; highlightTurn?: number | null }) {
   const [detail, setDetail] = useState<ConversationDetail | null>(null)
   const [error, setError] = useState<string | null>(null)
@@ -16,7 +36,7 @@ export function Transcript({ cell, highlightTurn }: { cell: LiveCell; highlightT
   // Redacted by default; raw is opt-in per conversation and never persisted across selections.
   const [wantRaw, setWantRaw] = useState(false)
   const [rawDenied, setRawDenied] = useState(false)
-  useEffect(() => { setWantRaw(false); setRawDenied(false) }, [id])
+  useEffect(() => { setWantRaw(false); setRawDenied(false); setDetail(null) }, [id])
   // Refetch whenever the conversation advances or finishes.
   const version = `${cell.turns}:${cell.status}:${cell.verdict ?? ''}`
 
@@ -35,61 +55,73 @@ export function Transcript({ cell, highlightTurn }: { cell: LiveCell; highlightT
   const failingTurn = highlightTurn ?? verdict?.first_failing_turn ?? null
   const turns = detail?.conversation.turns ?? []
 
+  // Deep links (?turn=N) scroll the failing turn into view once the transcript is there.
+  const scrolled = useRef<string | null>(null)
+  useEffect(() => {
+    if (highlightTurn === null || highlightTurn === undefined || turns.length === 0 || scrolled.current === id) return
+    scrolled.current = id
+    document.getElementById(`turn-${highlightTurn}`)?.scrollIntoView({ block: 'center' })
+  }, [highlightTurn, turns.length, id])
+
+  const status = statusStyle(cell.status)
+
   return (
-    <section data-testid="transcript" aria-label="Conversation transcript" className="border border-white/10 bg-white/[0.02]">
-      <header className="flex flex-wrap items-center gap-3 border-b border-white/10 px-4 py-3 text-[10px] uppercase tracking-wider">
-        <span className="text-white">{strategyLabel(cell.technique)} · trial {cell.trial_index + 1}</span>
-        <Badge>{cell.status.replace(/_/g, ' ')}</Badge>
-        {verdict && <span className={VERDICT_STYLE[verdict.verdict]}>{verdict.verdict}</span>}
-        {verdict && <Badge className={SEVERITY_STYLE[verdict.severity]}>{verdict.severity} · {verdict.asi_class}</Badge>}
-      </header>
-      <div className="flex flex-wrap items-center gap-3 border-b border-white/10 px-4 py-2 text-[10px]">
+    <section data-testid="transcript" aria-label="Conversation transcript">
+      <StopReason cell={cell} detail={detail} />
+      <div className="flex flex-wrap items-center gap-2 border-b border-line px-4 py-2.5 text-xs">
+        <Badge tone={status.tone} icon={status.icon}>{cell.status.replace(/_/g, ' ')}</Badge>
+        {verdict && <Badge tone={VERDICT_STYLE[verdict.verdict].tone} icon={VERDICT_STYLE[verdict.verdict].icon}>{verdict.verdict}</Badge>}
+        {verdict && <SeverityBadge severity={verdict.severity} />}
+        {verdict && <AsiBadge code={verdict.asi_class} />}
+      </div>
+      <div className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-line px-4 py-2.5 text-xs">
         {detail?.raw
-          ? <span data-testid="raw-banner" role="status" className="text-orange-300 uppercase tracking-wider">Raw evidence: unredacted, this view is audited</span>
-          : <span data-testid="redacted-banner" className="text-white/60 uppercase tracking-wider">Redacted view (secrets and personal data masked)</span>}
+          ? <span data-testid="raw-banner" role="status" className="font-semibold text-warn"><span aria-hidden="true">! </span>Raw evidence: unredacted, this view is audited</span>
+          : <span data-testid="redacted-banner" className="text-muted"><span aria-hidden="true">◐ </span>Redacted view (secrets and personal data masked)</span>}
         {canRaw && (
-          <button type="button" data-testid="toggle-raw" className="border border-white/25 px-2 py-1 uppercase tracking-wider hover:bg-white/10" aria-pressed={wantRaw} onClick={() => setWantRaw(value => !value)}>
+          <button type="button" data-testid="toggle-raw" className={cx(buttonClass, 'px-2.5 py-1 text-xs')} aria-pressed={wantRaw} onClick={() => setWantRaw(value => !value)}>
             {wantRaw ? 'Back to redacted' : 'Show raw (audited)'}
           </button>
         )}
-        {canRaw && !wantRaw && <span className="text-white/60">Showing raw evidence is recorded in the audit log.</span>}
-        {rawDenied && <span role="alert" className="text-red-300">Raw evidence is not permitted for your account.</span>}
+        {canRaw && !wantRaw && <span className="text-muted">Showing raw evidence is recorded in the audit log.</span>}
+        {rawDenied && <span role="alert" className="font-semibold text-danger">Raw evidence is not permitted for your account.</span>}
       </div>
-      <div className="p-4 space-y-4 max-h-[32rem] overflow-y-auto">
-        {error && <ErrorNotice message={error} />}
-        {!detail && !error && <p className="text-xs text-white/60">Loading transcript…</p>}
+      <div className="space-y-4 p-4">
+        {error && <ErrorState title="Could not load the transcript" message={error} />}
+        {!detail && !error && <SkeletonList rows={3} label="Loading transcript" />}
         {turns.map(turn => {
           const hit = turn.monitor_hits.length > 0
           const failing = failingTurn === turn.index
           return (
-            <article key={turn.index} data-testid={`turn-${turn.index}`} data-hit={hit} data-failing={failing}
-              className={`border-l-2 pl-3 ${failing ? 'border-red-500' : hit ? 'border-orange-400' : 'border-white/10'}`}>
-              <div className="text-[9px] uppercase tracking-wider text-white/60">
-                Turn {turn.index + 1}{turn.http_status ? ` · HTTP ${turn.http_status}` : ''} · {formatDuration(turn.latency_ms)}
-                {failing && <span className="ml-2 text-red-400">first failing turn</span>}
+            <article key={turn.index} id={`turn-${turn.index}`} data-testid={`turn-${turn.index}`} data-hit={hit} data-failing={failing}
+              className={cx('rounded-md border-l-4 bg-surface pl-3', failing ? 'border-danger bg-danger-soft/40' : hit ? 'border-warn' : 'border-line-strong/60')}>
+              <div className="flex flex-wrap items-center gap-x-2 text-xs text-muted">
+                <span className="font-semibold text-fg">Turn {turn.index + 1}</span>
+                <span>{turn.http_status ? `HTTP ${turn.http_status} · ` : ''}{formatDuration(turn.latency_ms)}</span>
+                {failing && <Badge tone="danger" icon="✕">first failing turn</Badge>}
               </div>
-              <div className="mt-2 max-w-[85%] bg-white/[0.06] px-3 py-2 text-xs whitespace-pre-wrap break-words">{turn.message}</div>
-              <div className="mt-2 ml-auto max-w-[85%] border border-white/10 px-3 py-2 text-xs whitespace-pre-wrap break-words text-white/80">
-                {turn.response_text || <span className="text-white/60">(empty reply)</span>}
+              <p className="mt-2 text-xs font-semibold text-muted">Attacker sent</p>
+              <CodeBlock text={turn.message} className="mt-0.5 rounded-md bg-raised px-3 py-2" />
+              <p className="mt-2 text-xs font-semibold text-muted">Target replied</p>
+              <div className="mt-0.5 rounded-md border border-line px-3 py-2">
+                {turn.response_text ? <CodeBlock text={turn.response_text} /> : <span className="text-xs text-muted">(empty reply)</span>}
               </div>
-              {turn.tool_calls.length > 0 && (
-                <p className="mt-1 text-[10px] text-white/60">tool calls: {turn.tool_calls.map(call => call.name).join(', ')}</p>
-              )}
-              {turn.error && <p className="mt-1 text-[10px] text-red-300">error: {turn.error}</p>}
+              {turn.tool_calls.length > 0 && <p className="mt-1 text-xs text-muted">tool calls: {turn.tool_calls.map(call => call.name).join(', ')}</p>}
+              {turn.error && <p className="mt-1 text-xs text-danger">error: {turn.error}</p>}
               {hit && (
-                <ul className="mt-1 flex flex-wrap gap-2" aria-label="Monitor hits">
-                  {turn.monitor_hits.map(name => <li key={name}><Badge className="text-orange-300 border-orange-500/50 bg-orange-950/30">hit: {name}</Badge></li>)}
+                <ul className="mt-2 flex flex-wrap gap-2 pb-1" aria-label="Monitor hits">
+                  {turn.monitor_hits.map(name => <li key={name}><Badge tone="warn" icon="▲" mono>hit: {name}</Badge></li>)}
                 </ul>
               )}
             </article>
           )
         })}
-        {detail && turns.length === 0 && <p className="text-xs text-white/60">No turns recorded yet.</p>}
+        {detail && turns.length === 0 && <p className="text-xs text-muted">No turns recorded yet.</p>}
       </div>
       {verdict && (
-        <footer className="border-t border-white/10 px-4 py-3 text-xs text-white/60">
-          <span className="text-white/60 uppercase text-[9px] tracking-wider">Rationale </span>{verdict.rationale}
-          <span className="ml-3 text-white/60">judge agreement {(verdict.judge_agreement * 100).toFixed(0)}%</span>
+        <footer className="border-t border-line px-4 py-3 text-xs text-muted">
+          <span className="font-semibold">Rationale: </span><span className="break-words">{verdict.rationale}</span>
+          <span className="ml-3">judge agreement {(verdict.judge_agreement * 100).toFixed(0)}%</span>
         </footer>
       )}
     </section>
