@@ -11,7 +11,7 @@ Real-time dashboard for the **Cyber Red Team Foundry** backend, built with React
 
 Live links: [interactive dashboard](https://canary-coral.vercel.app/) · [project explainer](https://agent-canary-explainer.vercel.app/)
 
-The previous shared AWS backend was terminated. The Vercel dashboard requires a user-provisioned FastAPI backend configured through server-side `CANARY_API_URL` and `CANARY_API_TOKEN` variables before campaign execution works.
+The previous shared AWS backend was terminated. The Vercel dashboard requires a user-provisioned FastAPI backend configured through the server-side `CANARY_API_URL` variable; users sign in with OIDC (the proxy forwards their session, it holds no token).
 
 The explainer source lives at [`explainer/`](../explainer/) in the repository. The demonstration target is the separate [CompanyAgent Canary Demo](https://github.com/Auro-rium/companybot-canary-demo), a real HTTP LangChain tool-calling agent; Canary assesses it only with authorization.
 

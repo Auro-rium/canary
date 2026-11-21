@@ -43,3 +43,6 @@ htmlcov/
 # Local development
 .mypy_cache/
 .ruff_cache/
+
+# Security-owner attacker prompt: never commit or bake into images (WP4 review)
+prompts/planner.md

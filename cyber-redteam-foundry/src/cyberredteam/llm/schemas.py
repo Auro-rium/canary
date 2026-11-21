@@ -125,7 +125,7 @@ class EvaluationResult(BaseModel):
     )
     component: str = Field(
         default="",
-        description="Attacked component name (e.g. employee_lookup)",
+        description="Attacked component name (e.g. document_search)",
     )
     strategy: str = Field(
         default="",

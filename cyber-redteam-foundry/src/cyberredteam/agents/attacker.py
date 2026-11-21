@@ -14,14 +14,13 @@ from cyberredteam.tools.target_adapter import (
     TargetAdapter,
 )
 
-
 logger = setup_logging()
 
 def _extract_tool_calls(response: str) -> list:
     """Heuristically extract tool-call-like patterns from a free-form LLM response.
 
     HttpTargetAdapter returns plain text, not structured tool call objects.
-    We look for common patterns like "calling employee_lookup" or JSON-like
+    We look for common patterns like "calling lookup_order" or JSON-like
     fragments that suggest the LLM described a tool invocation.
     """
     import re

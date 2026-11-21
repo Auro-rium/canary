@@ -7,7 +7,7 @@ logged and never put into exception messages.
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -23,6 +23,16 @@ from cyberredteam.contracts import (
 REFRESH_SKEW_S = 30.0
 DEFAULT_TOKEN_TTL_S = 3600.0
 
+# Called before every auth sub-request (token fetch, login, 401 re-auth). The
+# session adapter passes its per-request gate here, so these requests are rate
+# limited, charged to the campaign budget and stopped by cancel/kill like any
+# other request to the target. It may raise to refuse the request.
+RequestGate = Callable[[], Awaitable[None]]
+
+
+async def _no_gate() -> None:
+    return None
+
 
 class AuthFailure(Exception):
     """Login or token fetch failed. ``kind`` is a TargetErrorKind value; the
@@ -35,6 +45,8 @@ class AuthFailure(Exception):
 
 class AuthStrategy:
     """Base strategy: no auth."""
+
+    gate: RequestGate = staticmethod(_no_gate)
 
     async def headers(self, client: httpx.AsyncClient) -> dict[str, str]:
         return {}
@@ -91,6 +103,7 @@ class _OAuth(AuthStrategy):
             form["scope"] = self._auth.scope
         if self._auth.audience:
             form["audience"] = self._auth.audience
+        await self.gate()
         try:
             resp = await client.post(str(self._auth.token_url), data=form)
         except httpx.HTTPError as exc:
@@ -131,6 +144,7 @@ class _CookieLogin(AuthStrategy):
             self._auth.username_field: self._auth.username,
             self._auth.password_field: self._auth.password.get_secret_value(),
         }
+        await self.gate()
         try:
             resp = await client.post(str(self._auth.login_url), json=body)
         except httpx.HTTPError as exc:
@@ -150,13 +164,22 @@ class _CookieLogin(AuthStrategy):
         return True
 
 
-def build_auth(auth: TargetAuth, clock: Callable[[], float] = time.monotonic) -> AuthStrategy:
+def build_auth(
+    auth: TargetAuth,
+    clock: Callable[[], float] = time.monotonic,
+    gate: RequestGate | None = None,
+) -> AuthStrategy:
+    strategy: AuthStrategy
     if isinstance(auth, BearerAuth):
-        return _Bearer(auth)
-    if isinstance(auth, HeaderAuth):
-        return _Header(auth)
-    if isinstance(auth, OAuthClientCredentialsAuth):
-        return _OAuth(auth, clock)
-    if isinstance(auth, CookieLoginAuth):
-        return _CookieLogin(auth)
-    return AuthStrategy()
+        strategy = _Bearer(auth)
+    elif isinstance(auth, HeaderAuth):
+        strategy = _Header(auth)
+    elif isinstance(auth, OAuthClientCredentialsAuth):
+        strategy = _OAuth(auth, clock)
+    elif isinstance(auth, CookieLoginAuth):
+        strategy = _CookieLogin(auth)
+    else:
+        strategy = AuthStrategy()
+    if gate is not None:
+        strategy.gate = gate
+    return strategy

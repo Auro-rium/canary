@@ -8,8 +8,10 @@ Commands:
     graph            — Display Mermaid graph visualisation.
 """
 
+import json
 import uuid
 from pathlib import Path
+from typing import Optional
 
 import typer
 from rich.console import Console
@@ -232,10 +234,17 @@ def doctor() -> None:
 
     # Check API auth configuration
     console.print("\n[bold]Checking API Authentication...[/bold]")
-    if not settings.api_secret_key:
-        console.print("[yellow]! API_SECRET_KEY is not set — the API will refuse all requests.[/yellow]")
+    providers = [
+        name for name, (cid, secret) in {
+            "github": (settings.oidc_github_client_id, settings.oidc_github_client_secret),
+            "google": (settings.oidc_google_client_id, settings.oidc_google_client_secret),
+        }.items() if cid and secret
+    ]
+    if providers:
+        console.print(f"✓ OIDC login providers: {', '.join(providers)}")
     else:
-        console.print("✓ API_SECRET_KEY is set.")
+        console.print("[yellow]! No OIDC provider configured; only API keys can sign in "
+                      "(create them with `cyber-rt auth create-api-key`).[/yellow]")
 
     if errors:
         console.print("\n[bold red]Diagnostics failed. Please set required variables in your .env file.[/bold red]")
@@ -279,6 +288,72 @@ def server(
 
 
 # -------------------------------------------------------------------
+# gate (WP10)
+# -------------------------------------------------------------------
+
+@app.command()
+def gate(
+    target: str = typer.Option("", "--target", help="Target id."),
+    suite: str = typer.Option("default", "--suite", help="Regression suite (ScriptedPlanner pack)."),
+    baseline: str = typer.Option("", "--baseline", help="Baseline campaign id."),
+    candidate: str = typer.Option("", "--candidate", help="Compare this stored campaign."),
+    db_url: str = typer.Option("", "--db-url", help="Database URL (default: configured)."),
+    policy_file: str = typer.Option("", "--policy", help="GatePolicy JSON file."),
+    json_out: str = typer.Option("", "--json-out", help="Write the JSON result here."),
+    demo: bool = typer.Option(False, "--demo", help="Seed synthetic campaigns and compare."),
+    demo_inject_regression: bool = typer.Option(
+        False, "--demo-inject-regression", help="With --demo: candidate regresses."
+    ),
+) -> None:
+    """CI gate: exit 0 pass, 1 regression, 2 inconclusive or error."""
+    from cyberredteam.gate.runner import (
+        GateError,
+        demo_session,
+        load_policy,
+        run_gate,
+        write_step_summary,
+    )
+    from cyberredteam.storage.v2.db import make_engine, make_session_factory
+    from cyberredteam.storage.v2.repositories import CampaignRepo
+
+    if demo and (candidate or target or baseline or db_url):
+        console.print("[red]gate error:[/red] --demo cannot be combined with "
+                      "--target/--baseline/--candidate/--db-url")
+        raise typer.Exit(2)
+
+    try:
+        policy = load_policy(policy_file or None)
+        if demo:
+            with demo_session(inject_regression=demo_inject_regression) as (
+                repo, d_target, d_base, d_cand
+            ):
+                result, md, js = run_gate(
+                    repo, target_id=d_target, suite=suite, baseline_id=d_base,
+                    candidate_id=d_cand, policy=policy,
+                )
+        else:
+            if not (target and baseline):
+                raise GateError("--target and --baseline are required")
+            repo = CampaignRepo(make_session_factory(make_engine(db_url or None)))
+            result, md, js = run_gate(
+                repo, target_id=target, suite=suite, baseline_id=baseline,
+                candidate_id=candidate or None, policy=policy,
+            )
+        typer.echo(md)
+        write_step_summary(md)
+        if json_out:
+            Path(json_out).write_text(js)
+    except GateError as exc:
+        console.print(f"[red]gate error:[/red] {exc}")
+        raise typer.Exit(2) from exc
+    except Exception as exc:  # noqa: BLE001 - any failure is exit 2, never a silent pass
+        console.print(f"[red]gate error:[/red] {type(exc).__name__}: {exc}")
+        raise typer.Exit(2) from exc
+
+    raise typer.Exit(result.exit_code)
+
+
+# -------------------------------------------------------------------
 # App setup callback
 # -------------------------------------------------------------------
 
@@ -292,5 +367,108 @@ def setup() -> None:
     )
 
 
+@app.command()
+def worker() -> None:
+    """Run a job worker process (campaign runs + stale-run reaper)."""
+    from cyberredteam.jobs.worker import main as worker_main
+
+    worker_main()
+
+
 if __name__ == "__main__":
     app()
+
+
+# ── WP8: auth bootstrap (orgs, users, API keys) ──────────────────────────────
+
+auth_app = typer.Typer(help="Manage orgs, users and API keys (WP8).")
+app.add_typer(auth_app, name="auth")
+
+
+def _auth_repo():
+    from cyberredteam.auth.repo import AuthRepo
+    from cyberredteam.storage.v2.db import make_session_factory
+
+    return AuthRepo(make_session_factory())
+
+
+@auth_app.command("create-org")
+def auth_create_org(name: str) -> None:
+    """Create an org; prints its id."""
+    console.print(_auth_repo().create_org(name))
+
+
+@auth_app.command("add-user")
+def auth_add_user(
+    org: str = typer.Option(..., help="Org name or id"),
+    role: str = typer.Option(..., help="viewer | operator | admin"),
+    email: Optional[str] = typer.Option(None, help="Invite: bound at the first OIDC login with this verified email"),
+    provider: Optional[str] = typer.Option(None, help="Restrict the invite to github | google"),
+    display_name: str = typer.Option("", help="Display name"),
+    grant_raw_evidence: bool = typer.Option(False, help="Also grant evidence:read_raw"),
+) -> None:
+    """Add (invite) a user to an org; prints the user id."""
+    repo = _auth_repo()
+    org_id = repo.org_by_name(org) or org
+    extra = ["evidence:read_raw"] if grant_raw_evidence else []
+    console.print(repo.create_user(org_id, role, email=email, display_name=display_name,
+                                   oidc_provider=provider, extra_permissions=extra))
+
+
+@auth_app.command("set-role")
+def auth_set_role(user_id: str, role: str) -> None:
+    _auth_repo().set_role(user_id, role)
+    console.print(f"{user_id}: {role}")
+
+
+@auth_app.command("disable-user")
+def auth_disable_user(user_id: str) -> None:
+    """Disable a user and revoke all of their sessions (API keys stop working too)."""
+    _auth_repo().set_disabled(user_id, True)
+    console.print(f"{user_id}: disabled")
+
+
+@auth_app.command("create-api-key")
+def auth_create_api_key(
+    user_id: str,
+    name: str = typer.Option("ci", help="Label for the key"),
+    expires_in_days: Optional[int] = typer.Option(None, help="Expiry in days"),
+) -> None:
+    """Create a CI API key for a user. The key is printed once and only its hash is stored."""
+    key_id, full = _auth_repo().create_api_key(user_id, name, expires_in_days)
+    console.print(f"key_id: {key_id}")
+    print(full)
+
+
+@auth_app.command("assign-target")
+def auth_assign_target(target_id: str, org: str = typer.Option(..., help="Org name or id")) -> None:
+    """Give a pre-WP8 target (org_id NULL, visible to nobody) to an org."""
+    from sqlalchemy import update
+
+    from cyberredteam.storage.v2 import orm
+    from cyberredteam.storage.v2.db import make_session_factory, session_scope
+
+    repo = _auth_repo()
+    org_id = repo.org_by_name(org) or org
+    with session_scope(make_session_factory()) as s:
+        n = s.execute(
+            update(orm.TargetRow)
+            .where(orm.TargetRow.target_id == target_id, orm.TargetRow.org_id.is_(None))
+            .values(org_id=org_id)
+        ).rowcount
+    if not n:
+        console.print("[red]No unassigned target with that id.[/red]")
+        raise typer.Exit(code=1)
+    console.print(f"{target_id} -> {org_id}")
+
+
+@app.command("export-openapi")
+def export_openapi(
+    out: Path = typer.Option(Path("openapi/v2.json"), help="Output file"),
+) -> None:
+    """Write the /api/v2 OpenAPI schema (input for frontend type generation)."""
+    from cyberredteam.api import v2_openapi
+
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(json.dumps(v2_openapi(), indent=2, sort_keys=True) + "\n")
+    console.print(f"wrote {out}")

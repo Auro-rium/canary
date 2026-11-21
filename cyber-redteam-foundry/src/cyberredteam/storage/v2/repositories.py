@@ -19,8 +19,8 @@ from datetime import datetime, timezone
 from typing import Any, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, SecretStr, TypeAdapter
-from sqlalchemy import func, select, text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func, select, text, update
+from sqlalchemy.exc import IntegrityError, StatementError
 from sqlalchemy.orm import Session, sessionmaker
 
 from cyberredteam.contracts import (
@@ -110,11 +110,37 @@ def _audit_row(
 # ── Targets ──────────────────────────────────────────────────────────────────
 
 
+def _raise_key_error(exc: StatementError) -> None:
+    """A missing encryption key surfaces inside SQLAlchemy as a StatementError;
+    re-raise it as the plain ``RuntimeError`` callers handle (fail closed)."""
+    if isinstance(exc.orig, RuntimeError):
+        raise RuntimeError(str(exc.orig)) from None
+    raise exc
+
+
+class TargetMeta(BaseModel):
+    """Target facts that are not part of the frozen ``TargetConfig`` contract (WP8)."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    target_id: str
+    org_id: str | None
+    archived: bool
+    verified_method: str | None
+    verified_at: datetime | None
+    has_oncall_webhook: bool
+    created_at: datetime | None
+
+
 class SqlTargetStore:
     """Targets, their encrypted secrets and ownership-verification state."""
 
     def __init__(self, factory: sessionmaker[Session]) -> None:
         self._factory = factory
+
+    @property
+    def factory(self) -> sessionmaker[Session]:
+        return self._factory
 
     @staticmethod
     def _split_auth(config: TargetConfig) -> tuple[dict, dict]:
@@ -126,8 +152,16 @@ class SqlTargetStore:
                 public.pop(name, None)
         return public, secrets
 
-    def create(self, config: TargetConfig) -> str:
-        """Store a target. ``verified`` is always stored False: only ``set_verified`` flips it."""
+    def create(
+        self,
+        config: TargetConfig,
+        *,
+        org_id: str | None = None,
+        oncall_webhook: str | None = None,
+    ) -> str:
+        """Store a target. ``verified`` is always stored False: only ``set_verified`` flips it.
+
+        ``org_id`` scopes it to an org (WP8); ``None`` means visible to no org."""
         public, secrets = self._split_auth(config)
         row = orm.TargetRow(
             target_id=config.target_id,
@@ -144,6 +178,8 @@ class SqlTargetStore:
             timeout_s=config.timeout_s,
             verified=False,
             environment=config.environment,
+            org_id=org_id,
+            oncall_webhook=oncall_webhook or None,
         )
         try:
             with session_scope(self._factory) as s:
@@ -153,6 +189,8 @@ class SqlTargetStore:
                     s.add(orm.TargetSecretRow(target_id=config.target_id, secrets=json.dumps(secrets)))
         except IntegrityError as exc:
             raise ValueError(f"target {config.target_id} already exists") from exc
+        except StatementError as exc:
+            _raise_key_error(exc)
         logger.info("target created target_id=%s", config.target_id)
         return config.target_id
 
@@ -233,6 +271,138 @@ class SqlTargetStore:
         with session_scope(self._factory) as s:
             ver = s.get(orm.TargetVerificationRow, target_id)
             return list(ver.allowed_auth_hosts or []) if ver else []
+
+    # ── WP8: org scope, update, archive/delete, on-call webhook ──────────────
+
+    def meta(self, target_id: str) -> TargetMeta | None:
+        with session_scope(self._factory) as s:
+            row = s.get(orm.TargetRow, target_id)
+            if row is None:
+                return None
+            ver = s.get(orm.TargetVerificationRow, target_id)
+            return TargetMeta(
+                target_id=row.target_id,
+                org_id=row.org_id,
+                archived=row.archived_at is not None,
+                verified_method=ver.method if ver else None,
+                verified_at=ver.verified_at if ver else None,
+                has_oncall_webhook=bool(row.oncall_webhook),
+                created_at=row.created_at,
+            )
+
+    def get_in_org(self, target_id: str, org_id: str) -> TargetConfig | None:
+        """The target only if it belongs to ``org_id`` and is not archived."""
+        with session_scope(self._factory) as s:
+            row = s.get(orm.TargetRow, target_id)
+            if row is None or row.org_id is None or row.org_id != org_id or row.archived_at:
+                return None
+            return self._to_config(s, row)
+
+    def list_for_org(self, org_id: str) -> list[TargetConfig]:
+        with session_scope(self._factory) as s:
+            rows = s.scalars(
+                select(orm.TargetRow)
+                .where(orm.TargetRow.org_id == org_id, orm.TargetRow.archived_at.is_(None))
+                .order_by(orm.TargetRow.created_at)
+            ).all()
+            return [self._to_config(s, r) for r in rows]
+
+    def update(self, config: TargetConfig, *, reset_verification: bool) -> None:
+        """Replace a target's stored config (secrets included).
+
+        ``verified`` is never taken from ``config``; ``reset_verification=True``
+        clears it (the caller decides which changes require re-verification)."""
+        public, secrets = self._split_auth(config)
+        try:
+            self._update(config, public, secrets, reset_verification)
+        except StatementError as exc:
+            _raise_key_error(exc)
+        logger.info("target updated target_id=%s reset=%s", config.target_id, reset_verification)
+
+    def _update(self, config: TargetConfig, public: dict, secrets: dict, reset_verification: bool) -> None:
+        with session_scope(self._factory) as s:
+            row = s.get(orm.TargetRow, config.target_id, with_for_update=True)
+            if row is None:
+                raise KeyError(config.target_id)
+            row.name = config.name
+            row.endpoint = str(config.endpoint)
+            row.method = config.method
+            row.auth_public = public
+            row.request_template = config.request_template
+            row.response_path = config.response_path
+            row.session_mode = config.session_mode
+            row.session_id_path = config.session_id_path
+            row.tool_trace_path = config.tool_trace_path
+            row.streaming = config.streaming
+            row.timeout_s = config.timeout_s
+            row.environment = config.environment
+            if reset_verification:
+                row.verified = False
+                ver = s.get(orm.TargetVerificationRow, config.target_id)
+                if ver is not None:
+                    ver.method = None
+                    ver.verified_at = None
+            secret_row = s.get(orm.TargetSecretRow, config.target_id)
+            if secrets:
+                if secret_row is None:
+                    s.add(orm.TargetSecretRow(target_id=config.target_id, secrets=json.dumps(secrets)))
+                else:
+                    secret_row.secrets = json.dumps(secrets)
+                    secret_row.updated_at = _utcnow()
+            elif secret_row is not None:
+                s.delete(secret_row)
+
+    def set_oncall_webhook(self, target_id: str, url: str | None) -> None:
+        with session_scope(self._factory) as s:
+            row = s.get(orm.TargetRow, target_id)
+            if row is None:
+                raise KeyError(target_id)
+            row.oncall_webhook = url or None
+
+    def get_oncall_webhook(self, target_id: str) -> str | None:
+        with session_scope(self._factory) as s:
+            row = s.get(orm.TargetRow, target_id)
+            return row.oncall_webhook if row else None
+
+    def has_campaigns(self, target_id: str, *, active_only: bool = False) -> bool:
+        with session_scope(self._factory) as s:
+            q = select(func.count()).select_from(orm.CampaignRow).where(
+                orm.CampaignRow.target_id == target_id
+            )
+            if active_only:
+                q = q.where(orm.CampaignRow.status.not_in(TERMINAL_CAMPAIGN_STATUSES))
+            return bool(s.scalar(q))
+
+    def archive(self, target_id: str) -> None:
+        """Soft delete: hidden from every org and unverified, so nothing can run on it."""
+        with session_scope(self._factory) as s:
+            row = s.get(orm.TargetRow, target_id)
+            if row is None:
+                raise KeyError(target_id)
+            row.archived_at = row.archived_at or _utcnow()
+            row.verified = False
+            row.oncall_webhook = None
+            secret_row = s.get(orm.TargetSecretRow, target_id)
+            if secret_row is not None:  # credentials are no longer needed
+                s.delete(secret_row)
+                row.auth_public = {"type": "none"}
+
+    def delete(self, target_id: str) -> None:
+        """Hard delete (secrets and verification cascade). Raises ``ValueError``
+        if campaigns or findings still reference the target (use ``archive``)."""
+        try:
+            with session_scope(self._factory) as s:
+                row = s.get(orm.TargetRow, target_id)
+                if row is None:
+                    raise KeyError(target_id)
+                for child in (orm.TargetSecretRow, orm.TargetVerificationRow):
+                    c = s.get(child, target_id)
+                    if c is not None:
+                        s.delete(c)
+                s.flush()
+                s.delete(row)
+        except IntegrityError as exc:
+            raise ValueError("target is still referenced") from exc
 
     def set_retention_days(self, target_id: str, days: int | None) -> None:
         """Per-target evidence retention override (None → global default)."""
@@ -638,6 +808,18 @@ class InvalidTransition(ValueError):
     pass
 
 
+class _ConcurrentChange(RuntimeError):
+    """The row's status changed between read and write; the upsert is retried."""
+
+
+SYSTEM_ACTOR = "system"
+
+
+def is_system_actor(reviewer_id: str | None) -> bool:
+    """``system`` or ``system:<component>`` (automation), never a human reviewer."""
+    return bool(reviewer_id) and (reviewer_id == SYSTEM_ACTOR or reviewer_id.startswith(SYSTEM_ACTOR + ":"))
+
+
 class FindingRecord(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -700,23 +882,36 @@ class FindingRepo:
         *,
         campaign_id: str | None = None,
         embedding: list[float] | None = None,
+        initial_status: FindingStatus = "open",
     ) -> FindingRecord:
         """Insert a finding, or merge a repeat sighting into the existing one.
 
-        A repeat appends the campaign to ``seen_in_campaigns`` and can only raise
-        severity; status is never changed here (use ``transition``). Existing rows
-        are locked (``FOR UPDATE`` on Postgres); a concurrent first insert that loses
+        A new row is created atomically in ``initial_status`` (a non-terminal
+        status, e.g. ``needs_review`` for an inconclusive verdict). A repeat
+        appends the campaign to ``seen_in_campaigns`` and can only raise
+        severity; an existing row's status is never changed here (use
+        ``transition``), whatever ``initial_status`` says. Existing rows are
+        locked (``FOR UPDATE`` on Postgres); a concurrent first insert that loses
         the race is retried as an update."""
-        for attempt in (0, 1):
+        if initial_status not in FINDING_TRANSITIONS or initial_status in TERMINAL_FINDING_STATUSES:
+            raise InvalidTransition(f"cannot create a finding as {initial_status!r}")
+        for attempt in range(5):
             try:
-                return self._upsert_once(record, campaign_id, embedding)
+                return self._upsert_once(record, campaign_id, embedding, initial_status)
             except IntegrityError:
                 if attempt:
                     raise
+            except _ConcurrentChange:
+                if attempt == 4:
+                    raise InvalidTransition(f"finding {record.finding_id} kept changing") from None
         raise AssertionError("unreachable")  # pragma: no cover
 
     def _upsert_once(
-        self, record: FindingRecord, campaign_id: str | None, embedding: list[float] | None
+        self,
+        record: FindingRecord,
+        campaign_id: str | None,
+        embedding: list[float] | None,
+        initial_status: FindingStatus = "open",
     ) -> FindingRecord:
         with session_scope(self._factory) as s:
             row = s.get(orm.FindingRow, record.finding_id, with_for_update=True)
@@ -728,7 +923,7 @@ class FindingRepo:
                     technique=record.technique,
                     asi_class=record.asi_class,
                     severity=record.severity,
-                    status="open",
+                    status=initial_status,
                     title=record.title,
                     first_seen_campaign=campaign_id or record.first_seen_campaign,
                     last_seen_campaign=campaign_id or record.last_seen_campaign,
@@ -740,21 +935,38 @@ class FindingRepo:
                 s.flush()
                 s.add(
                     orm.FindingEventRow(
-                        finding_id=row.finding_id, from_status=None, to_status="open",
+                        finding_id=row.finding_id, from_status=None, to_status=initial_status,
                         reviewer_id="system", rationale="finding created",
                     )
                 )
             else:
+                # Merge a sighting with a compare-and-set on the status read here,
+                # so the merge never lands on (or rewrites) a status it did not see.
+                # The status itself is never written.
+                values: dict[str, Any] = {}
                 if campaign_id:
                     seen = list(row.seen_in_campaigns or [])
                     if campaign_id not in seen:
                         seen.append(campaign_id)
-                    row.seen_in_campaigns = seen
-                    row.last_seen_campaign = campaign_id
+                    values["seen_in_campaigns"] = seen
+                    values["last_seen_campaign"] = campaign_id
                 if _SEVERITY_ORDER.index(record.severity) > _SEVERITY_ORDER.index(row.severity):
-                    row.severity = record.severity
+                    values["severity"] = record.severity
                 if embedding is not None and row.embedding is None:
-                    row.embedding = embedding
+                    values["embedding"] = embedding
+                if values:
+                    result = s.execute(
+                        update(orm.FindingRow)
+                        .where(
+                            orm.FindingRow.finding_id == row.finding_id,
+                            orm.FindingRow.status == row.status,
+                        )
+                        .values(**values)
+                        .execution_options(synchronize_session=False)
+                    )
+                    if result.rowcount != 1:
+                        raise _ConcurrentChange(row.finding_id)
+                    s.refresh(row)
             s.flush()
             return self._rec(row)
 
@@ -779,10 +991,21 @@ class FindingRepo:
         *,
         reviewer_id: str | None = None,
         rationale: str | None = None,
+        expected_from: FindingStatus | None = None,
+        require_system_last: bool = False,
     ) -> FindingRecord:
         """Move a finding along the lifecycle, storing who and why, plus an audit row.
 
-        Terminal targets (wont_fix, false_positive) require reviewer and rationale."""
+        Terminal targets (wont_fix, false_positive) require reviewer and rationale.
+
+        The status write is a compare-and-set (``UPDATE … WHERE status = :old``
+        plus a rowcount check), so a concurrent transition is never silently
+        overwritten, also on SQLite where ``FOR UPDATE`` is a no-op: the loser
+        gets :class:`InvalidTransition`. ``expected_from`` additionally requires
+        the current status to be that value. ``require_system_last`` refuses the
+        move unless the latest status change was made by a system actor
+        (``system`` / ``system:*``), so automation never overrides a human
+        triage decision."""
         if new_status not in FINDING_TRANSITIONS:
             raise InvalidTransition(f"unknown status {new_status!r}")
         reviewer = (reviewer_id or "").strip() or None
@@ -794,9 +1017,27 @@ class FindingRepo:
             if row is None:
                 raise KeyError(finding_id)
             old = row.status
+            if expected_from is not None and old != expected_from:
+                raise InvalidTransition(f"finding is {old}, expected {expected_from}")
             if new_status not in FINDING_TRANSITIONS.get(old, frozenset()):
                 raise InvalidTransition(f"cannot move finding from {old} to {new_status}")
-            row.status = new_status
+            if require_system_last:
+                last = s.scalars(
+                    select(orm.FindingEventRow.reviewer_id)
+                    .where(orm.FindingEventRow.finding_id == finding_id)
+                    .order_by(orm.FindingEventRow.id.desc())
+                    .limit(1)
+                ).first()
+                if not is_system_actor(last):
+                    raise InvalidTransition("the current status was set by a human reviewer")
+            result = s.execute(
+                update(orm.FindingRow)
+                .where(orm.FindingRow.finding_id == finding_id, orm.FindingRow.status == old)
+                .values(status=new_status)
+                .execution_options(synchronize_session=False)
+            )
+            if result.rowcount != 1:
+                raise InvalidTransition(f"finding {finding_id} changed concurrently")
             s.add(
                 orm.FindingEventRow(
                     finding_id=finding_id, from_status=old, to_status=new_status,
@@ -812,6 +1053,7 @@ class FindingRepo:
                 )
             )
             s.flush()
+            s.refresh(row)
             return self._rec(row)
 
     def events(self, finding_id: str) -> list[FindingEvent]:

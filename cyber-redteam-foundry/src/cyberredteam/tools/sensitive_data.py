@@ -1,7 +1,7 @@
 """Sensitive data extraction tool for scanning and identifying leaked PII or credentials."""
 
 import re
-from typing import Dict, List, Any
+from typing import Any, Dict, List
 
 
 class SensitiveDataExtractor:

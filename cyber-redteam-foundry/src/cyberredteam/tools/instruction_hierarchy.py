@@ -1,6 +1,6 @@
 """Instruction hierarchy tool for generating system-prompt override payloads and checking responses."""
 
-from typing import Dict, Any
+from typing import Any, Dict
 
 
 class InstructionHierarchyTool:
