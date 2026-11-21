@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import { verifyTarget } from '../lib/api'
 import type { TargetView, VerificationInstructions, VerifyMethod } from '../lib/v2'
-import { buttonClass, ErrorNotice, Notice } from './Console'
+import { Notice } from './Console'
+import { buttonClass, CodeBlock, ErrorState, useToast } from './ui'
 
 const METHODS: { id: VerifyMethod; title: string; blurb: string }[] = [
   { id: 'http_wellknown', title: 'Well-known file', blurb: 'Serve the token as plain text at this URL on the target host.' },
@@ -23,6 +24,7 @@ export function VerificationPanel({
   const [busy, setBusy] = useState<VerifyMethod | null>(null)
   const [message, setMessage] = useState<string | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const toast = useToast()
 
   const check = async (method: VerifyMethod) => {
     setBusy(method)
@@ -30,7 +32,7 @@ export function VerificationPanel({
     setError(null)
     try {
       const result = await verifyTarget(targetId, method)
-      if (result.verified) onVerified(result.target)
+      if (result.verified) { onVerified(result.target); toast({ title: 'Ownership verified', tone: 'ok' }) }
       else setMessage(`Not verified yet: ${result.reason}`)
     } catch (e) {
       setError((e as Error).message)
@@ -41,19 +43,19 @@ export function VerificationPanel({
 
   return (
     <section aria-label="Ownership verification" className="space-y-3">
-      <p className="text-xs text-white/60">Prove you own this target by completing <strong>one</strong> of the methods below, then press Check. Campaigns are refused until a target is verified.</p>
+      <p className="text-muted">Prove you own this target by completing <strong className="text-fg">one</strong> of the methods below, then press Check. Campaigns are refused until a target is verified. Checking also confirms that Canary can reach the endpoint.</p>
       {METHODS.map(method => (
-        <div key={method.id} data-testid={`verify-${method.id}`} className="border border-white/10 p-3">
+        <div key={method.id} data-testid={`verify-${method.id}`} className="rounded-lg border border-line bg-surface p-3">
           <div className="flex items-center justify-between gap-3">
-            <h3 className="text-[11px] uppercase tracking-wider">{method.title}</h3>
-            <button type="button" className={buttonClass} disabled={busy !== null} onClick={() => check(method.id)}>{busy === method.id ? 'Checking…' : 'Check'}</button>
+            <h3 className="font-semibold">{method.title}</h3>
+            <button type="button" className={buttonClass} disabled={busy !== null} onClick={() => check(method.id)} aria-label={`Check ${method.title}`}>{busy === method.id ? 'Checking…' : 'Check'}</button>
           </div>
-          <p className="mt-1 text-[10px] text-white/60">{method.blurb}</p>
-          <pre className="mt-2 text-[11px] bg-white/[0.05] p-2 overflow-x-auto whitespace-pre-wrap break-all">{describe(method.id, instructions)}</pre>
+          <p className="mt-1 text-xs text-muted">{method.blurb}</p>
+          <CodeBlock text={describe(method.id, instructions)} className="mt-2 break-all rounded-md bg-raised p-2" />
         </div>
       ))}
       {message && <Notice>{message}</Notice>}
-      {error && <ErrorNotice message={error} />}
+      {error && <ErrorState title="Verification check failed" message={error} />}
     </section>
   )
 }

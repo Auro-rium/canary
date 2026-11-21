@@ -11,6 +11,8 @@ export interface MockOptions {
   killSwitchForbidden?: boolean
   /** Number of findings the list endpoint reports. */
   findingsTotal?: number
+  /** Campaign camp1 is already completed, with per-technique results and no event stream. */
+  completed?: boolean
 }
 
 export interface Mock {
@@ -79,7 +81,7 @@ export async function mockApi(page: Page, options: MockOptions = {}): Promise<Mo
     // Campaigns
     if (path === '/campaigns' && method === 'POST') return json(route, fx.campaignDetail({ status: 'queued' }), 201)
     if (path === '/campaigns') {
-      const summary = fx.campaignDetail()
+      const summary = fx.campaignDetail(options.completed ? { status: 'completed', confirmed: 4 } : {})
       return json(route, { items: [summary], total: 1, page: 1, page_size: 25 })
     }
     if (path === '/campaigns/camp1/cancel') {
@@ -97,7 +99,10 @@ export async function mockApi(page: Page, options: MockOptions = {}): Promise<Mo
       await cancelGate
       return body(fx.cancelledEvent, lastId + 1)
     }
-    if (path === '/campaigns/camp1') return json(route, fx.campaignDetail({ status: mock.state.cancelled ? 'cancelled' : 'running' }))
+    if (path === '/campaigns/camp1') {
+      if (options.completed) return json(route, fx.campaignDetail({ status: 'completed', confirmed: 4, technique_results: fx.techniqueResults, finished_at: '2026-01-01T00:10:00Z' }))
+      return json(route, fx.campaignDetail({ status: mock.state.cancelled ? 'cancelled' : 'running' }))
+    }
     void eventRequests
 
     // Conversations
