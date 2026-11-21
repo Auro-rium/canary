@@ -28,6 +28,17 @@ def _wandb_disabled(monkeypatch, tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _no_dotenv_file(monkeypatch):
+    """Settings must never read a developer's local .env during tests (a real
+    CANARY_ENCRYPTION_KEY there would flip fail-closed tests). Test-only; production
+    loading is unchanged."""
+    from cyberredteam.settings import Settings
+
+    monkeypatch.setattr(Settings.Config, "env_file", None, raising=False)
+    monkeypatch.setitem(Settings.model_config, "env_file", None)
+
+
+@pytest.fixture(autouse=True)
 def _canary_env(monkeypatch):
     """Tests run as dev/test (Host-derived redirect_uri allowed); the legacy bypass
     admin is a platform admin so kill-switch tests can write."""
