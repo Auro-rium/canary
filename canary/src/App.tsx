@@ -10,6 +10,7 @@ import CampaignDetailPage from './pages/CampaignDetailPage'
 import CampaignNewPage from './pages/CampaignNewPage'
 import CampaignsPage from './pages/CampaignsPage'
 import FindingsPage from './pages/FindingsPage'
+import ResultsPage from './pages/ResultsPage'
 import LoginPage from './pages/LoginPage'
 import TargetDetailPage from './pages/TargetDetailPage'
 import TargetNewPage from './pages/TargetNewPage'
@@ -38,6 +39,7 @@ function Gate() {
           <Route path="/campaigns" element={<CampaignsPage />} />
           <Route path="/campaigns/new" element={<CampaignNewPage />} />
           <Route path="/campaigns/:campaignId" element={<CampaignDetailPage />} />
+          <Route path="/campaigns/:campaignId/results" element={<ResultsPage />} />
           <Route path="/findings" element={<FindingsPage />} />
           <Route path="/admin" element={<AdminPage />} />
           <Route path="*" element={<Navigate to="/campaigns" replace />} />
