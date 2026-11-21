@@ -495,6 +495,17 @@ There are no scripted or cosmetic events (fixes D8).
   - `/api/v2/admin/kill-switch`
 - Keep v1 read routes behind a deprecation flag for one release. Remove `POST /api/runs` and the old SSE route.
 - **Done when:** auth tests cover every role and route, and no secret appears in the built JS (CI greps the bundle).
+- **Status (WP8 complete, branch `multiturn-wp8`):**
+  - Auth: OIDC (GitHub/Google via a pluggable provider, fake provider in tests; PKCE, hashed one-shot state), cookie sessions with CSRF, API keys stored as sha256 only and compared with `hmac.compare_digest`. Roles `viewer` < `operator` < `admin`, one org per principal, no cross-org role. Migration `0003_auth_orgs` (upgrade/downgrade/upgrade tested on Postgres).
+  - Permissions: viewer reads; operator adds targets:write, campaigns:launch/cancel, findings:triage; admin adds kill-switch write, `evidence:read_raw` (also grantable per user) and the deprecated v1 reads. Cross-org access returns 404 (lists return only own-org rows).
+  - Routes under `/api/v2`: `auth/*`, `me`, `targets` (CRUD + verify, `SqlTargetStore`), `campaigns` (create/list/get/cancel/events SSE), `conversations/{id}` (redacted by default; raw is permissioned and audited), `findings` (paged with total; status transitions), `reports/{campaign_id}` (json/md/pdf; PDF is rendered by a small dependency-free writer, so no optional extra is needed and nothing can be missing), `admin/kill-switch`.
+  - Reviewer identity: finding transitions record `user:<user_id>` from the authenticated principal; any client-supplied reviewer is ignored, so a human can never be `system` or `system:*`.
+  - OpenAPI exported to `cyber-redteam-foundry/openapi/v2.json` and snapshot-tested (`cyber-rt export-openapi`).
+  - v1: read routes kept behind a deprecation flag (admin-only, `Deprecation`/`Sunset` headers); `POST /api/runs` and the old SSE route are removed.
+  - Frontend: proxy `canary/api/[...path].js` is byte-identical to the `multiturn-wp9` copy (forwards cookie/authorization, never injects a token); `VITE_API_TOKEN` read removed; bundle grep clean.
+  - Review fixes: OIDC login is bound to the starting browser (`canary_oidc_state` cookie, HttpOnly/Secure/Lax, path limited to the callback, 600 s; sha256 of the binder is stored in `oidc_login_states.binder_hash`, compared in constant time; amended into 0003). Outside dev/test (`CANARY_ENV`, default `production`) OIDC login needs `PUBLIC_BASE_URL` (never derived from the Host header) and Secure session cookies, else 503. SSE `events` re-validates the session/API key every 30 s and closes when revoked or disabled. Kill-switch POST needs a platform admin (`CANARY_PLATFORM_ADMINS`: user ids or emails); org admins keep read access.
+  - Known limits: 0003 does not backfill a default org. Legacy targets keep `org_id` NULL (visible to no org) until `cyber-rt auth assign-target` is run. The v1 legacy reads are unscoped (legacy data has no org), admin-only, and on the sunset path.
+  - Tests: `test_api_v2_authz_matrix.py` (every route x every role x API key/session, plus cross-org and anonymous); matrix fails if a route lacks an entry. Full suite: only the 6 known baseline failures on SQLite and Postgres.
 
 ### WP9: Frontend (Sonnet) — D8
 - **Target onboarding wizard:**

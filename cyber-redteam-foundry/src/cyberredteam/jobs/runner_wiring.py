@@ -167,6 +167,63 @@ class SharedLimiters:
             return limiter
 
 
+def webhook_notifier(
+    url: str,
+    *,
+    url_check: Callable[[str], Any] | None = None,
+    transport: Any = None,
+) -> Callable[[Any], Awaitable[None]]:
+    """``EngineDeps.on_call`` hook that POSTs the ``OnCallAlert`` (ids and hit
+    names only, never evidence) to the target's on-call webhook (WP8 field).
+
+    The URL is re-checked by the SSRF guard before every send, redirects are not
+    followed, and the URL (a bearer secret for Slack/Discord) is never logged.
+    """
+
+    def _check(u: str) -> None:
+        from cyberredteam.security.ownership import check_target_url
+
+        check_target_url(u)
+
+    check = url_check or _check
+
+    async def notify(alert: Any) -> None:
+        import httpx
+
+        await asyncio.to_thread(check, url)
+        # Straight to the transport: httpx.Client logs every request URL at INFO,
+        # and a transport never follows redirects or reads proxy env vars.
+        request = httpx.Request(
+            "POST", url, json=alert.model_dump(mode="json"),
+            extensions={"timeout": {"connect": 5.0, "read": 5.0, "write": 5.0, "pool": 5.0}},
+        )
+        tx = transport or httpx.AsyncHTTPTransport(retries=0)
+        try:
+            resp = await tx.handle_async_request(request)
+            await resp.aread()
+            await resp.aclose()
+        finally:
+            if transport is None:
+                await tx.aclose()
+        if resp.status_code >= 400:
+            raise RuntimeError(f"on-call webhook returned HTTP {resp.status_code}")
+
+    return notify
+
+
+def _target_webhook_notifier(runtime: Any, target_id: str) -> Callable[[Any], Awaitable[None]] | None:
+    targets = getattr(runtime, "targets", None)
+    getter = getattr(targets, "get_oncall_webhook", None)
+    if getter is None:
+        return None
+    try:
+        url = getter(target_id)
+    except Exception as exc:
+        logger.warning("on-call webhook lookup failed (%s)", type(exc).__name__)
+        return None
+    return webhook_notifier(url) if url else None
+
+
 def make_runner(
     runtime: Any,
     planner_factory: PlannerFactory | None = None,
@@ -180,6 +237,10 @@ def make_runner(
             logger.error("no planner configured: set PLANNER_FACTORY=package.module:callable")
             raise NoPlannerConfigured("no planner configured")
         options = {"limiter_factory": shared, **(engine_options or {})}
+        if "on_call" not in options:
+            notifier = _target_webhook_notifier(runtime, request.target.target_id)
+            if notifier is not None:
+                options["on_call"] = notifier
         deps = EngineDeps(
             repos=EngineRepos(
                 conversations=ConversationRepo(runtime.factory),

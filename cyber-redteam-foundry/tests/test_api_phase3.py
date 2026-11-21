@@ -1,7 +1,5 @@
 """Tests for Phase 3 API endpoints: findings CRUD, coverage, trends, run findings."""
 
-from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -106,41 +104,10 @@ def test_get_finding_attempts_empty(client):
 
 # ─── PUT /api/findings/{id}/status ──────────────────────────────────────────
 
-def test_update_status_legal_transition(client):
-    resp = client.put("/api/findings/f001/status", json={
-        "status": "wont_fix",
-        "reviewer_id": "alice",
-        "rationale": "accepted risk",
-    })
-    assert resp.status_code == 200
-    assert resp.json()["new_status"] == "wont_fix"
+# The v1 PUT /api/findings/{id}/status write was removed in WP8 (it took the
+# reviewer id from the request body); lifecycle transitions are
+# PUT /api/v2/findings/{id}/status, tested in test_api_v2_evidence.py.
 
-
-def test_update_status_illegal_transition_returns_409(client):
-    resp = client.put("/api/findings/f001/status", json={
-        "status": "not_a_real_status",
-    })
-    assert resp.status_code == 409
-
-
-def test_update_status_wont_fix_missing_reviewer_returns_409(client):
-    resp = client.put("/api/findings/f001/status", json={
-        "status": "wont_fix",
-    })
-    assert resp.status_code == 409
-
-
-def test_update_status_wont_fix_with_metadata(client):
-    resp = client.put("/api/findings/f001/status", json={
-        "status": "wont_fix",
-        "reviewer_id": "alice",
-        "rationale": "Accepted business risk — out of scope for this product.",
-    })
-    assert resp.status_code == 200
-    assert resp.json()["new_status"] == "wont_fix"
-
-
-# ─── GET /api/targets/{id}/coverage ─────────────────────────────────────────
 
 def test_target_coverage(client):
     resp = client.get("/api/targets/HR Agent/coverage")

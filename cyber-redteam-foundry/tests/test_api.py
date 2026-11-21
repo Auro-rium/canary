@@ -1,24 +1,12 @@
 """Tests for the FastAPI web server endpoints."""
 
-import uuid
 from datetime import datetime
-from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import select
 
-from cyberredteam.api import (
-    CampaignRunRequest,
-    app,
-    get_target_store,
-    run_orchestrator_thread,
-    settings,
-)
-from cyberredteam.contracts import TargetConfig
-from cyberredteam.schemas import StrategyType
-from cyberredteam.security.crypto import generate_key
-from cyberredteam.security.targets import InMemoryTargetStore
+from cyberredteam.api import app, settings
 from cyberredteam.storage.artifact_store import SQLiteStore
 from cyberredteam.storage.models import AttackRecord, FindingRecord, LLMCallRecord, RunRecord
 
@@ -86,33 +74,6 @@ def mock_db(tmp_path):
 
     store.close()
     settings.db_path = original_db_path
-
-
-@pytest.fixture
-def target_store(monkeypatch):
-    """A fresh registered-target store injected into the API."""
-    monkeypatch.setenv("CANARY_ENCRYPTION_KEY", generate_key())
-    store = InMemoryTargetStore()
-    app.dependency_overrides[get_target_store] = lambda: store
-    yield store
-    app.dependency_overrides.pop(get_target_store, None)
-
-
-@pytest.fixture
-def verified_target(target_store, monkeypatch):
-    """A registered + ownership-verified target; the orchestrator thread is stubbed
-    so no run ever reaches the network."""
-    cfg = TargetConfig(
-        target_id=str(uuid.uuid4()),
-        name="Finance Agent",
-        endpoint="https://agent.example.com/chat",
-        session_mode="stateless_history",
-        environment="staging",
-    )
-    target_store.create(cfg)
-    target_store.set_verified(cfg.target_id, "http_wellknown")
-    monkeypatch.setattr("cyberredteam.api.run_orchestrator_thread", lambda *a, **k: None)
-    return cfg
 
 
 def test_get_status():
@@ -208,123 +169,9 @@ def test_get_analysis_report(mock_db):
     assert len(data["trace"]) >= 2
 
 
-def test_create_run_endpoint(mock_db, verified_target):
-    """Test creating/triggering a run against a registered, verified target."""
-    response = client.post(
-        "/api/runs",
-        json={"target_id": verified_target.target_id, "strategy": "Prompt Injection", "intensity": "Low"},
-    )
-    assert response.status_code == 200
-    data = response.json()
-    assert "run_id" in data
-    assert data["status"] == "running"
-    assert data["target_id"] == verified_target.target_id
-    assert data["endpoint"] == "https://agent.example.com/chat"
-
-
-def test_create_run_refuses_unregistered_target(mock_db, target_store):
-    """No fail-open path: an unregistered target (even a URL) is refused."""
-    response = client.post(
-        "/api/runs",
-        json={"target_id": "http://host.docker.internal:9000/chat", "strategy": "Prompt Injection", "intensity": "Low"},
-    )
-    assert response.status_code == 403
-
-
-def test_create_run_concurrency_cap_rejects_when_full(mock_db, monkeypatch, verified_target):
-    """Test that POST /api/runs returns 429 when concurrent cap is reached."""
-    # Monkeypatch max_concurrent_runs to 1 for this test
-    monkeypatch.setattr(settings, "max_concurrent_runs", 1)
-    # The production guard reads persisted state, so the test must create a
-    # persisted running row rather than relying on process-local cache state.
-    with mock_db.SessionLocal() as session:
-        session.add(RunRecord(
-            run_id="existing-run",
-            target_id="http://host.docker.internal:9000/chat",
-            status="running",
-        ))
-        session.commit()
-
-    response = client.post(
-        "/api/runs",
-        json={"target_id": verified_target.target_id, "strategy": "Prompt Injection", "intensity": "Low"},
-    )
-    assert response.status_code == 429
-    data = response.json()
-    assert "concurrent" in data["detail"].lower()
-
-
-def test_create_run_concurrency_cap_ignores_non_running(mock_db, monkeypatch, verified_target):
-    """Test that completed/failed runs don't count toward the concurrency cap."""
-    from cyberredteam.api import active_runs
-
-    # Monkeypatch max_concurrent_runs to 1 for this test
-    monkeypatch.setattr(settings, "max_concurrent_runs", 1)
-
-    # Pre-populate active_runs with several completed/failed entries (more than cap)
-    active_runs["completed-run-1"] = "completed"
-    active_runs["completed-run-2"] = "completed"
-    active_runs["failed-run-1"] = "failed"
-
-    try:
-        # Attempt to create a new run — should succeed because no "running" entries exist
-        response = client.post(
-            "/api/runs",
-            json={"target_id": verified_target.target_id, "strategy": "Prompt Injection", "intensity": "Low"},
-        )
-        # The target is verified and no run is "running", so it must start.
-        assert response.status_code == 200
-    finally:
-        # Clean up: remove the test-inserted keys
-        for key in ["completed-run-1", "completed-run-2", "failed-run-1"]:
-            if key in active_runs:
-                del active_runs[key]
-
-
-def test_campaign_run_request_defaults_and_custom_target_config():
-    """Generic HTTP target config fields default to empty/None and pass through when set."""
-    req = CampaignRunRequest(campaign_id="c1", target_url="http://example.com/chat", techniques=[])
-    assert req.headers == {}
-    assert req.request_template is None
-    assert req.response_path is None
-
-    req = CampaignRunRequest(
-        campaign_id="c1",
-        target_url="http://example.com/v1/chat/completions",
-        techniques=["prompt_injection"],
-        headers={"X-API-Key": "secret"},
-        request_template='{"messages": [{"role": "user", "content": "{{PROMPT}}"}]}',
-        response_path="choices.0.message.content",
-    )
-    assert req.headers == {"X-API-Key": "secret"}
-    assert req.request_template == '{"messages": [{"role": "user", "content": "{{PROMPT}}"}]}'
-    assert req.response_path == "choices.0.message.content"
-
-
-def test_run_orchestrator_thread_passes_target_config_into_run_config():
-    """run_orchestrator_thread must thread headers/request_template/response_path into RunConfig."""
-    captured = {}
-
-    class FakeOrchestrator:
-        def __init__(self, config, **kwargs):
-            captured["config"] = config
-
-        def run(self):
-            return {}
-
-    with patch("cyberredteam.api.GraphOrchestrator", FakeOrchestrator):
-        run_orchestrator_thread(
-            run_id="run-target-cfg",
-            target_id="http://example.com/v1/chat/completions",
-            strategy_types=[StrategyType.PROMPT_INJECTION],
-            max_iterations=1,
-            max_attempts=1,
-            target_headers={"X-API-Key": "secret"},
-            target_request_template='{"messages": [{"role": "user", "content": "{{PROMPT}}"}]}',
-            target_response_path="choices.0.message.content",
-        )
-
-    config = captured["config"]
-    assert config.target_headers == {"X-API-Key": "secret"}
-    assert config.target_request_template == '{"messages": [{"role": "user", "content": "{{PROMPT}}"}]}'
-    assert config.target_response_path == "choices.0.message.content"
+def test_removed_v1_write_routes_are_gone():
+    """WP8 removed POST /api/runs, the old SSE POST /api/campaigns/run and the
+    v1 finding status write; campaigns start only through /api/v2."""
+    assert client.post("/api/runs", json={"target_id": "x"}).status_code in (404, 405)
+    assert client.post("/api/campaigns/run", json={"campaign_id": "c"}).status_code in (404, 405)
+    assert client.put("/api/findings/f1/status", json={"status": "open"}).status_code in (404, 405)
