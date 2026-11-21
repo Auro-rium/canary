@@ -42,6 +42,8 @@ services:
       - ./cyber-redteam-foundry/.env
     environment:
       - RUNNING_IN_DOCKER=true
+      # Local http dev only. Production MUST NOT set CANARY_ENV (default: production).
+      - CANARY_ENV=dev
       - DATABASE_URL=postgresql+psycopg://canary:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/canary
     extra_hosts:
       - "host.docker.internal:host-gateway"
@@ -77,6 +79,8 @@ services:
       - ./cyber-redteam-foundry/.env
     environment:
       - RUNNING_IN_DOCKER=true
+      # Local http dev only. Production MUST NOT set CANARY_ENV (default: production).
+      - CANARY_ENV=dev
       - DATABASE_URL=postgresql+psycopg://canary:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD}@postgres:5432/canary
     extra_hosts:
       - "host.docker.internal:host-gateway"

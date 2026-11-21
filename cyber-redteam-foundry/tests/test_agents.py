@@ -1,9 +1,8 @@
 """Unit tests for each of the four refactored red team agents."""
 
 import tempfile
-from pathlib import Path
-
 import uuid
+from pathlib import Path
 
 from cyberredteam.agents.attacker import AttackerAgent
 from cyberredteam.agents.evaluator import EvaluatorAgent

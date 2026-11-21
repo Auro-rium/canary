@@ -1,3 +1,4 @@
+# ruff: noqa: F811  (pytest fixture imported from v1_guard_support)
 """Dedicated LangGraph integration tests.
 
 These tests exercise the full graph end-to-end using mock agents so
@@ -7,6 +8,9 @@ no Azure credentials or network calls are required.
 import tempfile
 from pathlib import Path
 from unittest.mock import MagicMock, patch
+
+import pytest
+from v1_guard_support import register, v1_store  # noqa: F401
 
 from cyberredteam.langgraph.graph import build_redteam_graph, compile_graph
 from cyberredteam.langgraph.state import RedTeamState
@@ -68,6 +72,14 @@ class TestGraphStructure:
 # Full graph invocation (mocked agents)
 # -------------------------------------------------------------------
 
+@pytest.fixture
+def _registered_v1_target(v1_store, monkeypatch):
+    """The v1 graph only contacts a registered, verified target."""
+    register(v1_store, "https://target.example/chat")
+    monkeypatch.setattr("cyberredteam.tools.target_adapter.default_target_store", lambda: v1_store)
+
+
+@pytest.mark.usefixtures("_registered_v1_target")
 class TestGraphInvocation:
     """Run the full graph with mocked agent calls."""
 
@@ -184,10 +196,14 @@ class TestMaxIterations:
 # Parallel fan-out (real attacker/evaluator, fake LLM fixture)
 # -------------------------------------------------------------------
 
+@pytest.mark.usefixtures("_registered_v1_target")
 class TestParallelFanOut:
     """Exercise the real strategist->attacker_branch fan-out end-to-end."""
 
-    def test_three_branches_dispatch_and_tag_correctly(self):
+    def test_every_selected_branch_dispatches_and_is_tagged_correctly(self):
+        # Root cause of the old failure: the test still asserted the pre-8cc4291
+        # "random sample of at most 3" fan-out. The dispatcher now sends every
+        # selected strategy (up to MAX_PARALLEL_BRANCHES), so 4 strategies = 4 branches.
         compiled = compile_graph()
 
         state: RedTeamState = {
@@ -223,12 +239,26 @@ class TestParallelFanOut:
         }
 
         config = {"configurable": {"thread_id": "fanout1"}}
-        final = compiled.invoke(state, config=config)
+        # No network: the target call is stubbed.
+        with patch(
+            "cyberredteam.tools.target_adapter.SessionTargetAdapter.execute_attack",
+            return_value=("(stubbed target reply)", None),
+        ):
+            final = compiled.invoke(state, config=config)
 
         results = final["attack_results"]
-        # Random sample of up to 3 from 4 candidates -> exactly 3 branches.
-        assert len(results) == 3
+        assert len(results) == 4  # every selected strategy, none silently dropped
         branch_ids = {r.branch_id for r in results}
-        assert len(branch_ids) == 3, "each branch must have a distinct branch_id"
+        assert len(branch_ids) == 4, "each branch must have a distinct branch_id"
         assert all(r.iteration == 0 for r in results), "results must be tagged with the dispatching iteration"
         assert all(r.technique_id for r in results), "results must carry a resolved ASI technique_id"
+
+
+def test_attacker_branch_refuses_unregistered_http_target(v1_store, monkeypatch):
+    from cyberredteam.langgraph.nodes import node_attacker_branch
+    from cyberredteam.tools.target_adapter import V1TargetRefused
+
+    monkeypatch.setattr("cyberredteam.tools.target_adapter.default_target_store", lambda: v1_store)
+    with pytest.raises(V1TargetRefused, match="not a registered target"):
+        node_attacker_branch({"branch": MagicMock(branch_id="b" * 8, capability_type="x"),
+                              "run_id": "r", "target_id": "http://169.254.169.254/x"})

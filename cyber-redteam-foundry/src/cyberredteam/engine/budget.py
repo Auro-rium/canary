@@ -43,6 +43,7 @@ class BudgetLedger:
         self._tokens = int(totals.get("tokens", 0.0))
         self._usd = float(totals.get("usd", 0.0))
         self._write_failed = False
+        self._invalid_charge = False
         self._lock = asyncio.Lock()
 
     # ── State ────────────────────────────────────────────────────────────────
@@ -82,6 +83,7 @@ class BudgetLedger:
         try:
             return bool(
                 self._write_failed
+                or self._invalid_charge
                 or not self._caps_valid()
                 or self._requests >= self._policy.max_total_requests
                 or self._usd_exhausted()
@@ -91,7 +93,7 @@ class BudgetLedger:
 
     def remaining_pct(self) -> float:
         """Smallest remaining share across the limits, in percent (0..100)."""
-        if self._write_failed or not self._caps_valid():
+        if self._write_failed or self._invalid_charge or not self._caps_valid():
             return 0.0
         try:
             shares = [1.0 - self._requests / self._policy.max_total_requests]
@@ -130,6 +132,17 @@ class BudgetLedger:
             return self._persist("requests", 1.0)
 
     async def charge_llm(self, tokens: int, usd: float) -> None:
+        # A non-numeric, non-finite or negative amount cannot be charged and must
+        # not be skipped silently (a NaN cost would never trip the USD cap): the
+        # budget counts as exhausted for the rest of this run.
+        if (
+            not _is_number(tokens) or not _is_number(usd)
+            or not math.isfinite(tokens) or not math.isfinite(usd)
+            or tokens < 0 or usd < 0
+        ):
+            logger.error("invalid LLM charge for %s; budget now exhausted", self.campaign_id)
+            self._invalid_charge = True
+            return
         if tokens <= 0 and usd <= 0:
             return
         async with self._lock:

@@ -66,6 +66,8 @@ async def node_conversation_branch(payload: dict[str, Any], config: RunnableConf
     conf = _configurable(config)
     spec = ConversationSpec.model_validate(payload["spec"])
     async with conf[SEMAPHORE_KEY]:
+        if conf[RUNTIME_KEY].stop_requested:  # stop_on_first_confirmed: not started
+            return {"results": []}
         result = await run_conversation(spec, conf[RUNTIME_KEY])
     return {"results": [result.model_dump()]}
 
@@ -115,6 +117,8 @@ async def run_campaign_graph(
         raise
     by_id = {r["conversation_id"]: ConversationResult.model_validate(r) for r in final["results"]}
     ordered = [
-        by_id[ConversationSpec.model_validate(s).conversation_id] for s in final["specs"]
+        by_id[cid]
+        for cid in (ConversationSpec.model_validate(s).conversation_id for s in final["specs"])
+        if cid in by_id  # missing = skipped by stop_on_first_confirmed
     ]
     return await finish_campaign(runtime, ordered, started)

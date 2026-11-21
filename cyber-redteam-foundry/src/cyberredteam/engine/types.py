@@ -14,7 +14,14 @@ from typing import Protocol, runtime_checkable
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from cyberredteam.contracts import Severity, SseEventType, TargetConfig, Turn
+from cyberredteam.contracts import (
+    ConversationVerdict,
+    Severity,
+    SseEventType,
+    TargetConfig,
+    TechniqueResult,
+    Turn,
+)
 
 # Namespace for deterministic conversation ids (resume relies on them).
 _CONVERSATION_NS = uuid.UUID("6f1c2b9e-3d4a-5b6c-8d7e-9f0a1b2c3d4e")
@@ -164,3 +171,25 @@ class OnCallAlert(_Model):
 
 
 OnCallNotifier = Callable[[OnCallAlert], Awaitable[None]]
+
+
+# ── Evaluation seams (WP5 wired by the worker) ───────────────────────────────
+
+ConversationEvaluator = Callable[[str], Awaitable[ConversationVerdict | None]]
+"""``await evaluator(conversation_id)``: judge a finished conversation, persist
+the verdict and any finding, return the verdict. Takes the ID only (the
+evaluator does the audited raw read). It must be idempotent (a resumed campaign
+calls it again for conversations that already have a verdict), must never turn
+a failure into ``safe``, and returns ``None`` only when there is nothing to judge."""
+
+
+@dataclass(frozen=True)
+class CampaignAggregate:
+    """What the engine needs at campaign end: the stored technique results and
+    the verdict counts (for ``campaign_complete.confirmed`` and the metrics)."""
+
+    technique_results: list[TechniqueResult] = field(default_factory=list)
+    verdict_counts: dict[str, int] = field(default_factory=dict)
+
+
+CampaignAggregator = Callable[[str], CampaignAggregate]

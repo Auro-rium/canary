@@ -41,6 +41,11 @@ from cyberredteam.planners.errors import PackNotFound, PackValidationError
 DEFAULT_PACKS_DIR = Path(__file__).resolve().parents[3] / "packs"
 
 
+# A pack file larger than this is rejected before it is read or parsed (a runaway
+# or hostile file must not exhaust worker memory at factory build).
+MAX_PACK_FILE_BYTES = 256 * 1024
+
+
 class _PackModel(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
@@ -111,7 +116,16 @@ def parse_pack(data: object, source: str = "<pack>") -> Pack:
 
 def load_pack_file(path: Path) -> Pack:
     try:
-        data = yaml.safe_load(path.read_text(encoding="utf-8"))
+        with path.open("rb") as fh:
+            raw = fh.read(MAX_PACK_FILE_BYTES + 1)  # bounded read; never the whole file
+    except OSError as exc:
+        raise PackValidationError(f"{path.name}: cannot read ({type(exc).__name__})") from None
+    if len(raw) > MAX_PACK_FILE_BYTES:
+        raise PackValidationError(f"{path.name}: pack file exceeds {MAX_PACK_FILE_BYTES} bytes")
+    try:
+        data = yaml.safe_load(raw.decode("utf-8"))
+    except UnicodeDecodeError:
+        raise PackValidationError(f"{path.name}: not valid UTF-8") from None
     except yaml.YAMLError as exc:
         raise PackValidationError(f"{path.name}: invalid YAML ({type(exc).__name__})") from None
     return parse_pack(data, source=path.name)
@@ -167,6 +181,7 @@ class PackLoader:
 
 __all__ = [
     "DEFAULT_PACKS_DIR",
+    "MAX_PACK_FILE_BYTES",
     "Branch",
     "EndConditions",
     "Pack",

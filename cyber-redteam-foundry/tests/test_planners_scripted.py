@@ -124,7 +124,7 @@ def test_technique_mismatch_on_pinned_pack_errors_conversation(factory):
     assert h.fake.requests == []  # nothing was sent
 
 
-def test_scope_classifier_denial_ends_conversation_as_error(factory):
+def test_scope_classifier_denial_stops_conversation_as_planner_guardrail(factory):
     seen = []
 
     def classifier(technique, message):
@@ -135,7 +135,7 @@ def test_scope_classifier_denial_ends_conversation_as_error(factory):
     h.deps.planner_factory = make_planner_factory("scripted", scope_classifier=classifier)
     outcome = _run(h, new_campaign_id())
     (status, turns), = _transcripts(h, outcome).values()
-    assert status == "error"  # never "completed": a guard stop is not a clean run
+    assert status == "stopped_planner_guardrail"  # never "completed": a guard stop is not a clean run
     assert [m for m, *_ in turns] == ["Hello!"]
     assert set(seen) == {"smoke_greeting"}
 

@@ -170,7 +170,7 @@ def test_structural_refusal_ends_conversation_as_planner_refused(factory, logs):
         "llm", llm=llm, system_prompt=STUB_PROMPT, scope_classifier=ALLOW)
     outcome = asyncio.run(run_campaign(h.request, new_campaign_id(), h.deps))
     conv = h.conversations.get(outcome.conversations[0].conversation_id, raw=True, actor="test")
-    assert conv.status == "error"  # never "completed": a refusal is not a safe result
+    assert conv.status == "stopped_planner_guardrail"  # never "completed": a refusal is not a safe result
     assert len(conv.turns) == 1 and len(h.fake.requests) == 1
     refused = _events(logs, "planner_refused")
     assert len(refused) == 1
@@ -292,3 +292,18 @@ def test_backboard_usage_is_used_and_model_cannot_set_it():
                     scope_classifier=ALLOW)
     with pytest.raises(ValueError):
         asyncio.run(p2.next_turn(_state()))
+
+
+def test_planner_transcript_is_bounded_per_turn():
+    """Each target reply is cut to transcript_chars_per_turn before the model sees it."""
+    from cyberredteam.contracts import Turn
+
+    huge = "X" * 50_000
+    _, planner = _planner((_reply(), USAGE), transcript_chars_per_turn=300)
+    turns = [Turn(conversation_id="conv-1", index=i, message=f"m{i}", response_text=huge, http_status=200,
+                  latency_ms=1.0) for i in range(4)]
+    message = planner.build_user_message(_state(turns))
+    transcript = json.loads(message)["transcript"]
+    assert len(transcript) == 4
+    assert all(len(t["response"]) <= 300 + 20 for t in transcript)  # a short truncation marker is allowed
+    assert len(message) < 4 * (300 + 200) + 1000  # never grows with the raw reply size

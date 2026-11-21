@@ -223,7 +223,7 @@ class ReporterAgent:
             else:
                 for fid, fi in findings_by_id.items():
                     f.write(f"### Finding `{fid}`\n\n")
-                    f.write(f"| Field | Value |\n|---|---|\n")
+                    f.write("| Field | Value |\n|---|---|\n")
                     f.write(f"| Verdict | {fi['verdict']} |\n")
                     f.write(f"| ASI Class | {fi['asi_class']} |\n")
                     f.write(f"| Severity | {fi['severity']} |\n")
