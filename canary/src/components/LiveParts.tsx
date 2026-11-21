@@ -1,10 +1,7 @@
-import { useEffect, useState } from 'react'
 import type { TechniqueResult } from '../lib/contracts'
 import { budgetFraction, type LiveCell } from '../lib/liveState'
 import { CONVERSATION_STATUS_STYLE, percent, strategyLabel, VERDICT_STYLE } from '../lib/presentation'
-import { ApiError, getKillSwitch, setKillSwitch } from '../lib/api'
-import type { BudgetState, KillSwitchState } from '../lib/v2'
-import { buttonClass, ErrorNotice, inputClass } from './Console'
+import type { BudgetState } from '../lib/v2'
 
 export function BudgetMeter({ budget }: { budget: BudgetState | null }) {
   if (!budget) return <p className="text-[10px] text-white/60 uppercase tracking-wider">Budget: waiting for first update</p>
@@ -118,59 +115,5 @@ export function ResultsTable({ results }: { results: TechniqueResult[] }) {
         ))}
       </tbody>
     </table>
-  )
-}
-
-/**
- * Global kill switch. Rendered only for callers with `kill_switch:write`, but the
- * backend further limits it to platform admins (CANARY_PLATFORM_ADMINS), which
- * /me does not expose; a 403 therefore hides the control instead of erroring.
- */
-export function KillSwitchControl({ onChanged }: { onChanged?: (state: KillSwitchState) => void }) {
-  const [state, setState] = useState<KillSwitchState | null>(null)
-  const [open, setOpen] = useState(false)
-  const [reason, setReason] = useState('')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const [forbidden, setForbidden] = useState(false)
-
-  useEffect(() => { getKillSwitch().then(setState).catch(() => undefined) }, [])
-
-  const apply = async (enabled: boolean) => {
-    setBusy(true)
-    setError(null)
-    try {
-      const next = await setKillSwitch({ enabled, reason: reason.trim() || null })
-      setState(next)
-      setOpen(false)
-      setReason('')
-      onChanged?.(next)
-    } catch (e) {
-      if (e instanceof ApiError && e.status === 403) { setForbidden(true); setOpen(false) } else setError((e as Error).message)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  if (forbidden) return <span data-testid="kill-forbidden" className="text-[10px] text-white/60 uppercase tracking-wider">Kill switch is limited to platform admins</span>
-  const active = state?.active ?? false
-  if (!open) {
-    return (
-      <span className="inline-flex items-center gap-3">
-        {active && <span data-testid="kill-engaged" className="text-xs text-red-300 uppercase tracking-wider">Kill switch engaged: campaigns halting</span>}
-        <button type="button" data-testid="kill-open" onClick={() => setOpen(true)} className="px-4 py-2 border border-red-600 text-red-300 text-xs uppercase tracking-wider hover:bg-red-950/40">{active ? 'Release kill switch' : 'Kill switch'}</button>
-      </span>
-    )
-  }
-  return (
-    <div role="alertdialog" aria-label="Confirm kill switch" className="border border-red-600 bg-red-950/30 p-4 max-w-md space-y-3">
-      <p className="text-xs text-red-200">{active ? 'Releasing lets new campaigns start again.' : 'This halts ALL running campaigns for every organisation within one turn. Use it for an emergency only.'}</p>
-      <input aria-label="Kill switch reason" className={inputClass} placeholder="Reason (required)" value={reason} onChange={event => setReason(event.target.value)} />
-      {error && <ErrorNotice message={error} />}
-      <div className="flex gap-2">
-        <button type="button" data-testid="kill-confirm" disabled={busy || reason.trim().length < 3} onClick={() => apply(!active)} className="px-4 py-2 bg-red-600 text-xs uppercase tracking-wider disabled:opacity-40">{active ? 'Release' : 'Halt everything'}</button>
-        <button type="button" onClick={() => setOpen(false)} className={buttonClass}>Back</button>
-      </div>
-    </div>
   )
 }
