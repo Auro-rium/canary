@@ -184,8 +184,9 @@ export type ConversationStatus =
   | 'stopped_budget'
   | 'stopped_monitor'
   | 'stopped_target_refusal_streak'
-  | 'stopped_target_error_streak'
-  | 'stopped_killed'
+  | 'stopped_target_error_streak' // WP3: 3+ consecutive target errors
+  | 'stopped_killed' // WP7: global kill switch
+  | 'stopped_planner_guardrail' // the attacker planner hit a guardrail and could not continue
   | 'completed'
   | 'cancelled'
   | 'error'
